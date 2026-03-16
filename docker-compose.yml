@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  emacs:
+    build:
+      context: .
+      dockerfile: Dockerfile.emacs
+    container_name: sem-emacs
+    volumes:
+      - ./data:/data:rw
+      - ./logs:/var/log/sem:rw
+      - ~/.ssh/vps-org-roam:/root/.ssh:ro
+    environment:
+      - OPENROUTER_KEY=${OPENROUTER_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL}
+      - RSS_MAX_ENTRIES_PER_FEED=${RSS_MAX_ENTRIES_PER_FEED:-10}
+      - RSS_MAX_INPUT_CHARS=${RSS_MAX_INPUT_CHARS:-199000}
+    depends_on:
+      - webdav
+    restart: unless-stopped
+
+  webdav:
+    image: bytemark/webdav:latest
+    container_name: sem-webdav
+    volumes:
+      - ./data:/var/lib/dav:rw
+    environment:
+      - DAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
+      - DAV_PASSWORD=${WEBDAV_PASSWORD:-changeme}
+    ports:
+      - "80:80"
+    restart: unless-stopped

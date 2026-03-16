@@ -1,0 +1,182 @@
+;;; sem-mock.el --- Mock helpers for ERT tests -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+;; This module provides reusable mock helpers for testing SEM modules.
+;; All tests should use these mocks to avoid real network/LLM calls.
+
+;;; Code:
+
+(require 'ert)
+
+;;; Stub external packages unavailable in batch test mode
+;; These stubs must be registered before any source module is loaded,
+;; so that (require 'elfeed) etc. become silent no-ops.
+
+(dolist (pkg '(elfeed elfeed-org org-roam org-id gptel))
+  (unless (featurep pkg)
+    (provide pkg)))
+
+;;; Stub gptel-request function so advice can be added
+(defun gptel-request (prompt &rest args)
+  "Stub gptel-request function.
+This is a placeholder that will be overridden by sem-mock-gptel-request-success/error.
+PROMPT is the request prompt.
+ARGS is a plist containing :callback, :system, :stream, etc."
+  (let ((callback (plist-get args :callback)))
+    (when callback
+      (funcall callback nil (list :error "gptel-request not mocked")))
+    nil))
+
+;;; Mock Data
+
+(defconst sem-mock-valid-org-response
+  ":PROPERTIES:
+:ID:          mock-test-id-12345
+:END:
+#+title: Test Article
+#+ROAM_REFS: https://example.com/article
+#+filetags: :article:
+
+* Summary
+Source: [[https://example.com/article][https://example.com/article]]
+This is a test summary.
+
+* Key Takeaways
+- Point 1
+- Point 2"
+  "Valid org-roam node response for testing validation.")
+
+(defconst sem-mock-invalid-org-response
+  "This is not valid org-mode content.
+It lacks :PROPERTIES: and #+title:."
+  "Invalid org-roam node response for testing validation.")
+
+(defconst sem-mock-article-content
+  "<html><body><h1>Test Article</h1><p>This is test content.</p></body></html>"
+  "Sample HTML content for testing text cleaning.")
+
+(defconst sem-mock-cleaned-content
+  "Test Article This is test content."
+  "Expected cleaned text output.")
+
+;;; gptel Mocks
+
+(defvar sem-mock-gptel-response nil
+  "Response to return from mocked gptel-request.")
+
+(defvar sem-mock-gptel-error nil
+  "Error to simulate from mocked gptel-request.")
+
+(defun sem-mock-gptel-request-success (response)
+  "Setup gptel-request mock to return RESPONSE on success."
+  (setq sem-mock-gptel-response response)
+  (setq sem-mock-gptel-error nil)
+  (advice-add 'gptel-request :override #'sem-mock--gptel-request-mock))
+
+(defun sem-mock-gptel-request-error (error-msg)
+  "Setup gptel-request mock to simulate ERROR-MSG failure."
+  (setq sem-mock-gptel-response nil)
+  (setq sem-mock-gptel-error error-msg)
+  (advice-add 'gptel-request :override #'sem-mock--gptel-request-mock))
+
+(defun sem-mock--gptel-request-mock (prompt &rest args)
+  "Mock implementation of gptel-request.
+Uses `sem-mock-gptel-response' and `sem-mock-gptel-error'.
+ARGS is a plist containing :callback, :system, :stream, etc."
+  (let ((callback (plist-get args :callback)))
+    (if sem-mock-gptel-error
+        (progn
+          (when callback
+            (funcall callback nil (list :error sem-mock-gptel-error) nil))
+          nil)
+      (when callback
+        (funcall callback sem-mock-gptel-response (list :status "success") nil))
+      sem-mock-gptel-response)))
+
+(defun sem-mock-gptel-reset ()
+  "Reset gptel mocks to original behavior."
+  (setq sem-mock-gptel-response nil)
+  (setq sem-mock-gptel-error nil)
+  (when (advice-member-p #'sem-mock--gptel-request-mock 'gptel-request)
+    (advice-remove 'gptel-request #'sem-mock--gptel-request-mock)))
+
+;;; Trafilatura Mocks
+
+(defvar sem-mock-trafilatura-output nil
+  "Output to return from mocked trafilatura CLI.")
+
+(defvar sem-mock-trafilatura-exit-code 0
+  "Exit code to return from mocked trafilatura CLI.")
+
+(defun sem-mock-trafilatura-success (output)
+  "Setup trafilatura mock to return OUTPUT on success."
+  (setq sem-mock-trafilatura-output output)
+  (setq sem-mock-trafilatura-exit-code 0)
+  (advice-add 'call-process :override #'sem-mock--call-process-mock))
+
+(defun sem-mock-trafilatura-failure (exit-code)
+  "Setup trafilatura mock to simulate EXIT-CODE failure."
+  (setq sem-mock-trafilatura-output "")
+  (setq sem-mock-trafilatura-exit-code exit-code)
+  (advice-add 'call-process :override #'sem-mock--call-process-mock))
+
+(defun sem-mock--call-process-mock (command &rest args)
+  "Mock implementation of call-process for trafilatura.
+Intercepts calls to 'trafilatura' and returns mocked output.
+For non-trafilatura calls, passes through to original call-process."
+  (if (string= command "trafilatura")
+      (let ((buffer (nth 1 args)))
+        (when (bufferp buffer)
+          (with-current-buffer buffer
+            (insert sem-mock-trafilatura-output)))
+        sem-mock-trafilatura-exit-code)
+    (apply #'call-process--original command args)))
+
+(defun sem-mock-trafilatura-reset ()
+  "Reset trafilatura mocks to original behavior."
+  (setq sem-mock-trafilatura-output nil)
+  (setq sem-mock-trafilatura-exit-code 0)
+  (advice-remove 'call-process #'sem-mock--call-process-mock))
+
+;;; Org-Roam Mocks
+
+(defvar sem-mock-org-roam-db-result nil
+  "Result to return from mocked org-roam-db-query.")
+
+(defun sem-mock-org-roam-db-query (result)
+  "Setup org-roam-db-query mock to return RESULT."
+  (setq sem-mock-org-roam-db-result result)
+  (advice-add 'org-roam-db-query :override #'sem-mock--org-roam-db-query-mock))
+
+(defun sem-mock--org-roam-db-query-mock (_query &rest _args)
+  "Mock implementation of org-roam-db-query."
+  sem-mock-org-roam-db-result)
+
+(defun sem-mock-org-roam-reset ()
+  "Reset org-roam mocks to original behavior."
+  (setq sem-mock-org-roam-db-result nil)
+  (advice-remove 'org-roam-db-query #'sem-mock--org-roam-db-query-mock))
+
+;;; Utility Functions
+
+(defun sem-mock-reset-all ()
+  "Reset all mocks to original behavior."
+  (sem-mock-gptel-reset)
+  (sem-mock-trafilatura-reset)
+  (sem-mock-org-roam-reset))
+
+(defun sem-mock-temp-file (content)
+  "Create a temporary file with CONTENT.
+Returns the file path. Caller is responsible for cleanup."
+  (let ((tmp-file (make-temp-file "sem-test-")))
+    (with-temp-file tmp-file (insert content))
+    tmp-file))
+
+(defun sem-mock-cleanup-temp-file (file)
+  "Cleanup temporary FILE if it exists."
+  (when (and file (file-exists-p file))
+    (delete-file file)))
+
+(provide 'sem-mock)
+;;; sem-mock.el ends here

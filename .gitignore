@@ -1,0 +1,24 @@
+# Logs
+./logs/
+*.log
+
+# Environment
+.env
+
+# straight.el installed packages (but NOT the lockfile)
+app/elisp/straight/repos/
+app/elisp/eln-cache/
+
+# Data directory
+/data/
+
+# Byte compilation
+*.elc
+
+# Auto-save
+*~
+\#*\#
+
+# AI
+.qwen
+.opencode

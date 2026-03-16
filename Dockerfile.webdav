@@ -1,0 +1,9 @@
+FROM bytemark/webdav
+
+# WebDAV server for Orgzly sync
+# Authentication is configured via environment variables:
+# DAV_USERNAME, DAV_PASSWORD
+
+EXPOSE 80
+
+CMD ["/usr/sbin/apache2ctl", "-D", "FOREGROUND"]

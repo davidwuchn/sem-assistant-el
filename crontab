@@ -1,0 +1,18 @@
+# SEM Assistant Elisp Daemon Crontab
+# Install with: COPY crontab /etc/cron.d/sem-cron
+# All times are in container timezone (UTC by default)
+
+# Inbox processing - every 30 minutes
+*/30 * * * *	root	emacsclient -e "(sem-core-process-inbox)"
+
+# Inbox purge - daily at 4:00 AM (only time inbox-mobile.org is written)
+0 4 * * *	root	emacsclient -e "(sem-core-purge-inbox)"
+
+# Elfeed update - four times before digest generation (5AM, 6AM, 7AM, 8AM)
+0 5 * * *	root	emacsclient -e "(elfeed-update)"
+0 6 * * *	root	emacsclient -e "(elfeed-update)"
+0 7 * * *	root	emacsclient -e "(elfeed-update)"
+0 8 * * *	root	emacsclient -e "(elfeed-update)"
+
+# RSS morning digest - daily at 9:30 AM (after all elfeed updates complete)
+30 9 * * *	root	emacsclient -e "(sem-rss-generate-morning-digest)"
