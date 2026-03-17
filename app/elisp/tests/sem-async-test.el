@@ -120,7 +120,7 @@ Called with RESULT and CONTEXT."
                  (funcall callback mock-response '(:status 200) context)
                  nil))
               ((symbol-function 'sem-router--validate-task-response)
-               (lambda (response) t))
+               (lambda (response _injected-id) t))
               ((symbol-function 'sem-router--write-task-to-file)
                (lambda (response) t))
               ((symbol-function 'sem-router--mark-processed)

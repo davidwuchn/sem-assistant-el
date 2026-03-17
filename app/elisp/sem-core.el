@@ -165,16 +165,45 @@ detailed error info to errors.org."
 
 ;;; Messages Persistence
 
-(defun sem-core--flush-messages ()
-  "Append *Messages* buffer content to the durable log file.
+(defvar sem-core--last-flush-date ""
+  "Date of the last message buffer flush (YYYY-MM-DD format).
+Used to detect date rollover for daily log rotation.
+Initial value is empty string to force first flush to detect as new day.
+Module-level variable that resets on daemon restart.")
+
+(defun sem-core--flush-messages-daily ()
+  "Append *Messages* buffer content to daily log file.
+Writes to /var/log/sem/messages-YYYY-MM-DD.log.
+On date rollover, erases the *Messages* buffer before writing to prevent
+old content from bleeding into the new day's file.
 Called via post-command-hook after every emacsclient invocation.
 Wrapped in condition-case to never crash the daemon."
   (condition-case _err
-      (let ((log-path "/var/log/sem/messages.log")
-            (content (with-current-buffer "*Messages*"
-                       (buffer-string))))
-        (make-directory "/var/log/sem" t)
-        (write-region content nil log-path t 'silent))
+      (let* ((now (current-time))
+             ;; Use UTC time consistent with existing code
+             (today (format-time-string "%Y-%m-%d" now t))
+             (log-dir "/var/log/sem")
+             (log-path (format "%s/messages-%s.log" log-dir today)))
+
+        ;; Check for date rollover - if new day, erase buffer first
+        (when (and (not (string-empty-p sem-core--last-flush-date))
+                   (not (string= today sem-core--last-flush-date)))
+          ;; Date has changed - erase *Messages* buffer before writing
+          (with-current-buffer "*Messages*"
+            (erase-buffer)))
+
+        ;; Get current buffer content (may be empty after erase)
+        (let ((content (with-current-buffer "*Messages*"
+                         (buffer-string))))
+
+          ;; Ensure log directory exists
+          (make-directory log-dir t)
+
+          ;; Write content in append mode (t = append)
+          (write-region content nil log-path t 'silent))
+
+        ;; Update last flush date after successful write
+        (setq sem-core--last-flush-date today))
     (error nil)))
 
 ;;; Cursor Tracking

@@ -159,9 +159,9 @@ sem-core must load first as it defines sem-core-log."
 ;;; 8. Install *Messages* Redirection Hook
 
 (defun sem-init--install-messages-hook ()
-  "Install the *Messages* persistence hook."
-  (add-hook 'post-command-hook #'sem-core--flush-messages)
-  (message "SEM: *Messages* redirection installed"))
+  "Install the *Messages* persistence hook with daily rotation."
+  (add-hook 'post-command-hook #'sem-core--flush-messages-daily)
+  (message "SEM: *Messages* daily rotation installed"))
 
 ;;; 9. Daemon Startup Sequence
 

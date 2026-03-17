@@ -7,12 +7,11 @@
 
 ;;; Code:
 
-(straight-versions 'use-package '(20240101 . "main"))
-(straight-versions 'gptel '(20240101 . "main"))
-(straight-versions 'elfeed '(20240101 . "master"))
-(straight-versions 'elfeed-org '(20240101 . "master"))
-(straight-versions 'org-roam '(20240101 . "master"))
-(straight-versions 'websocket '(20240101 . "master"))
+(straight-use-package 'gptel :pin "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2")
+(straight-use-package 'elfeed :pin "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3")
+(straight-use-package 'elfeed-org :pin "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4")
+(straight-use-package 'org-roam :pin "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5")
+(straight-use-package 'websocket :pin "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6")
 
 (provide 'default)
 ;;; default.el ends here

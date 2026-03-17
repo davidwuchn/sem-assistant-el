@@ -129,17 +129,22 @@ The LLM is prompted to return a valid Org TODO entry with:
 - Cleaned title
 - Optional DEADLINE/SCHEDULED/PRIORITY
 - One-line description
-- :PROPERTIES: drawer with :ID: (org-id)
+- :PROPERTIES: drawer with :ID: (pre-generated UUID injected into prompt)
 - :FILETAGS: set to one of the allowed tags
 
-The Elisp layer validates the tag and substitutes :routine: if absent or invalid.
+The Elisp layer pre-generates the UUID via org-id-new and injects it into
+the prompt. The LLM must use the provided ID verbatim. The response is
+validated to ensure the ID matches exactly.
+
 Uses sem-llm-request for consistent retry/DLQ handling.
 
 Returns immediately (async). The CALLBACK is invoked when complete."
   (condition-case err
       (let* ((title (plist-get headline :title))
              (hash (plist-get headline :hash))
-             (tags (plist-get headline :tags)))
+             (tags (plist-get headline :tags))
+             ;; Pre-generate UUID for injection and validation
+             (injected-id (org-id-new)))
 
         ;; Build the LLM prompt for task processing
         (let* ((system-prompt "You are a Task Management assistant. Your ONLY task is to output a valid Org-mode TODO entry based on the provided task description.
@@ -157,7 +162,7 @@ Your output MUST follow this exact structure:
 
 * TODO <Cleaned Task Title>
 :PROPERTIES:
-:ID: <generate-a-valid-org-id-uuid>
+:ID: <injected-id-value>
 :FILETAGS: :<one-of:work:family:routine:opensource>:
 :END:
 <Brief one-line description or notes>
@@ -167,18 +172,23 @@ Your output MUST follow this exact structure:
 
 RULES:
 1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:
-2. :ID: MUST be a valid UUID format (e.g., 550e8400-e29b-41d4-a716-446655440000)
+2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it
 3. Output ONLY the Org entry - no explanations, no markdown wrappers
-4. Clean up the task title to be concise and actionable")
+4. Clean up the task title to be concise and actionable
+
+CRITICAL: Use EXACTLY the :ID: value provided in the template below. Do not generate, modify, or substitute it.")
                (user-prompt (format "Convert this task headline into a structured Org TODO entry:
 
 HEADLINE: * %s %s
+
+Use this EXACT :ID: value in your output: %s
 
 Generate the complete Org TODO entry following the required format above."
                                     title
                                     (if tags
                                         (format ":%s:" (string-join tags ":"))
-                                      ""))))
+                                      "")
+                                    injected-id)))
 
           ;; Call sem-llm-request with callback
           (require 'sem-llm)
@@ -188,10 +198,11 @@ Generate the complete Org TODO entry following the required format above."
 Validates the LLM response and writes to tasks.org."
                              (let ((headline-hash (plist-get context :hash))
                                    (headline-title (plist-get context :title))
+                                   (injected-uuid (plist-get context :injected-id))
                                    (success nil))
                                (if (and response (not (string-empty-p response)))
                                    ;; Validate and process response
-                                   (if (sem-router--validate-task-response response)
+                                   (if (sem-router--validate-task-response response injected-uuid)
                                        ;; Valid response - write to tasks.org
                                        (if (sem-router--write-task-to-file response)
                                            (progn
@@ -209,7 +220,7 @@ Validates the LLM response and writes to tasks.org."
                                      ;; Malformed output - send to DLQ
                                      (progn
                                        (sem-core-log-error "router" "INBOX-ITEM"
-                                                           "Malformed LLM output for task"
+                                                           "Malformed LLM output for task (UUID mismatch or missing)"
                                                            headline-title
                                                            response)
                                        (sem-router--mark-processed headline-hash)
@@ -223,7 +234,7 @@ Validates the LLM response and writes to tasks.org."
                                ;; Call the completion callback
                                (when callback
                                  (funcall callback success context))))
-                           (list :hash hash :title title :headline headline)))
+                           (list :hash hash :title title :headline headline :injected-id injected-id)))
 
         ;; Return immediately - processing continues asynchronously
         t)
@@ -238,31 +249,43 @@ Validates the LLM response and writes to tasks.org."
                                    :title (plist-get headline :title))))
      nil)))
 
-(defun sem-router--validate-task-response (response)
+(defun sem-router--validate-task-response (response injected-id)
   "Validate LLM RESPONSE for task processing.
+
+INJECTED-ID is the UUID that was pre-generated and injected into the prompt.
+The response must contain this exact ID in the :ID: field.
 
 Checks for required elements:
 - :PROPERTIES: drawer
-- :ID: field
+- :ID: field with exact match to INJECTED-ID
 - :FILETAGS: field with valid tag
 
-Returns t if valid, nil if malformed."
-  (when (and response (not (string-empty-p response)))
+Returns t if valid, nil if malformed or UUID mismatch."
+  (when (and response (not (string-empty-p response)) injected-id)
     (with-temp-buffer
       (insert response)
       (goto-char (point-min))
       (let ((has-properties (re-search-forward "^:PROPERTIES:" nil t))
-            (has-id (re-search-forward "^:ID:" nil t))
+            (has-id nil)
+            (id-matches nil)
             (has-filetags (progn
                             (goto-char (point-min))
                             (re-search-forward "^:FILETAGS:" nil t)))
             (valid-tag nil))
+        ;; Extract and validate ID using exact string match
+        (goto-char (point-min))
+        (when (re-search-forward "^:ID:[ \t]*\\([^[:space:]]+\\)" nil t)
+          (setq has-id t)
+          (let ((extracted-id (match-string 1)))
+            ;; Exact string match comparison as per spec
+            (setq id-matches (string= extracted-id injected-id))))
         ;; Check for valid tag
         (goto-char (point-min))
         (when (re-search-forward "^:FILETAGS:[ \t]*:\\([[:word:]]+\\):" nil t)
           (let ((tag (match-string 1)))
             (setq valid-tag (member tag sem-router-task-tags))))
-        (and has-properties has-id has-filetags valid-tag)))))
+        ;; All checks must pass including UUID match
+        (and has-properties has-id has-filetags valid-tag id-matches)))))
 
 (defun sem-router--validate-and-normalize-tag (response)
   "Validate and normalize the :FILETAGS: tag in RESPONSE.
@@ -277,10 +300,10 @@ Returns the normalized response string."
         (let ((tag (match-string 1)))
           (if (member tag sem-router-task-tags)
               response
-            ;; Invalid tag - substitute with routine
+            ;; Invalid tag - substitute with routine (replace entire line)
             (goto-char (point-min))
-            (re-search-forward "^:FILETAGS:[ \t]*:[[:word:]]+:" nil t)
-            (replace-match ":FILETAGS: :routine:")
+            (when (re-search-forward "^:FILETAGS:[ \t]*:[^:]+:" nil t)
+              (replace-match ":FILETAGS: :routine:"))
             (buffer-string)))
       ;; No tag found - add :routine: before :END:
       (goto-char (point-min))

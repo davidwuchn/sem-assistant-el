@@ -9,8 +9,8 @@ server:
 
   # TLS configuration - certificates mounted from host
   tls: true
-  cert: /certs/cert.pem
-  key: /certs/key.pem
+  cert: /certs/live/{env}WEBDAV_DOMAIN/fullchain.pem
+  key: /certs/live/{env}WEBDAV_DOMAIN/privkey.pem
 
 # User configuration with environment variable substitution
 users:

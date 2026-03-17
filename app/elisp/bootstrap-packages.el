@@ -24,6 +24,7 @@
 
 ;; Load the lockfile to pin exact package revisions
 (straight-use-package 'use-package)
+(straight-thaw-versions)
 
 ;; Install required packages
 ;; Each call will fail if the package cannot be installed

@@ -114,57 +114,125 @@ This proves the cl-block fix at runtime, not just parse time."
     ;; Should return nil without crashing
     (should (null (sem-router--parse-headlines)))))
 
-;;; Tests for task LLM pipeline (Task 7.1-7.5)
+;;; Tests for task LLM pipeline with UUID injection (Task 4.3.1-4.3.6)
+
+;; Updated tests for new signature with injected-id
 
 (ert-deftest sem-router-test-task-validation-valid-response ()
-  "Test validation of valid LLM task response.
-Success path: valid Org TODO with valid tag should pass validation."
-  (let ((response "* TODO Test Task
+  "Test validation of valid LLM task response with matching UUID.
+Success path: valid Org TODO with valid tag and matching UUID should pass validation."
+  (let ((injected-id "550e8400-e29b-41d4-a716-446655440000")
+        (response "* TODO Test Task
 :PROPERTIES:
 :ID: 550e8400-e29b-41d4-a716-446655440000
 :FILETAGS: :work:
 :END:
 Task description here."))
-    (should (sem-router--validate-task-response response))))
+    (should (sem-router--validate-task-response response injected-id))))
 
 (ert-deftest sem-router-test-task-validation-invalid-tag ()
   "Test validation rejects invalid tag.
 DLQ path: invalid tag should fail validation."
-  (let ((response "* TODO Test Task
+  (let ((injected-id "550e8400-e29b-41d4-a716-446655440000")
+        (response "* TODO Test Task
 :PROPERTIES:
 :ID: 550e8400-e29b-41d4-a716-446655440000
 :FILETAGS: :invalidtag:
 :END:
 Task description here."))
-    (should-not (sem-router--validate-task-response response))))
+    (should-not (sem-router--validate-task-response response injected-id))))
 
 (ert-deftest sem-router-test-task-validation-missing-properties ()
   "Test validation rejects missing :PROPERTIES:.
 DLQ path: missing properties drawer should fail validation."
-  (let ((response "* TODO Test Task
+  (let ((injected-id "550e8400-e29b-41d4-a716-446655440000")
+        (response "* TODO Test Task
 :FILETAGS: :work:
 Task description here."))
-    (should-not (sem-router--validate-task-response response))))
+    (should-not (sem-router--validate-task-response response injected-id))))
 
 (ert-deftest sem-router-test-task-validation-missing-id ()
   "Test validation rejects missing :ID:.
 DLQ path: missing ID should fail validation."
-  (let ((response "* TODO Test Task
+  (let ((injected-id "550e8400-e29b-41d4-a716-446655440000")
+        (response "* TODO Test Task
 :PROPERTIES:
 :FILETAGS: :work:
 :END:
 Task description here."))
-    (should-not (sem-router--validate-task-response response))))
+    (should-not (sem-router--validate-task-response response injected-id))))
 
 (ert-deftest sem-router-test-task-validation-missing-filetags ()
   "Test validation rejects missing :FILETAGS:.
 DLQ path: missing FILETAGS should fail validation."
-  (let ((response "* TODO Test Task
+  (let ((injected-id "550e8400-e29b-41d4-a716-446655440000")
+        (response "* TODO Test Task
 :PROPERTIES:
 :ID: 550e8400-e29b-41d4-a716-446655440000
 :END:
 Task description here."))
-    (should-not (sem-router--validate-task-response response))))
+    (should-not (sem-router--validate-task-response response injected-id))))
+
+;; New tests for UUID validation (Task 4.3.2-4.3.6)
+
+(ert-deftest sem-router-test-uuid-match-validation-passes ()
+  "Test that UUID match passes validation.
+Success path: extracted ID matches injected ID exactly."
+  (let ((injected-id "abc12345-6789-0def-ghij-klmnopqrstuv")
+        (response "* TODO Test Task
+:PROPERTIES:
+:ID: abc12345-6789-0def-ghij-klmnopqrstuv
+:FILETAGS: :work:
+:END:
+Task description."))
+    (should (sem-router--validate-task-response response injected-id))))
+
+(ert-deftest sem-router-test-uuid-mismatch-validation-fails ()
+  "Test that UUID mismatch fails validation.
+DLQ path: LLM generated different ID than injected."
+  (let ((injected-id "abc12345-6789-0def-ghij-klmnopqrstuv")
+        (response "* TODO Test Task
+:PROPERTIES:
+:ID: different-uuid-generated-by-llm
+:FILETAGS: :work:
+:END:
+Task description."))
+    (should-not (sem-router--validate-task-response response injected-id))))
+
+(ert-deftest sem-router-test-uuid-missing-validation-fails ()
+  "Test that missing UUID fails validation.
+DLQ path: LLM omitted ID field entirely."
+  (let ((injected-id "abc12345-6789-0def-ghij-klmnopqrstuv")
+        (response "* TODO Test Task
+:PROPERTIES:
+:FILETAGS: :work:
+:END:
+Task description."))
+    (should-not (sem-router--validate-task-response response injected-id))))
+
+(ert-deftest sem-router-test-uuid-nil-injected-id-fails ()
+  "Test that nil injected-id fails validation.
+Safety check: nil injected-id should return nil."
+  (let ((response "* TODO Test Task
+:PROPERTIES:
+:ID: some-uuid-value
+:FILETAGS: :work:
+:END:
+Task description."))
+    (should-not (sem-router--validate-task-response response nil))))
+
+(ert-deftest sem-router-test-uuid-exact-string-match ()
+  "Test that UUID validation uses exact string match.
+Security: partial matches or case differences should fail."
+  (let ((injected-id "ABC12345-6789-0DEF-GHIJ-KLMNOPQRSTUV")
+        (response "* TODO Test Task
+:PROPERTIES:
+:ID: abc12345-6789-0def-ghij-klmnopqrstuv
+:FILETAGS: :work:
+:END:
+Task description."))
+    ;; Case-sensitive comparison should fail
+    (should-not (sem-router--validate-task-response response injected-id))))
 
 (ert-deftest sem-router-test-task-tag-normalization-routine-default ()
   "Test that absent or invalid tag is substituted with :routine:.
