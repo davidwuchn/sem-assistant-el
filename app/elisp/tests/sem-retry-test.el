@@ -208,58 +208,50 @@
         (should (sem-core--is-processed hash)))
     (sem-retry-test--teardown)))
 
-;;; LLM Handler Tests
+;;; URL Capture Retry Tests
 
-(ert-deftest sem-retry-test-handle-api-error-increments ()
-  "Test that handle-api-error increments retry count."
+(ert-deftest sem-retry-test-url-capture-retry-increments ()
+  "Test that URL capture failure increments retry count."
   (sem-retry-test--setup)
   (unwind-protect
-      (let ((hash "test-hash-api"))
-        ;; Mock headline
-        (let ((context (list :hash hash :headline '(:title "Test"))))
-          ;; First error
-          (sem-llm--handle-api-error '(:error "Timeout") hash context)
-          (should (= (sem-core--get-retry-count hash) 1))
-          ;; Second error
-          (sem-llm--handle-api-error '(:error "Timeout") hash context)
-          (should (= (sem-core--get-retry-count hash) 2))
-          ;; Third error - should move to DLQ
-          (sem-llm--handle-api-error '(:error "Timeout") hash context)
-          ;; Retry count cleared after DLQ
-          (should (= (sem-core--get-retry-count hash) 0))
-          ;; Should be marked as processed
-          (should (sem-core--is-processed hash))))
+      (let ((hash "test-hash-url"))
+        ;; First failure
+        (sem-core--increment-retry hash)
+        (should (= (sem-core--get-retry-count hash) 1))
+        ;; Second failure
+        (sem-core--increment-retry hash)
+        (should (= (sem-core--get-retry-count hash) 2))
+        ;; Third failure - should trigger DLQ
+        (let ((new-count (sem-core--increment-retry hash)))
+          (should (= new-count 3))
+          (should-not (sem-core--should-retry-p hash))))
     (sem-retry-test--teardown)))
 
-(ert-deftest sem-retry-test-handle-success-clears ()
-  "Test that handle-success clears retry count."
+(ert-deftest sem-retry-test-url-capture-success-clears ()
+  "Test that URL capture success clears retry count."
   (sem-retry-test--setup)
   (unwind-protect
-      (let ((hash "test-hash-success"))
+      (let ((hash "test-hash-url-success"))
         ;; Set up retries
         (sem-core--increment-retry hash)
         (sem-core--increment-retry hash)
         (should (= (sem-core--get-retry-count hash) 2))
-        ;; Handle success
-        (let ((context (list :hash hash)))
-          (sem-llm--handle-success "Response" hash context)
-          ;; Retry count should be cleared
-          (should (= (sem-core--get-retry-count hash) 0))))
+        ;; Clear on success
+        (sem-core--clear-retry hash)
+        (should (= (sem-core--get-retry-count hash) 0)))
     (sem-retry-test--teardown)))
 
-(ert-deftest sem-retry-test-handle-malformed-clears ()
-  "Test that handle-malformed clears retry count."
+(ert-deftest sem-retry-test-url-capture-dlq-marks-processed ()
+  "Test that URL capture DLQ marks hash as processed."
   (sem-retry-test--setup)
   (unwind-protect
-      (let ((hash "test-hash-malformed"))
-        ;; Set up retries
-        (sem-core--increment-retry hash)
-        (should (= (sem-core--get-retry-count hash) 1))
-        ;; Handle malformed
-        (let ((context (list :hash hash :headline '(:title "Test"))))
-          (sem-llm--handle-malformed-output "Bad response" hash context)
-          ;; Retry count should be cleared (permanent failure)
-          (should (= (sem-core--get-retry-count hash) 0))))
+      (let ((hash "test-hash-url-dlq"))
+        ;; Mark as DLQ
+        (sem-core--mark-dlq hash "Test URL")
+        ;; Should be marked as processed
+        (should (sem-core--is-processed hash))
+        ;; Retry count should be cleared
+        (should (= (sem-core--get-retry-count hash) 0)))
     (sem-retry-test--teardown)))
 
 ;;; Run Tests

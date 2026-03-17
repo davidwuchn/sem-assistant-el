@@ -315,8 +315,7 @@ It orchestrates the full pipeline:
 4. Extract umbrella nodes from org-roam database
 5. Build prompts for LLM
 6. Request LLM to generate org-roam node via sem-llm-request
-7. Apply URL sanitization to LLM response
-8. Validate and save the result
+7. Validate and save the result
 
 Returns immediately (async). The CALLBACK is invoked when complete.
 If no callback is provided, processing still happens asynchronously."
@@ -343,14 +342,13 @@ If no callback is provided, processing still happens asynchronously."
                 (sem-llm-request user-prompt system-prompt
                                  (lambda (response info context)
                                    "Callback for sem-llm-request.
-Applies URL sanitization to LLM response, then calls sem-url-capture--validate-and-save.
+Calls sem-url-capture--validate-and-save directly without URL sanitization.
 Note: sem-security-restore-from-llm is NOT called because LLM output is a new org document."
                                    (let ((filepath nil)
                                          (url (plist-get context :url)))
                                      (if (and response (not (string-empty-p response)))
-                                         ;; Apply URL sanitization before validation
-                                         (let ((sanitized-response (sem-security-sanitize-urls response)))
-                                           (setq filepath (sem-url-capture--validate-and-save sanitized-response url)))
+                                         ;; Validate and save directly without URL sanitization
+                                         (setq filepath (sem-url-capture--validate-and-save response url))
                                        (progn
                                          (sem-core-log-error "url-capture" "URL-CAPTURE"
                                                              (format "LLM request failed: %s"

@@ -25,6 +25,8 @@
 (load-file (expand-file-name "sem-llm-test.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "sem-async-test.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "sem-retry-test.el" (file-name-directory load-file-name)))
+(load-file (expand-file-name "sem-git-sync-test.el" (file-name-directory load-file-name)))
+(load-file (expand-file-name "sem-url-sanitize-test.el" (file-name-directory load-file-name)))
 
 ;; Run all tests
 (let ((result (ert-run-tests-batch-and-exit)))

@@ -30,13 +30,7 @@ Returns a cons cell where car is the exit code and cdr is the command output."
         (let ((exit-code
                (with-current-buffer output-buffer
                  (erase-buffer)
-                 (call-process-shell-command command nil output-buffer nil)
-                 (buffer-string)
-                 (if (re-search-backward "^Process shell\s-.*\s-finished" nil t)
-                     0
-                   (if (re-search-backward "^Process shell\s-.*\s-exited abnormally" nil t)
-                       1
-                       0)))))
+                 (call-process-shell-command command nil output-buffer nil))))
           (cons exit-code (with-current-buffer output-buffer (buffer-string))))
       (when (buffer-live-p output-buffer)
         (kill-buffer output-buffer)))))

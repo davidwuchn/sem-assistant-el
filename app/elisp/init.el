@@ -158,16 +158,6 @@ sem-core must load first as it defines sem-core-log."
 
 ;;; 8. Install *Messages* Redirection Hook
 
-(defun sem-core--flush-messages ()
-  "Append *Messages* buffer content to the durable log file.
-Called via post-command-hook after every emacsclient invocation."
-  (condition-case _err
-      (let ((log-path "/var/log/sem/messages.log")
-            (content (with-current-buffer "*Messages*"
-                       (buffer-string))))
-        (write-region content nil log-path t 'silent))
-    (error nil)))  ; Never crash daemon if log is unwritable
-
 (defun sem-init--install-messages-hook ()
   "Install the *Messages* persistence hook."
   (add-hook 'post-command-hook #'sem-core--flush-messages)

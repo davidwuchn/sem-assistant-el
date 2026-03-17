@@ -409,7 +409,7 @@ Only runs at 4AM window. Uses temp file + rename-file for atomicity."
             (rename-file tmp-file inbox-file t)
             (sem-core-log "purge" "PURGE" "OK" (format "Removed %d nodes from inbox-mobile.org" purged-count))
             (message "SEM: Purged %d processed headlines" purged-count)))))
-    (t (message "SEM: Purge error: %s" (error-message-string err)))))
+    (error (message "SEM: Purge error: %s" (error-message-string err)))))
 
 (provide 'sem-core)
 ;;; sem-core.el ends here

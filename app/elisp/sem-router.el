@@ -335,72 +335,82 @@ Routes each headline to the appropriate handler:
 - Unknown tags -> skip with log
 
 This is called by sem-core-process-inbox."
-  (condition-case err
-      (let ((headlines (sem-router--parse-headlines))
-            (processed-count 0)
-            (skipped-count 0)
-            (error-count 0))
+  (cl-block sem-router-process-inbox
+    (condition-case err
+        (let ((headlines (sem-router--parse-headlines))
+              (processed-count 0)
+              (skipped-count 0)
+              (error-count 0))
 
-        (unless headlines
-          (cl-return-from sem-router-process-inbox nil))
+          (unless headlines
+            (cl-return-from sem-router-process-inbox nil))
 
-        (dolist (headline headlines)
-          (let ((hash (plist-get headline :hash))
-                (title (plist-get headline :title)))
+          (dolist (headline headlines)
+            (let ((hash (plist-get headline :hash))
+                  (title (plist-get headline :title)))
 
-            ;; Skip if already processed
-            (if (sem-router--is-processed hash)
-                (progn
-                  (setq skipped-count (1+ skipped-count)))
-              ;; Route based on tag/type
-              (let ((url (sem-router--is-link-headline headline)))
-                (cond
-                 ;; Link headline -> URL capture (async)
-                 (url
-                  (sem-url-capture-process
-                   url
-                   (lambda (filepath context)
-                     "Callback for async URL capture."
-                     (if filepath
-                         (progn
-                           (sem-router--mark-processed hash)
-                           (message "SEM: URL captured: %s -> %s" url filepath))
-                       (message "SEM: URL capture failed: %s" url))))
-                  ;; Note: Async processing - mark as processed immediately
-                  (sem-router--mark-processed hash)
-                  (setq processed-count (1+ processed-count)))
-                 ;; Task headline -> LLM task generation (async)
-                 ((sem-router--is-task-headline headline)
-                  (sem-router--route-to-task-llm
-                   headline
-                   (lambda (success context)
-                     "Callback for async task LLM processing."
-                     (if success
-                         (message "SEM: Task LLM processed: %s" (plist-get context :title))
-                       (message "SEM: Task LLM failed: %s" (plist-get context :title)))))
-                  ;; Note: Async processing - counts will be inaccurate in summary
-                  (setq processed-count (1+ processed-count)))
-                 ;; Unknown - skip
-                 (t
-                  (sem-core-log "router" "INBOX-ITEM" "SKIP"
-                                (format "Unknown tag, skipping: %s" title)
-                                nil)
-                  (setq skipped-count (1+ skipped-count))
-                  ;; Mark as processed to avoid infinite loop
-                  (sem-router--mark-processed hash)))))))
+              ;; Skip if already processed
+              (if (sem-router--is-processed hash)
+                  (progn
+                    (setq skipped-count (1+ skipped-count)))
+                ;; Route based on tag/type
+                (let ((url (sem-router--is-link-headline headline)))
+                  (cond
+                   ;; Link headline -> URL capture (async)
+                   (url
+                    (sem-url-capture-process
+                     url
+                     (lambda (filepath context)
+                       "Callback for async URL capture.
+Handles success, retry, and DLQ escalation."
+                       (if filepath
+                           ;; Success - mark processed and increment count
+                           (progn
+                             (sem-core--clear-retry hash)
+                             (sem-router--mark-processed hash)
+                             (setq processed-count (1+ processed-count))
+                             (message "SEM: URL captured: %s -> %s" url filepath))
+                         ;; Failure - implement bounded retry
+                         (let ((retry-count (sem-core--increment-retry hash)))
+                           (if (>= retry-count 3)
+                               ;; Max retries reached - move to DLQ
+                               (progn
+                                 (sem-core--mark-dlq hash title nil)
+                                 (message "SEM: URL capture failed after 3 retries, moved to DLQ: %s" url))
+                             ;; Will retry on next cron cycle
+                             (message "SEM: URL capture failed (attempt %d/3), will retry: %s" retry-count url)))))))
+                   ;; Task headline -> LLM task generation (async)
+                   ((sem-router--is-task-headline headline)
+                    (sem-router--route-to-task-llm
+                     headline
+                     (lambda (success context)
+                       "Callback for async task LLM processing."
+                       (if success
+                           (message "SEM: Task LLM processed: %s" (plist-get context :title))
+                         (message "SEM: Task LLM failed: %s" (plist-get context :title)))))
+                    ;; Note: Async processing - counts will be inaccurate in summary
+                    (setq processed-count (1+ processed-count)))
+                   ;; Unknown - skip
+                   (t
+                    (sem-core-log "router" "INBOX-ITEM" "SKIP"
+                                  (format "Unknown tag, skipping: %s" title)
+                                  nil)
+                    (setq skipped-count (1+ skipped-count))
+                    ;; Mark as processed to avoid infinite loop
+                    (sem-router--mark-processed hash)))))))
 
-        (sem-core-log "router" "INBOX-ITEM" "OK"
-                      (format "Processed=%d, Skipped=%d, Errors=%d"
-                              processed-count skipped-count error-count)
-                      nil)
-        (message "SEM: Inbox processing complete: %d processed, %d skipped, %d errors"
-                 processed-count skipped-count error-count))
-    (error
-     (sem-core-log-error "router" "INBOX-ITEM"
-                         (error-message-string err)
-                         nil
-                         nil)
-     (message "SEM: Router error: %s" (error-message-string err)))))
+          (sem-core-log "router" "INBOX-ITEM" "OK"
+                        (format "Processed=%d, Skipped=%d, Errors=%d"
+                                processed-count skipped-count error-count)
+                        nil)
+          (message "SEM: Inbox processing complete: %d processed, %d skipped, %d errors"
+                   processed-count skipped-count error-count))
+      (error
+       (sem-core-log-error "router" "INBOX-ITEM"
+                           (error-message-string err)
+                           nil
+                           nil)
+       (message "SEM: Router error: %s" (error-message-string err))))))
 
 (provide 'sem-router)
 ;;; sem-router.el ends here
