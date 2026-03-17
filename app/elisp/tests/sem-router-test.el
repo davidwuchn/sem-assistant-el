@@ -85,5 +85,142 @@
   (sem-mock-reset-all)
   (should t))
 
+;;; Test cl-block wrapper for parse-headlines (Task 6.1-6.2)
+
+(ert-deftest sem-router-test-parse-headlines-cl-block ()
+  "Test that sem-router--parse-headlines has cl-block wrapper and doesn't crash.
+This proves the cl-block fix at runtime, not just parse time."
+  (let ((test-file (make-temp-file "inbox-test-")))
+    (unwind-protect
+        (progn
+          ;; Create temp inbox file with headlines
+          (with-temp-file test-file
+            (insert "* Headline 1 :link:\n")
+            (insert "Body line 1\n")
+            (insert "* Headline 2 :task:\n")
+            (insert "Body line 2\n"))
+          ;; Temporarily override inbox file path
+          (let ((sem-router-inbox-file test-file))
+            ;; This should NOT crash with cl-return-from
+            (let ((headlines (sem-router--parse-headlines)))
+              ;; Should return parsed headlines
+              (should (listp headlines))
+              (should (= (length headlines) 2)))))
+      (sem-mock-cleanup-temp-file test-file))))
+
+(ert-deftest sem-router-test-parse-headlines-missing-file ()
+  "Test that sem-router--parse-headlines handles missing file gracefully."
+  (let ((sem-router-inbox-file "/nonexistent/path/inbox-mobile.org"))
+    ;; Should return nil without crashing
+    (should (null (sem-router--parse-headlines)))))
+
+;;; Tests for task LLM pipeline (Task 7.1-7.5)
+
+(ert-deftest sem-router-test-task-validation-valid-response ()
+  "Test validation of valid LLM task response.
+Success path: valid Org TODO with valid tag should pass validation."
+  (let ((response "* TODO Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Task description here."))
+    (should (sem-router--validate-task-response response))))
+
+(ert-deftest sem-router-test-task-validation-invalid-tag ()
+  "Test validation rejects invalid tag.
+DLQ path: invalid tag should fail validation."
+  (let ((response "* TODO Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :invalidtag:
+:END:
+Task description here."))
+    (should-not (sem-router--validate-task-response response))))
+
+(ert-deftest sem-router-test-task-validation-missing-properties ()
+  "Test validation rejects missing :PROPERTIES:.
+DLQ path: missing properties drawer should fail validation."
+  (let ((response "* TODO Test Task
+:FILETAGS: :work:
+Task description here."))
+    (should-not (sem-router--validate-task-response response))))
+
+(ert-deftest sem-router-test-task-validation-missing-id ()
+  "Test validation rejects missing :ID:.
+DLQ path: missing ID should fail validation."
+  (let ((response "* TODO Test Task
+:PROPERTIES:
+:FILETAGS: :work:
+:END:
+Task description here."))
+    (should-not (sem-router--validate-task-response response))))
+
+(ert-deftest sem-router-test-task-validation-missing-filetags ()
+  "Test validation rejects missing :FILETAGS:.
+DLQ path: missing FILETAGS should fail validation."
+  (let ((response "* TODO Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:END:
+Task description here."))
+    (should-not (sem-router--validate-task-response response))))
+
+(ert-deftest sem-router-test-task-tag-normalization-routine-default ()
+  "Test that absent or invalid tag is substituted with :routine:.
+Tag validation test: missing FILETAGS results in :routine: default."
+  (let ((response "* TODO Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:END:
+Task description here."))
+    (let ((normalized (sem-router--validate-and-normalize-tag response)))
+      (should (string-match-p ":FILETAGS: :routine:" normalized)))))
+
+(ert-deftest sem-router-test-task-tag-normalization-invalid-substituted ()
+  "Test that invalid tag is substituted with :routine:.
+Tag validation test: invalid tag substituted with :routine:."
+  (let ((response "* TODO Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :badtag:
+:END:
+Task description here."))
+    (let ((normalized (sem-router--validate-and-normalize-tag response)))
+      (should (string-match-p ":FILETAGS: :routine:" normalized))
+      (should-not (string-match-p ":FILETAGS: :badtag:" normalized)))))
+
+(ert-deftest sem-router-test-task-tag-normalization-valid-preserved ()
+  "Test that valid tag is preserved.
+Success path: valid tag from allowed list is preserved."
+  (let ((response "* TODO Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :opensource:
+:END:
+Task description here."))
+    (let ((normalized (sem-router--validate-and-normalize-tag response)))
+      (should (string-match-p ":FILETAGS: :opensource:" normalized)))))
+
+(ert-deftest sem-router-test-task-write-creates-file ()
+  "Test that tasks.org is created if absent.
+Success path: tasks.org auto-created on first write."
+  (let ((test-tasks-file (make-temp-file "tasks-test-")))
+    (unwind-protect
+        (progn
+          (delete-file test-tasks-file)
+          (let ((sem-router-tasks-file test-tasks-file))
+            (let ((response "* TODO Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :routine:
+:END:
+Task description here."))
+              (should (sem-router--write-task-to-file response))
+              ;; File should now exist
+              (should (file-exists-p test-tasks-file)))))
+      (when (file-exists-p test-tasks-file)
+        (sem-mock-cleanup-temp-file test-tasks-file)))))
+
 (provide 'sem-router-test)
 ;;; sem-router-test.el ends here

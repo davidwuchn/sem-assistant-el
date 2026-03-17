@@ -1,8 +1,4 @@
-## Purpose
-
-This capability defines the RSS digest generation system that creates morning digests from Elfeed entries.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: rss-digest runs daily at 9:30 AM
 The system SHALL generate RSS digests daily at 9:30 AM via cron schedule `30 9 * * *`. The digest SHALL fetch and process entries from the Elfeed database from the last 24 hours via LLM and write output to `/data/morning-read/YYYY-MM-DD.org` (general) and `/data/morning-read/YYYY-MM-DD-arxiv.org` (arXiv). The function `sem-rss--generate-file` SHALL use `sem-llm-request` instead of direct `gptel-request` calls.

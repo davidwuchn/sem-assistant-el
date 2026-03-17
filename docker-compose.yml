@@ -20,13 +20,16 @@ services:
     restart: unless-stopped
 
   webdav:
-    image: bytemark/webdav:latest
+    image: hacdias/webdav:latest
     container_name: sem-webdav
     volumes:
-      - ./data:/var/lib/dav:rw
+      - ./data:/data:rw
+      - ./webdav-config.yml:/config.yml:ro
+      - /etc/letsencrypt:/certs:ro
     environment:
-      - DAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
-      - DAV_PASSWORD=${WEBDAV_PASSWORD:-changeme}
+      - WEBDAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
+      - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-changeme}
     ports:
-      - "80:80"
+      - "443:6065"
+    command: ["--config", "/config.yml"]
     restart: unless-stopped

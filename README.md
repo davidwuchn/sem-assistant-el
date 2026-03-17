@@ -11,6 +11,9 @@ A self-hosted Emacs daemon that autonomously processes mobile-captured Org notes
 - **Atomic Purge**: Daily cleanup of processed headlines at 4:00 AM
 - **Structured Logging**: All operations logged to `/data/sem-log.org` (readable in Orgzly)
 - **Error Handling**: Dead Letter Queue for malformed LLM output in `/data/errors.org`
+- **Bounded Retry**: Failed LLM requests retry up to 3 times before moving to DLQ
+- **GitHub Sync**: Automated sync of org-roam to GitHub every 6 hours
+- **WebDAV TLS**: HTTPS-enabled WebDAV for secure Orgzly sync
 
 ## Architecture
 
@@ -76,6 +79,51 @@ Files to sync:
 - `tasks.org` - Processed tasks (auto-created)
 - `sem-log.org` - Structured logs (optional, readable in Orgzly)
 - `errors.org` - Error Dead Letter Queue (optional)
+
+## Task Syntax
+
+The SEM Assistant processes headlines from `inbox-mobile.org` based on tags:
+
+### `@task` - Task Generation
+
+Headlines tagged with `@task` are sent to the LLM for structured task generation:
+
+```org
+* Buy groceries :@task:
+* Review PR for project X :@task:work:
+* Call dentist tomorrow :@task:routine:
+```
+
+**Allowed Tags:**
+- `work` - Work-related tasks
+- `family` - Family/personal tasks  
+- `routine` - Routine/maintenance tasks (default if no tag specified)
+- `opensource` - Open source project tasks
+
+The LLM generates a structured Org TODO entry with:
+- Cleaned, actionable title
+- Auto-generated UUID in `:ID:` property
+- `:FILETAGS:` set to one of the allowed tags
+- Optional deadline/scheduled dates (if specified in original)
+
+### `@link` - URL Capture
+
+Headlines tagged with `@link` trigger article capture:
+
+```org
+* https://example.com/article :@link:
+* Interesting article title :@link:
+```
+
+The system fetches the article content via trafilatura and creates an org-roam node with AI-generated summary.
+
+### URL Headlines (Auto-detected)
+
+Headlines that start with `http://` or `https://` are automatically treated as link headlines:
+
+```org
+* https://github.com/user/repo
+```
 
 ## Scheduled Tasks
 
@@ -170,6 +218,87 @@ To rollback to a previous version:
 
 Data in `/data` volume persists across restarts.
 
+## GitHub Sync Configuration
+
+The SEM Assistant can automatically sync your org-roam notes to a GitHub repository.
+
+### Setup
+
+1. **Create a GitHub repository** for your org-roam notes (e.g., `my-org-roam`)
+
+2. **Initialize the org-roam directory as a git repository**:
+   ```bash
+   cd ./data/org-roam
+   git init
+   git remote add origin git@github.com:yourusername/my-org-roam.git
+   git add .
+   git commit -m "Initial commit"
+   git push -u origin main
+   ```
+
+3. **Generate an SSH key** for the container:
+   ```bash
+   ssh-keygen -t rsa -b 4096 -f ~/.ssh/vps-org-roam/id_rsa -C "sem-assistant"
+   ```
+
+4. **Add the public key to GitHub**:
+   - Copy `~/.ssh/vps-org-roam/id_rsa.pub`
+   - Add it as a Deploy Key in your GitHub repository settings
+
+5. **Verify the volume mount** in `docker-compose.yml`:
+   ```yaml
+   volumes:
+     - ~/.ssh/vps-org-roam:/root/.ssh:ro
+   ```
+
+### How It Works
+
+- Sync runs every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
+- Only `/data/org-roam` is synced (not the entire `/data` volume)
+- Commits all changes with timestamp: `Sync org-roam: YYYY-MM-DD HH:MM:SS`
+- Skips if no changes detected
+- Uses SSH key for authentication (no passwords stored)
+
+### Manual Sync
+
+To trigger a sync manually:
+```bash
+docker exec sem-emacs emacsclient -e "(sem-git-sync-org-roam)"
+```
+
+## WebDAV TLS Setup
+
+The WebDAV service uses HTTPS on port 443. TLS certificates must be provided by the host:
+
+### Prerequisites
+
+1. **TLS Certificates**: Obtain certificates (e.g., via Let's Encrypt):
+   ```bash
+   sudo certbot certonly --standalone -d your-domain.com
+   ```
+
+2. **Certificate Paths**: The docker-compose.yml expects certificates at:
+   - Certificate: `/etc/letsencrypt/live/your-domain.com/fullchain.pem`
+   - Private key: `/etc/letsencrypt/live/your-domain.com/privkey.pem`
+
+### Configuration
+
+The `webdav-config.yml` is pre-configured to use certificates from `/certs/` inside the container:
+
+```yaml
+server:
+  tls: true
+  cert: /certs/fullchain.pem
+  key: /certs/privkey.pem
+```
+
+### Orgzly HTTPS Configuration
+
+Configure Orgzly to sync via HTTPS:
+- **URL**: `https://<your-domain.com>/`
+- **Username**: `orgzly` (or custom from `.env`)
+- **Password**: `<your-password>` (from `.env`)
+
 ## Security Notes
 
 - **Credentials**: All secrets via `.env`, never hardcoded
@@ -177,6 +306,7 @@ Data in `/data` volume persists across restarts.
 - **Local variables**: Disabled to prevent malicious Org payloads
 - **URL sanitization**: Applied to `tasks.org` and `morning-read/` (http → hxxp)
 - **Sensitive blocks**: Content between `#+begin_sensitive` / `#+end_sensitive` never sent to LLM
+- **TLS**: WebDAV uses HTTPS with host-mounted certificates
 
 ## License
 

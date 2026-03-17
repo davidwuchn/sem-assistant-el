@@ -46,22 +46,36 @@ This wrapper handles:
 
 (defun sem-llm--handle-api-error (info hash context)
   "Handle API error (429, timeout).
-Does NOT mark hash as processed - will retry on next cron run.
+Increments retry count and moves to DLQ after 3 failures.
 INFO is the gptel response info plist.
 HASH is the content hash for cursor tracking.
 CONTEXT contains module and other metadata."
   (let ((status (plist-get info :status))
-        (error (plist-get info :error))
-        (module (plist-get context :module)))
-    (sem-core-log (or module "llm") "INBOX-ITEM" "RETRY"
-                  (format "API error: %s" (or error status))
-                  nil)
-    ;; Do NOT mark hash as processed - retry on next run
-    (message "SEM: API error, will retry: %s" (or error status))))
+        (error-msg (plist-get info :error))
+        (module (plist-get context :module))
+        (headline (plist-get context :headline)))
+    ;; Increment retry count
+    (let ((new-count (sem-core--increment-retry hash)))
+      (if (>= new-count 3)
+          ;; Max retries reached - move to DLQ
+          (progn
+            (sem-core-log (or module "llm") "INBOX-ITEM" "DLQ"
+                          (format "Max retries (%d) reached, moving to DLQ: %s" new-count (or error-msg status))
+                          nil)
+            (sem-core--mark-dlq hash 
+                                (when headline (plist-get headline :title))
+                                (format "API error after %d retries: %s" new-count (or error-msg status)))
+            (message "SEM: Max retries reached, moved to DLQ"))
+        ;; Will retry
+        (progn
+          (sem-core-log (or module "llm") "INBOX-ITEM" "RETRY"
+                        (format "API error (attempt %d/3): %s" new-count (or error-msg status))
+                        nil)
+          (message "SEM: API error, will retry (attempt %d/3): %s" new-count (or error-msg status)))))))
 
 (defun sem-llm--handle-malformed-output (response hash context)
   "Handle malformed LLM output.
-Marks hash as processed and sends to DLQ (errors.org).
+Clears retry count, marks hash as processed and sends to DLQ (errors.org).
 RESPONSE is the raw LLM response.
 HASH is the content hash for cursor tracking.
 CONTEXT contains module, headline, and other metadata."
@@ -71,6 +85,9 @@ CONTEXT contains module, headline, and other metadata."
                         "Malformed LLM output"
                         (when headline (prin1-to-string headline))
                         response)
+    ;; Clear retry count (permanent failure)
+    (when hash
+      (sem-core--clear-retry hash))
     ;; Mark as processed to prevent infinite retry loop
     (when hash
       (sem-core--mark-processed hash))
@@ -88,6 +105,9 @@ CONTEXT contains module, success-callback, and other metadata."
     (sem-core-log (or module "llm") "INBOX-ITEM" "OK"
                   "LLM request successful"
                   tokens)
+    ;; Clear retry count on success
+    (when hash
+      (sem-core--clear-retry hash))
     ;; Mark as processed
     (when hash
       (sem-core--mark-processed hash))

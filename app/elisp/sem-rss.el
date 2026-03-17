@@ -234,41 +234,78 @@ Data:
 
 ;;; File Generation
 
-(defun sem-rss--generate-file (target-path prompt title-prefix days)
+(defun sem-rss--generate-file (target-path prompt title-prefix days &optional callback)
   "Call LLM and write digest to TARGET-PATH.
 
 PROMPT is the LLM prompt.
 TITLE-PREFIX is the title prefix (e.g., \"Daily Digest\" or \"Arxiv Digest\").
-DAYS is the number of days the digest covers."
+DAYS is the number of days the digest covers.
+CALLBACK is an optional function of (success context) called when complete.
+  - SUCCESS is t if file was written, nil on failure.
+  - CONTEXT contains :target-path and other metadata.
+
+Uses sem-llm-request with nil hash (no per-entry cursor tracking for RSS).
+On malformed LLM output: log to errors.org, do not write file.
+On API error: log to errors.org with RETRY status, do not write file.
+
+Returns immediately (async). The CALLBACK is invoked when complete."
   (let* ((days-int (truncate days))
          ;; Compute date range
          (from-date (time-subtract (current-time) (days-to-time days-int)))
          (to-date (current-time))
          (from-org (format-time-string "[%Y-%m-%d %a]" from-date))
-         (to-org (format-time-string "[%Y-%m-%d %a]" to-date)))
+         (to-org (format-time-string "[%Y-%m-%d %a]" to-date))
+         (system-prompt "You are a helpful Technical Editor assistant. You output ONLY raw Org-mode text. Never use markdown code fences or any wrapper syntax. Never include reasoning or commentary outside of the requested Org-mode structure. Start your response directly with the first Org-mode heading."))
 
-    (require 'gptel)
-    (gptel-request prompt
-      :system "You are a helpful Technical Editor assistant. You output ONLY raw Org-mode text. Never use markdown code fences or any wrapper syntax. Never include reasoning or commentary outside of the requested Org-mode structure. Start your response directly with the first Org-mode heading."
-      :callback (lambda (response info)
-                  (if (not response)
-                      (sem-core-log-error "rss" "RSS-DIGEST"
-                                          (format "LLM Error: %s" (plist-get info :status))
-                                          prompt
-                                          nil)
-                    ;; Write to file
-                    (with-temp-file target-path
-                      (insert "#+TITLE: " title-prefix ": " (format-time-string "%Y-%m-%d") "\n")
-                      (insert "#+FROM: " from-org "\n")
-                      (insert "#+TO: " to-org "\n")
-                      (insert "#+DATE: " (format-time-string "[%Y-%m-%d %a]") "\n")
-                      (insert "#+STARTUP: showall\n\n")
-                      (insert response))
-                    (sem-core-log "rss"
-                                  (if (string-prefix-p "Arxiv" title-prefix) "ARXIV-DIGEST" "RSS-DIGEST")
-                                  "OK"
-                                  (format "Digest written to %s" target-path)
-                                  nil))))))
+    ;; Use sem-llm-request instead of direct gptel-request
+    (require 'sem-llm)
+    (sem-llm-request prompt system-prompt
+                     (lambda (response info context)
+                       "Callback for sem-llm-request in RSS digest.
+Handles API errors (RETRY) and malformed output (DLQ)."
+                       (let ((target (plist-get context :target-path))
+                             (title (plist-get context :title-prefix))
+                             (from (plist-get context :from-org))
+                             (to (plist-get context :to-org))
+                             (digest-type (if (string-prefix-p "Arxiv" (plist-get context :title-prefix))
+                                              "ARXIV-DIGEST" "RSS-DIGEST"))
+                             (success nil))
+                         (cond
+                          ;; Success - write to file
+                          ((and response (not (string-empty-p response)))
+                           (with-temp-file target
+                             (insert "#+TITLE: " title ": " (format-time-string "%Y-%m-%d") "\n")
+                             (insert "#+FROM: " from "\n")
+                             (insert "#+TO: " to "\n")
+                             (insert "#+DATE: " (format-time-string "[%Y-%m-%d %a]") "\n")
+                             (insert "#+STARTUP: showall\n\n")
+                             (insert response))
+                           (sem-core-log "rss" digest-type "OK"
+                                         (format "Digest written to %s" target)
+                                         nil)
+                           (setq success t))
+                          ;; API error - log RETRY, do not write file
+                          ((plist-get info :error)
+                           (sem-core-log-error "rss" digest-type
+                                               (format "API error: %s" (plist-get info :error))
+                                               (plist-get context :prompt)
+                                               nil)
+                           (setq success nil))
+                          ;; Malformed/empty response - log DLQ, do not write file
+                          (t
+                           (sem-core-log-error "rss" digest-type
+                                               "Malformed or empty LLM response"
+                                               (plist-get context :prompt)
+                                               response)
+                           (setq success nil)))
+                         ;; Call the completion callback if provided
+                         (when callback
+                           (funcall callback success context))))
+                     (list :target-path target-path :title-prefix title-prefix
+                           :from-org from-org :to-org to-org :prompt prompt))
+
+    ;; Return immediately - processing continues asynchronously
+    t))
 
 ;;; Cron Entry Point
 

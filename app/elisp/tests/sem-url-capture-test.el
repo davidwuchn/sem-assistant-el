@@ -93,5 +93,45 @@
     (let ((prompt (sem-url-capture--build-user-prompt url content nil)))
       (should (string-match-p "\\* Summary\nSource: \\[\\[https://example.com/article\\]\\[https://example.com/article\\]\\]" prompt)))))
 
+;;; Tests for security masking (Task 4.5-4.6)
+
+(ert-deftest sem-url-capture-test-security-tokenizes-sensitive-blocks ()
+  "Test that text passed to LLM has sensitive blocks tokenized.
+Asserts that sem-security-sanitize-for-llm is called and tokens are used."
+  (let ((text "Normal text\n#+begin_sensitive\nSECRET_API_KEY=abc123\n#+end_sensitive\nMore text"))
+    (let* ((result (sem-security-sanitize-for-llm text))
+           (tokenized (car result))
+           (blocks (cdr result)))
+      ;; Tokenized text should NOT contain the sensitive content
+      (should-not (string-match-p "SECRET_API_KEY=abc123" tokenized))
+      ;; Tokenized text should contain a token
+      (should (string-match-p "<<SENSITIVE_[0-9]+>>" tokenized))
+      ;; Blocks should contain the original sensitive content
+      (should (not (null blocks)))
+      (should (assoc "<<SENSITIVE_1>>" blocks)))))
+
+(ert-deftest sem-url-capture-test-security-urls-defanged ()
+  "Test that LLM response passed to validate-and-save has URLs defanged (hxxp://).
+Asserts that sem-security-sanitize-urls replaces http:// with hxxp://."
+  (let ((response "Check out https://example.com and http://test.org/path"))
+    (let ((sanitized (sem-security-sanitize-urls response)))
+      ;; https should become hxxps
+      (should (string-match-p "hxxps://example\\.com" sanitized))
+      ;; http should become hxxp
+      (should (string-match-p "hxxp://test\\.org/path" sanitized))
+      ;; Original URLs should NOT be present
+      (should-not (string-match-p "https://example\\.com" sanitized))
+      (should-not (string-match-p "http://test\\.org/path" sanitized)))))
+
+(ert-deftest sem-url-capture-test-security-urls-defanged-in-context ()
+  "Test URL defanging in a realistic org-roam node context."
+  (let ((response ":PROPERTIES:\n:ID: test-id\n:END:\n#+title: Test\n* Summary\nSource: [[https://example.com][Link]]\n* Notes\nSee http://test.org for more."))
+    (let ((sanitized (sem-security-sanitize-urls response)))
+      (should (string-match-p "hxxps://example\\.com" sanitized))
+      (should (string-match-p "hxxp://test\\.org" sanitized))
+      ;; Org structure should be preserved
+      (should (string-match-p "^:PROPERTIES:" sanitized))
+      (should (string-match-p "^#\\+title: Test" sanitized)))))
+
 (provide 'sem-url-capture-test)
 ;;; sem-url-capture-test.el ends here

@@ -16,3 +16,6 @@
 
 # RSS morning digest - daily at 9:30 AM (after all elfeed updates complete)
 30 9 * * *	root	emacsclient -e "(sem-rss-generate-morning-digest)"
+
+# GitHub sync for org-roam - every 6 hours (00:00, 06:00, 12:00, 18:00)
+0 */6 * * *	root	emacsclient -e "(sem-git-sync-org-roam)"

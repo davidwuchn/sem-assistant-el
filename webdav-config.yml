@@ -1,0 +1,34 @@
+# WebDAV configuration for hacdias/webdav image
+# TLS certificates must be mounted from host
+# User credentials use environment variable substitution
+
+# Server configuration
+server:
+  # Listen on port 6065 (mapped to 443 externally)
+  port: 6065
+
+  # TLS configuration - certificates mounted from host
+  tls: true
+  cert: /certs/cert.pem
+  key: /certs/key.pem
+
+# User configuration with environment variable substitution
+users:
+  - username: '{env}WEBDAV_USERNAME'
+    password: '{env}WEBDAV_PASSWORD'
+    scope: /data
+    # Allow all permissions
+    permissions:
+      - read
+      - write
+      - create
+      - delete
+      - move
+
+# Logging
+log:
+  format: console
+  output: stdout
+  # Redact sensitive information in logs
+  redact:
+    - password

@@ -299,22 +299,27 @@ Returns the filepath on success, nil on validation failure."
 
 ;;; Non-Interactive Entry Point
 
-(defun sem-url-capture-process (url)
+(defun sem-url-capture-process (url &optional callback)
   "Fetch URL content and create an org-roam node via LLM.
 
 URL is the original article URL.
+CALLBACK is an optional function of (filepath context) called when complete.
+  - FILEPATH is the saved file path on success, nil on failure.
+  - CONTEXT contains :url and other metadata.
 
 This is the non-interactive entry point callable from sem-router.el.
 It orchestrates the full pipeline:
 1. Fetch content using trafilatura
 2. Sanitize text for token efficiency
-3. Extract umbrella nodes from org-roam database
-4. Build prompts for LLM
-5. Request LLM to generate org-roam node via sem-llm-request
-6. Validate and save the result
+3. Apply security masking (sanitize sensitive blocks for LLM)
+4. Extract umbrella nodes from org-roam database
+5. Build prompts for LLM
+6. Request LLM to generate org-roam node via sem-llm-request
+7. Apply URL sanitization to LLM response
+8. Validate and save the result
 
-Returns the saved filepath on success, nil on any failure.
-Errors are logged to /data/errors.org."
+Returns immediately (async). The CALLBACK is invoked when complete.
+If no callback is provided, processing still happens asynchronously."
   (condition-case err
       (progn
         (sem-core-log "url-capture" "URL-CAPTURE" "OK"
@@ -325,46 +330,57 @@ Errors are logged to /data/errors.org."
         (let ((raw-content (sem-url-capture--fetch-url url)))
           (if raw-content
               (let* ((sanitized (sem-url-capture--sanitize-text raw-content))
+                     ;; Apply security masking: sanitize sensitive blocks before LLM
+                     (security-result (sem-security-sanitize-for-llm sanitized))
+                     (tokenized-text (car security-result))
+                     (security-blocks (cdr security-result))
                      (umbrella-nodes (sem-url-capture--get-umbrella-nodes))
                      (system-prompt (sem-url-capture--build-system-prompt))
-                     (user-prompt (sem-url-capture--build-user-prompt url sanitized umbrella-nodes))
-                     (result nil))
+                     (user-prompt (sem-url-capture--build-user-prompt url tokenized-text umbrella-nodes)))
 
                 ;; Request LLM via sem-llm-request with callback
                 (require 'sem-llm)
-                (let ((done nil))
-                  (sem-llm-request user-prompt system-prompt
-                                   (lambda (response info context)
-                                     "Callback for sem-llm-request.
-Calls sem-url-capture--validate-and-save with the response."
+                (sem-llm-request user-prompt system-prompt
+                                 (lambda (response info context)
+                                   "Callback for sem-llm-request.
+Applies URL sanitization to LLM response, then calls sem-url-capture--validate-and-save.
+Note: sem-security-restore-from-llm is NOT called because LLM output is a new org document."
+                                   (let ((filepath nil)
+                                         (url (plist-get context :url)))
                                      (if (and response (not (string-empty-p response)))
-                                         (setq result (sem-url-capture--validate-and-save response url))
+                                         ;; Apply URL sanitization before validation
+                                         (let ((sanitized-response (sem-security-sanitize-urls response)))
+                                           (setq filepath (sem-url-capture--validate-and-save sanitized-response url)))
                                        (progn
                                          (sem-core-log-error "url-capture" "URL-CAPTURE"
                                                              (format "LLM request failed: %s"
                                                                      (plist-get info :error))
                                                              url
                                                              response)
-                                         (setq result nil)))
-                                     (setq done t))
-                                   nil)
-                  
-                  ;; Wait for callback to complete (synchronous for now)
-                  ;; TODO: Convert to async when sem-llm is fully integrated
-                  (while (not done)
-                    (sit-for 0.1)))
-                
-                result)
+                                         (setq filepath nil)))
+                                     ;; Call the completion callback if provided
+                                     (when callback
+                                       (funcall callback filepath context))))
+                                 (list :security-blocks security-blocks :url url))
+
+                ;; Return immediately - processing continues asynchronously
+                t)
             (sem-core-log-error "url-capture" "URL-CAPTURE"
                                 "Failed to fetch content"
                                 url
                                 nil)
+            ;; Call callback with failure if provided
+            (when callback
+              (funcall callback nil (list :url url)))
             nil)))
     (error
      (sem-core-log-error "url-capture" "URL-CAPTURE"
                          (error-message-string err)
                          url
                          nil)
+     ;; Call callback with failure if provided
+     (when callback
+       (funcall callback nil (list :url url)))
      nil)))
 
 (provide 'sem-url-capture)

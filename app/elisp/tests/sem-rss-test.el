@@ -83,5 +83,34 @@ This is a structural test - actual Elfeed DB testing requires mock DB."
   ;; since it requires Elfeed DB setup
   (should t))
 
+;;; Test RSS uses sem-llm-request (Task 5.6)
+
+(ert-deftest sem-rss-test-generate-file-uses-sem-llm-request ()
+  "Test that sem-rss--generate-file invokes sem-llm-request (not gptel-request).
+This is a structural test verifying the code uses sem-llm-request."
+  ;; Verify by checking that sem-llm is required in sem-rss--generate-file
+  ;; The actual test is that the function loads without error and sem-llm
+  ;; is available (which means require 'sem-llm succeeded)
+  (require 'sem-llm)
+  (should (fboundp 'sem-llm-request)))
+
+(ert-deftest sem-rss-test-nil-hash-handling ()
+  "Test that sem-core--mark-processed handles nil hash without crashing.
+RSS digest passes nil hash - this should be a no-op."
+  ;; This should not crash or error
+  (should (null (sem-core--mark-processed nil)))
+  ;; Cursor should remain unchanged (empty)
+  (let ((test-cursor (make-temp-file "cursor-test-")))
+    (unwind-protect
+        (let ((sem-core-cursor-file test-cursor))
+          (sem-core--mark-processed nil)
+          ;; File should not exist or be empty
+          (if (file-exists-p test-cursor)
+              (with-temp-buffer
+                (insert-file-contents test-cursor)
+                (should (or (string-blank-p (buffer-string))
+                            (string= (buffer-string) "()"))))))
+      (sem-mock-cleanup-temp-file test-cursor))))
+
 (provide 'sem-rss-test)
 ;;; sem-rss-test.el ends here

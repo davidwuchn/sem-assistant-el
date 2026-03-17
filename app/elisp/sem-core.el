@@ -23,6 +23,9 @@
 (defconst sem-core-cursor-file "/data/.sem-cursor.el"
   "Path to the cursor tracking file for processed headlines.")
 
+(defconst sem-core-retries-file "/data/.sem-retries.el"
+  "Path to the retry tracking file for failed LLM requests.")
+
 (defconst sem-core-inbox-file "/data/inbox-mobile.org"
   "Path to the inbox file synced by Orgzly.")
 
@@ -215,16 +218,106 @@ Uses the headline title and properties for deterministic hashing."
     (secure-hash 'sha256 (concat title "|" tags))))
 
 (defun sem-core--mark-processed (hash)
-  "Mark a headline HASH as processed in the cursor file."
-  (let ((cursor (sem-core--read-cursor)))
-    (unless (assoc hash cursor)
-      (push (cons hash t) cursor))
-    (sem-core--write-cursor cursor)))
+  "Mark a headline HASH as processed in the cursor file.
+If HASH is nil, this is a no-op (for RSS digest which has no per-entry tracking)."
+  (when hash
+    (let ((cursor (sem-core--read-cursor)))
+      (unless (assoc hash cursor)
+        (push (cons hash t) cursor))
+      (sem-core--write-cursor cursor))))
 
 (defun sem-core--is-processed (hash)
   "Check if a headline HASH is already processed."
   (let ((cursor (sem-core--read-cursor)))
     (when (assoc hash cursor) t)))
+
+;;; Retry Tracking
+
+(defun sem-core--read-retries ()
+  "Read the retries file and return an alist of (hash . count).
+Returns nil if file doesn't exist or is empty."
+  (let ((retries-file sem-core-retries-file))
+    (if (file-exists-p retries-file)
+        (with-temp-buffer
+          (insert-file-contents retries-file)
+          (goto-char (point-min))
+          (condition-case nil
+              (let ((content (read (current-buffer))))
+                (when (listp content)
+                  (cl-remove-if-not (lambda (entry)
+                                      (and (consp entry) 
+                                           (stringp (car entry))
+                                           (numberp (cdr entry))))
+                                    content)))
+            (end-of-file nil)
+            (error nil)))
+      nil)))
+
+(defun sem-core--write-retries (retries-alist)
+  "Write RETRIES-ALIST to the retries file.
+Uses atomic write via temp file and rename."
+  (let* ((retries-file sem-core-retries-file)
+         (tmp-file (concat retries-file ".tmp")))
+    (make-directory (file-name-directory retries-file) t)
+    (with-temp-file tmp-file
+      (insert "(")
+      (dolist (entry retries-alist)
+        (insert "\n  (\"" (car entry) "\" . " (number-to-string (cdr entry)) ")"))
+      (insert "\n)\n"))
+    (rename-file tmp-file retries-file t)))
+
+(defun sem-core--get-retry-count (hash)
+  "Get the retry count for HASH.
+Returns 0 if hash has no recorded retries."
+  (when hash
+    (let ((retries (sem-core--read-retries)))
+      (or (cdr (assoc hash retries)) 0))))
+
+(defun sem-core--increment-retry (hash)
+  "Increment the retry count for HASH.
+Returns the new retry count."
+  (when hash
+    (let* ((retries (sem-core--read-retries))
+           (current (or (cdr (assoc hash retries)) 0))
+           (new-count (1+ current)))
+      ;; Remove old entry if exists
+      (setq retries (cl-remove hash retries :key #'car :test #'equal))
+      ;; Add new entry
+      (push (cons hash new-count) retries)
+      ;; Write back
+      (sem-core--write-retries retries)
+      new-count)))
+
+(defun sem-core--clear-retry (hash)
+  "Clear the retry count for HASH.
+Call this when an item succeeds or is moved to DLQ."
+  (when hash
+    (let ((retries (sem-core--read-retries)))
+      (setq retries (cl-remove hash retries :key #'car :test #'equal))
+      (sem-core--write-retries retries))))
+
+(defun sem-core--should-retry-p (hash)
+  "Check if HASH should be retried.
+Returns t if retry count is less than max (3), nil otherwise."
+  (when hash
+    (let ((count (sem-core--get-retry-count hash)))
+      (< count 3))))
+
+(defun sem-core--mark-dlq (hash &optional title response)
+  "Mark HASH as moved to DLQ (Dead Letter Queue).
+Clears retry count and optionally logs to errors.org.
+TITLE and RESPONSE are optional for error logging."
+  (when hash
+    ;; Clear retry count
+    (sem-core--clear-retry hash)
+    ;; Mark as processed so it's not retried
+    (sem-core--mark-processed hash)
+    ;; Log to errors.org if title provided
+    (when title
+      (sem-core-log-error "core" "INBOX-ITEM"
+                          (format "Moved to DLQ after 3 retries: %s" title)
+                          title
+                          response))))
 
 ;;; Inbox Processing Entry Point
 
@@ -235,8 +328,6 @@ to the appropriate handler (url-capture or LLM task generation)."
   (condition-case err
       (progn
         (sem-core-log "core" "INBOX-ITEM" "OK" "Inbox processing started")
-        ;; TODO: Implement full inbox processing logic
-        ;; This will be implemented in sem-router.el
         (when (fboundp 'sem-router-process-inbox)
           (sem-router-process-inbox))
         (sem-core-log "core" "INBOX-ITEM" "OK" "Inbox processing completed"))
@@ -255,7 +346,6 @@ Only runs at 4AM window. Uses temp file + rename-file for atomicity."
              (cursor (sem-core--read-cursor))
              (purged-count 0)
              (hour (string-to-number (format-time-string "%H"))))
-
         ;; Check if we're in the 4AM window (04:00-04:59)
         (cond
          ;; Not 4AM - skip purge
@@ -269,52 +359,57 @@ Only runs at 4AM window. Uses temp file + rename-file for atomicity."
          ;; 4AM and file exists - do purge
          (t
           ;; Read inbox and filter out processed headlines
-          (with-temp-buffer
-            (insert-file-contents inbox-file)
-            (goto-char (point-min))
-
-            (let ((keep-headlines '())
-                  (current-headline nil)
-                  (current-content ""))
-
-              (while (not (eobp))
-                (if (looking-at "^\\*+ ")
-                    (progn
-                      ;; Save previous headline if any
-                      (when current-headline
-                        (let ((hash (sem-core--compute-headline-hash current-headline)))
-                          (if (sem-core--is-processed hash)
-                              (setq purged-count (1+ purged-count))
-                            (push current-headline keep-headlines))))
-                      ;; Start new headline
-                      (let ((start (point)))
-                        (end-of-line)
-                        (setq current-headline (buffer-substring-no-properties start (point)))))
-                      (setq current-content ""))
-                  (when current-headline
-                    (setq current-content (concat current-content (thing-at-point 'line)))))
-                (forward-line 1))
-
-              ;; Don't forget the last headline
-              (when current-headline
-                (let ((hash (sem-core--compute-headline-hash current-headline)))
-                  (if (sem-core--is-processed hash)
-                      (setq purged-count (1+ purged-count))
-                    (push current-headline keep-headlines)))))
-
-              ;; Write purged content to temp file
-              (with-temp-file tmp-file
-                (dolist (headline (nreverse keep-headlines))
-                  (insert headline "\n"))))
-
+          ;; Use region-based copy to preserve full headline subtrees
+          (let ((keep-headlines '()))
+            (with-temp-buffer
+              (insert-file-contents inbox-file)
+              (goto-char (point-min))
+              (let ((current-headline-start nil)
+                    (current-headline-title nil)
+                    (current-headline-tags nil)
+                    (current-subtree nil))
+                (while (not (eobp))
+                  (if (looking-at "^\\*+ ")
+                      (progn
+                        ;; Save previous headline subtree if any
+                        (when current-headline-title
+                          (let ((hash (secure-hash 'sha256 (concat current-headline-title "|" (or (string-join current-headline-tags ":") "")))))
+                            (if (sem-core--is-processed hash)
+                                (setq purged-count (1+ purged-count))
+                              (push current-subtree keep-headlines))))
+                        ;; Start new headline - capture full subtree
+                        (setq current-headline-start (point))
+                        ;; Move past the "* " prefix
+                        (goto-char (match-end 0))
+                        (let ((start (point)))
+                          (end-of-line)
+                          (setq current-headline-title (string-trim (buffer-substring-no-properties start (point)))))
+                        ;; Extract tags from title
+                        (setq current-headline-tags
+                              (save-match-data
+                                (when (string-match ":\\([[:word:]:]+\\):$" current-headline-title)
+                                  (split-string (match-string 1 current-headline-title) ":" t))))
+                        ;; Initialize subtree with title line
+                        (setq current-subtree (concat current-headline-title "\n")))
+                    ;; Collect body lines for current subtree
+                    (when current-headline-start
+                      (setq current-subtree (concat current-subtree (thing-at-point 'line)))))
+                  (forward-line 1))
+                ;; Don't forget the last headline subtree
+                (when current-headline-title
+                  (let ((hash (secure-hash 'sha256 (concat current-headline-title "|" (or (string-join current-headline-tags ":") "")))))
+                    (if (sem-core--is-processed hash)
+                        (setq purged-count (1+ purged-count))
+                      (push current-subtree keep-headlines)))))
+            ;; Write purged content to temp file - preserve full subtrees
+            (with-temp-file tmp-file
+              (dolist (subtree (nreverse keep-headlines))
+                (insert subtree))))
             ;; Atomic rename
-            (rename-file tmp-file inbox-file t))
-
-          (sem-core-log "purge" "PURGE" "OK" (format "Removed %d nodes from inbox-mobile.org" purged-count))
-          (message "SEM: Purged %d processed headlines" purged-count)))
-    (error
-     (sem-core-log-error "purge" "PURGE" (error-message-string err) nil)
-     (message "SEM: Purge error: %s" (error-message-string err))))
+            (rename-file tmp-file inbox-file t)
+            (sem-core-log "purge" "PURGE" "OK" (format "Removed %d nodes from inbox-mobile.org" purged-count))
+            (message "SEM: Purged %d processed headlines" purged-count)))))
+    (t (message "SEM: Purge error: %s" (error-message-string err)))))
 
 (provide 'sem-core)
 ;;; sem-core.el ends here
