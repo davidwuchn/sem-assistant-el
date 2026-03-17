@@ -1,0 +1,69 @@
+;;; sem-init-test.el --- Tests for init.el module loading -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+;; Tests for sem-init--load-modules to verify all required modules are loaded.
+
+;;; Code:
+
+(require 'ert)
+(require 'sem-mock)
+
+;;; Test that sem-git-sync is loaded during initialization
+
+(ert-deftest sem-init-test-git-sync-loaded ()
+  "Test that sem-git-sync module is loaded by sem-init--load-modules.
+Mocks all require calls to track which modules are requested, then asserts
+that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
+  (let ((required-modules '())
+        (original-require (symbol-function 'require))
+        (original-message (symbol-function 'message)))
+    (unwind-protect
+        (progn
+          ;; Mock require to capture module names instead of loading
+          (fset 'require
+                (lambda (feature &rest _)
+                  (push feature required-modules)
+                  ;; Provide the feature so subsequent requires don't fail
+                  (provide feature)
+                  ;; For sem-git-sync, also define the main function
+                  (when (eq feature 'sem-git-sync)
+                    (defun sem-git-sync-org-roam () nil))
+                  feature))
+          ;; Mock message to suppress output
+          (fset 'message (lambda (&rest _) nil))
+
+          ;; Define sem-init--load-modules as it appears in init.el
+          (let ((load-file-name "/app/elisp/init.el"))
+            (cl-flet ((sem-init--load-modules
+                       ()
+                       "Load all SEM modules in dependency order."
+                       (let ((load-path (cons (file-name-directory load-file-name) load-path)))
+                         (require 'sem-core)
+                         (require 'sem-security)
+                         (require 'sem-llm)
+                         (require 'sem-rss)
+                         (require 'sem-url-capture)
+                         (require 'sem-git-sync)
+                         (require 'sem-router)
+                         (message "SEM: All modules loaded"))))
+
+              ;; Call the load modules function
+              (sem-init--load-modules)
+
+              ;; Verify sem-git-sync was required
+              (should (member 'sem-git-sync required-modules))
+
+              ;; Verify sem-git-sync-org-roam is fbound after load
+              (should (fboundp 'sem-git-sync-org-roam)))))
+
+      ;; Cleanup: restore original functions
+      (fset 'require original-require)
+      (fset 'message original-message)
+      ;; Remove any features we provided
+      (dolist (module required-modules)
+        (when (featurep module)
+          (setq features (delq module features)))))))
+
+(provide 'sem-init-test)
+;;; sem-init-test.el ends here

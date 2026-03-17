@@ -24,19 +24,20 @@ The system SHALL replace all `#+begin_sensitive` / `#+end_sensitive` blocks with
 - **THEN** the blocks alist is stored in the context plist under `:security-blocks`
 
 ### Requirement: Tokens restored in output before writing
-The system SHALL restore original sensitive content from the token map after receiving LLM output and before writing to disk. The detokenization SHALL use the same token map from the input phase. For `sem-url-capture-process`, `sem-security-restore-from-llm` SHALL NOT be called because LLM output is a new org document, not a transformed version of the input.
+The system SHALL restore original sensitive content from the token map after receiving LLM output and before writing to disk. The detokenization SHALL use the same token map from the input phase. For `sem-url-capture-process`, `sem-security-restore-from-llm` SHALL be called on the raw LLM response string, using the `:security-blocks` from context, before passing the result to `sem-url-capture--validate-and-save`.
 
 #### Scenario: Tokens restored after LLM response
-- **WHEN** LLM output contains `{{SEC_ID_xxx}}` tokens
+- **WHEN** LLM output contains `{{SEC_ID_xxx}}` or `<<SENSITIVE_xxx>>` tokens
 - **THEN** tokens are replaced with original sensitive content before writing
 
 #### Scenario: Round-trip preserves original
 - **WHEN** content is tokenized, sent to LLM, and detokenized
 - **THEN** the original sensitive text appears unchanged in the output
 
-#### Scenario: restore-from-llm NOT called in url-capture
+#### Scenario: restore-from-llm called before validate-and-save in url-capture
 - **WHEN** `sem-url-capture-process` receives LLM response
-- **THEN** `sem-security-restore-from-llm` is explicitly NOT called
+- **THEN** `sem-security-restore-from-llm` is called before `sem-url-capture--validate-and-save`
+- **AND** the `blocks` argument is `(plist-get context :security-blocks)`
 
 ### Requirement: No sensitive content reaches LLM API
 The system SHALL ensure that no content between `#+begin_sensitive` and `#+end_sensitive` markers is ever transmitted to the LLM API. This is a hard requirement.

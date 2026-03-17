@@ -133,5 +133,91 @@ Asserts that sem-security-sanitize-urls replaces http:// with hxxp://."
       (should (string-match-p "^:PROPERTIES:" sanitized))
       (should (string-match-p "^#\\+title: Test" sanitized)))))
 
+;;; Tests for sensitive content restoration (Task 4.5-4.6)
+
+(ert-deftest sem-url-capture-test-restore-from-llm-unit ()
+  "Test that sem-security-restore-from-llm correctly restores sensitive blocks.
+Given a raw LLM response containing a <<SENSITIVE_1>> token and a security-blocks
+alist, the function should return a string containing the restored SECRET and
+not containing the token."
+  (let* ((llm-response "Here is the summary:\n\n<<SENSITIVE_1>>\n\nMore content here")
+         (security-blocks '(("<<SENSITIVE_1>>" . "#+begin_sensitive\nSECRET_API_KEY=abc123\n#+end_sensitive")))
+         (restored (sem-security-restore-from-llm llm-response security-blocks)))
+    ;; Restored text should contain the secret content
+    (should (string-match-p "SECRET_API_KEY=abc123" restored))
+    ;; Restored text should NOT contain the token
+    (should-not (string-match-p "<<SENSITIVE_1>>" restored))
+    ;; Original structure should be preserved
+    (should (string-match-p "Here is the summary:" restored))
+    (should (string-match-p "More content here" restored))))
+
+;;; Integration test for URL capture restore pipeline (Task 5.1-5.5)
+
+(ert-deftest sem-url-capture-test-restore-integration ()
+  "Test that sem-url-capture-process restores sensitive blocks before saving.
+Stubs sem-llm-request to return a response containing <<SENSITIVE_1>> token,
+runs the full callback path with pre-populated :security-blocks in context,
+and asserts the saved file contains the restored sensitive block text."
+  (let* ((test-org-roam-dir (make-temp-file "org-roam-test-" t))
+         (test-log-file (sem-mock-temp-file "* 2026\n** 03 (March)\n*** 2026-03-16\n"))
+         (test-errors-file (sem-mock-temp-file "* Errors\n"))
+         (llm-response-with-token ":PROPERTIES:\n:ID: test-restore-id\n:END:\n#+title: Test Restore Article\n#+ROAM_REFS: https://example.com/test\n#+filetags: :article:\n\n* Summary\nSource: [[https://example.com/test][https://example.com/test]]\nThe secret is: <<SENSITIVE_1>>\n\n* Key Takeaways\n- Point 1")
+         (security-blocks '(("<<SENSITIVE_1>>" . "#+begin_sensitive\nSECRET_CONTENT_12345\n#+end_sensitive")))
+         (callback-called nil)
+         (saved-filepath nil))
+    (unwind-protect
+        (progn
+          ;; Set up mocks
+          (setq org-roam-directory test-org-roam-dir)
+          (setq sem-core-log-file test-log-file)
+          (setq sem-core-errors-file test-errors-file)
+
+          ;; Mock sem-llm-request to immediately call callback with tokenized response
+          ;; The callback receives (response info context), where context has :security-blocks
+          (cl-letf (((symbol-function 'sem-llm-request)
+                     (lambda (user-prompt system-prompt callback context)
+                       ;; Merge the security-blocks into the context for the callback
+                       (let ((context-with-blocks (plist-put context :security-blocks security-blocks)))
+                         (funcall callback llm-response-with-token (list :status "success") context-with-blocks))))
+                    ((symbol-function 'sem-url-capture--fetch-url)
+                     (lambda (_) "Test article content"))
+                    ((symbol-function 'sem-url-capture--get-umbrella-nodes)
+                     (lambda () nil))
+                    ((symbol-function 'org-roam-db-sync)
+                     (lambda () nil)))
+
+            ;; Run the capture process with callback to capture result
+            (sem-url-capture-process
+             "https://example.com/test"
+             (lambda (filepath context)
+               (setq callback-called t)
+               (setq saved-filepath filepath)))
+
+            ;; Wait a bit for async processing (in this case it's sync due to mocks)
+            (sit-for 0.1)
+
+            ;; Verify callback was called and file was saved
+            (should callback-called)
+            (should saved-filepath)
+            (should (file-exists-p saved-filepath))
+
+            ;; Read the saved file content
+            (let ((saved-content (with-temp-buffer
+                                   (insert-file-contents saved-filepath)
+                                   (buffer-string))))
+              ;; Saved file should contain the restored secret content
+              (should (string-match-p "SECRET_CONTENT_12345" saved-content))
+              ;; Saved file should NOT contain the token
+              (should-not (string-match-p "<<SENSITIVE_1>>" saved-content))
+              ;; Other content should be preserved
+              (should (string-match-p "Test Restore Article" saved-content))
+              (should (string-match-p "Point 1" saved-content)))))
+
+      ;; Cleanup
+      (sem-mock-cleanup-temp-file test-log-file)
+      (sem-mock-cleanup-temp-file test-errors-file)
+      (when (file-directory-p test-org-roam-dir)
+        (delete-directory test-org-roam-dir t)))))
+
 (provide 'sem-url-capture-test)
 ;;; sem-url-capture-test.el ends here

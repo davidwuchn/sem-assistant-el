@@ -153,6 +153,7 @@ sem-core must load first as it defines sem-core-log."
     (require 'sem-llm)
     (require 'sem-rss)
     (require 'sem-url-capture)
+    (require 'sem-git-sync)
     (require 'sem-router)
     (message "SEM: All modules loaded")))
 

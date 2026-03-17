@@ -342,13 +342,13 @@ If no callback is provided, processing still happens asynchronously."
                 (sem-llm-request user-prompt system-prompt
                                  (lambda (response info context)
                                    "Callback for sem-llm-request.
-Calls sem-url-capture--validate-and-save directly without URL sanitization.
-Note: sem-security-restore-from-llm is NOT called because LLM output is a new org document."
+Calls sem-url-capture--validate-and-save with restored sensitive content."
                                    (let ((filepath nil)
                                          (url (plist-get context :url)))
                                      (if (and response (not (string-empty-p response)))
-                                         ;; Validate and save directly without URL sanitization
-                                         (setq filepath (sem-url-capture--validate-and-save response url))
+                                         ;; Restore sensitive blocks before validation
+                                         (let ((restored-response (sem-security-restore-from-llm response (plist-get context :security-blocks))))
+                                           (setq filepath (sem-url-capture--validate-and-save restored-response url)))
                                        (progn
                                          (sem-core-log-error "url-capture" "URL-CAPTURE"
                                                              (format "LLM request failed: %s"
