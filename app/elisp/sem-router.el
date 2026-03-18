@@ -22,6 +22,60 @@
 (defconst sem-router-task-tags '("work" "family" "routine" "opensource")
   "Allowed tags for task headlines. Must be one of these values.")
 
+;;; Mutex for tasks.org writes
+
+(defvar sem-router--tasks-write-lock nil
+  "Boolean flag to serialize concurrent writes to tasks.org.
+When non-nil, another callback is currently writing to tasks.org.
+Each callback must acquire this lock before writing and release after.
+Lock is never held across retries - each attempt acquires/releases independently.")
+
+(defvar sem-router--max-write-retries 10
+  "Maximum number of retry attempts for tasks.org write lock.")
+
+(defvar sem-router--write-retry-delay 0.5
+  "Delay in seconds between retries for tasks.org write lock.")
+
+(defun sem-router--acquire-tasks-write-lock ()
+  "Attempt to acquire the tasks.org write lock.
+Returns t if lock acquired, nil if already held."
+  (if sem-router--tasks-write-lock
+      nil
+    (setq sem-router--tasks-write-lock t)
+    t))
+
+(defun sem-router--release-tasks-write-lock ()
+  "Release the tasks.org write lock.
+Always sets the lock to nil."
+  (setq sem-router--tasks-write-lock nil))
+
+(defun sem-router--with-tasks-write-lock (headline callback retry-count)
+  "Execute CALLBACK with tasks.org write lock held.
+If lock is held, re-schedules with 0.5s delay up to 10 retries.
+After 10 retries, routes to DLQ via sem-core-log-error.
+HEADLINE is the headline plist for error logging.
+RETRY-COUNT is the current retry attempt number."
+  (if (sem-router--acquire-tasks-write-lock)
+      ;; Lock acquired - execute callback with unwind-protect
+      (unwind-protect
+          (funcall callback)
+        (sem-router--release-tasks-write-lock))
+    ;; Lock held - retry or DLQ
+    (if (>= retry-count sem-router--max-write-retries)
+        ;; Max retries reached - route to DLQ
+        (progn
+          (sem-core-log-error "router" "INBOX-ITEM"
+                              (format "Tasks.org write failed after %d retries (lock contention)"
+                                      sem-router--max-write-retries)
+                              (plist-get headline :title)
+                              nil)
+          ;; Mark as processed to prevent infinite retry
+          (sem-router--mark-processed (plist-get headline :hash)))
+      ;; Schedule retry
+      (run-with-timer sem-router--write-retry-delay nil
+                      (lambda ()
+                        (sem-router--with-tasks-write-lock headline callback (1+ retry-count)))))))
+
 ;;; Headline Parsing
 
 (defun sem-router--extract-headline-body (headline-element)
@@ -186,10 +240,12 @@ Returns immediately (async). The CALLBACK is invoked when complete."
              (sanitized-body nil))
 
         ;; Sanitize body content if present
+        ;; sem-security-sanitize-for-llm returns (sanitized-text . blocks-alist)
         (when body
           (require 'sem-security)
-          (setq security-blocks (sem-security-sanitize-for-llm body))
-          (setq sanitized-body (cdr (assoc 'sanitized security-blocks))))
+          (let ((sanitize-result (sem-security-sanitize-for-llm body)))
+            (setq sanitized-body (car sanitize-result))
+            (setq security-blocks (cdr sanitize-result))))
 
         ;; Build the LLM prompt for task processing
         (let* ((system-prompt "You are a Task Management assistant. Your ONLY task is to output a valid Org-mode TODO entry based on the provided task description.
@@ -241,13 +297,14 @@ HEADLINE: * %s %s"
           (sem-llm-request user-prompt system-prompt
                            (lambda (response info context)
                              "Callback for sem-llm-request.
-Validates the LLM response and writes to tasks.org."
+Validates the LLM response and writes to tasks.org with mutex lock."
                              (let ((headline-hash (plist-get context :hash))
                                    (headline-title (plist-get context :title))
                                    (injected-uuid (plist-get context :injected-id))
                                    (stored-security-blocks (plist-get context :security-blocks))
                                    (restored-response response)
-                                   (success nil))
+                                   (success nil)
+                                   (headline-context context))
                                ;; Restore security blocks if they were stored
                                (when stored-security-blocks
                                  (require 'sem-security)
@@ -256,20 +313,24 @@ Validates the LLM response and writes to tasks.org."
                                (if (and restored-response (not (string-empty-p restored-response)))
                                    ;; Validate and process response
                                    (if (sem-router--validate-task-response restored-response injected-uuid)
-                                       ;; Valid response - write to tasks.org
-                                       (if (sem-router--write-task-to-file restored-response)
-                                           (progn
-                                             (sem-core-log "router" "INBOX-ITEM" "OK"
-                                                           (format "Task written to tasks.org: %s" headline-title)
-                                                           nil)
-                                             (sem-router--mark-processed headline-hash)
-                                             (setq success t))
-                                         (progn
-                                           (sem-core-log-error "router" "INBOX-ITEM"
-                                                               "Failed to write task to file"
-                                                               headline-title
-                                                               restored-response)
-                                           (setq success nil)))
+                                       ;; Valid response - write to tasks.org with lock
+                                       (sem-router--with-tasks-write-lock
+                                        headline-context
+                                        (lambda ()
+                                          (if (sem-router--write-task-to-file restored-response)
+                                              (progn
+                                                (sem-core-log "router" "INBOX-ITEM" "OK"
+                                                              (format "Task written to tasks.org: %s" headline-title)
+                                                              nil)
+                                                (sem-router--mark-processed headline-hash)
+                                                (setq success t))
+                                            (progn
+                                              (sem-core-log-error "router" "INBOX-ITEM"
+                                                                  "Failed to write task to file"
+                                                                  headline-title
+                                                                  restored-response)
+                                              (setq success nil))))
+                                        0)
                                      ;; Malformed output - send to DLQ
                                      (progn
                                        (sem-core-log-error "router" "INBOX-ITEM"

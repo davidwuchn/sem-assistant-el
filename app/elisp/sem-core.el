@@ -368,7 +368,9 @@ to the appropriate handler (url-capture or LLM task generation)."
 
 (defun sem-core-purge-inbox ()
   "Atomic purge of processed headlines from inbox-mobile.org.
-Only runs at 4AM window. Uses temp file + rename-file for atomicity."
+Only runs at 4AM window. Uses temp file + rename-file for atomicity.
+Hash computation matches sem-router--parse-headlines format:
+(concat title \"|\" space-joined-tags \"|\" body)"
   (condition-case err
       (let* ((inbox-file sem-core-inbox-file)
              (tmp-file (concat inbox-file ".purge.tmp"))
@@ -396,13 +398,19 @@ Only runs at 4AM window. Uses temp file + rename-file for atomicity."
               (let ((current-headline-start nil)
                     (current-headline-title nil)
                     (current-headline-tags nil)
+                    (current-headline-body nil)
                     (current-subtree nil))
                 (while (not (eobp))
                   (if (looking-at "^\\*+ ")
                       (progn
                         ;; Save previous headline subtree if any
                         (when current-headline-title
-                          (let ((hash (secure-hash 'sha256 (concat current-headline-title "|" (or (string-join current-headline-tags ":") "")))))
+                          (let* ((tags-str (if current-headline-tags
+                                               (string-join current-headline-tags " ")
+                                             ""))
+                                 (body-str (or current-headline-body ""))
+                                 (hash (secure-hash 'sha256
+                                                    (concat current-headline-title "|" tags-str "|" body-str))))
                             (if (sem-core--is-processed hash)
                                 (setq purged-count (1+ purged-count))
                               (push current-subtree keep-headlines))))
@@ -413,20 +421,33 @@ Only runs at 4AM window. Uses temp file + rename-file for atomicity."
                         (let ((start (point)))
                           (end-of-line)
                           (setq current-headline-title (string-trim (buffer-substring-no-properties start (point)))))
-                        ;; Extract tags from title
+                        ;; Extract tags from title (without colons, space-joined for hash)
                         (setq current-headline-tags
                               (save-match-data
                                 (when (string-match ":\\([[:word:]:]+\\):$" current-headline-title)
                                   (split-string (match-string 1 current-headline-title) ":" t))))
+                        ;; Reset body for new headline
+                        (setq current-headline-body nil)
                         ;; Initialize subtree with title line
                         (setq current-subtree (concat current-headline-title "\n")))
                     ;; Collect body lines for current subtree
                     (when current-headline-start
-                      (setq current-subtree (concat current-subtree (thing-at-point 'line)))))
+                      (let ((line (thing-at-point 'line)))
+                        (setq current-subtree (concat current-subtree line))
+                        ;; Accumulate body content (exclude headline lines)
+                        (unless (string-match-p "^\\*+ " line)
+                          (setq current-headline-body
+                                (concat (or current-headline-body "")
+                                        (string-trim-right line "\\n")))))))
                   (forward-line 1))
                 ;; Don't forget the last headline subtree
                 (when current-headline-title
-                  (let ((hash (secure-hash 'sha256 (concat current-headline-title "|" (or (string-join current-headline-tags ":") "")))))
+                  (let* ((tags-str (if current-headline-tags
+                                       (string-join current-headline-tags " ")
+                                     ""))
+                         (body-str (or current-headline-body ""))
+                         (hash (secure-hash 'sha256
+                                            (concat current-headline-title "|" tags-str "|" body-str))))
                     (if (sem-core--is-processed hash)
                         (setq purged-count (1+ purged-count))
                       (push current-subtree keep-headlines)))))

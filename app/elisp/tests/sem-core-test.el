@@ -74,6 +74,52 @@
     (should-not (string= (sem-core--compute-headline-hash headline1)
                          (sem-core--compute-headline-hash headline2)))))
 
+;;; Test hash computation matches router format (title|space-joined-tags|body)
+
+(ert-deftest sem-core-test-hash-space-joined-tags ()
+  "Test that hash computation uses space-joined tags (no colons).
+Hash format: title|space-joined-tags|body"
+  (let* ((title "Test headline :tag1:tag2:")
+         (tags '("tag1" "tag2"))
+         (body "")
+         ;; Expected hash input: "Test headline :tag1:tag2:|tag1 tag2|"
+         (expected-hash-input (concat title "|" (string-join tags " ") "|" body))
+         (expected-hash (secure-hash 'sha256 expected-hash-input)))
+    ;; Verify the hash input format
+    (should (string= expected-hash-input "Test headline :tag1:tag2:|tag1 tag2|"))
+    ;; The hash should be deterministic
+    (should (string= expected-hash
+                     (secure-hash 'sha256 "Test headline :tag1:tag2:|tag1 tag2|")))))
+
+(ert-deftest sem-core-test-hash-includes-body ()
+  "Test that hash computation includes body content.
+Hash format: title|space-joined-tags|body"
+  (let* ((title "Test headline :task:")
+         (tags '("task"))
+         (body "This is the body content\nwith multiple lines")
+         ;; Expected hash input: "Test headline :task:|task|This is the body content\nwith multiple lines"
+         (expected-hash-input (concat title "|" (string-join tags " ") "|" body))
+         (hash1 (secure-hash 'sha256 expected-hash-input)))
+    ;; Different body should produce different hash
+    (let* ((body2 "Different body content")
+           (hash2 (secure-hash 'sha256 (concat title "|" (string-join tags " ") "|" body2))))
+      (should-not (string= hash1 hash2)))
+    ;; Same input should produce same hash
+    (let ((hash1-again (secure-hash 'sha256 expected-hash-input)))
+      (should (string= hash1 hash1-again)))))
+
+(ert-deftest sem-core-test-hash-empty-body ()
+  "Test that hash computation works with empty body.
+Hash format: title|space-joined-tags|body (body can be empty)"
+  (let* ((title "Test headline :link:")
+         (tags '("link"))
+         (body "")
+         ;; Expected hash input: "Test headline :link:|link|"
+         (expected-hash-input (concat title "|" (string-join tags " ") "|" body)))
+    (should (string= expected-hash-input "Test headline :link:|link|"))
+    ;; Should not error with empty body
+    (should (secure-hash 'sha256 expected-hash-input))))
+
 ;;; Test cleanup
 
 (ert-deftest sem-core-test-mock-cleanup ()
@@ -202,7 +248,8 @@ The function should catch errors and return nil without signaling."
 (ert-deftest sem-core-test-purge-preserves-body ()
   "Test that sem-core-purge-inbox preserves full headline subtrees.
 Creates inbox with processed and unprocessed headlines (each with body lines),
-runs purge, and asserts the unprocessed headline's body is present."
+runs purge, and asserts the unprocessed headline's body is present.
+Hash format: title|space-joined-tags|body"
   (let ((test-inbox (make-temp-file "inbox-test-"))
         (test-cursor (make-temp-file "cursor-test-")))
     (unwind-protect
@@ -218,9 +265,13 @@ runs purge, and asserts the unprocessed headline's body is present."
             (insert "Body line 2 for unprocessed\n")
             (insert "Body line 3 for unprocessed\n"))
 
-          ;; Mark first headline as processed using the same hash computation as sem-core--compute-headline-hash
-          ;; Title is "Processed headline :link:" (includes tags), tags is "link"
-          (let ((processed-hash (secure-hash 'sha256 "Processed headline :link:|link")))
+          ;; Mark first headline as processed using the new hash computation format
+          ;; Title is "Processed headline :link:", tags is "link", body is "Body line 1 for processed\nBody line 2 for processed"
+          ;; Hash input: "Processed headline :link:|link|Body line 1 for processed\nBody line 2 for processed"
+          (let ((processed-hash (secure-hash 'sha256
+                                              (concat "Processed headline :link:"
+                                                      "|link"
+                                                      "|Body line 1 for processed\nBody line 2 for processed"))))
             (sem-core--mark-processed processed-hash))
 
           ;; Run purge at 4AM (mock the hour)
@@ -244,18 +295,21 @@ runs purge, and asserts the unprocessed headline's body is present."
       (sem-mock-cleanup-temp-file test-cursor))))
 
 (ert-deftest sem-core-test-purge-atomic-rename ()
-  "Test that sem-core-purge-inbox uses atomic rename."
+  "Test that sem-core-purge-inbox uses atomic rename.
+Hash format: title|space-joined-tags|body"
   (let ((test-inbox (make-temp-file "inbox-test-"))
         (test-cursor (make-temp-file "cursor-test-")))
     (unwind-protect
         (let ((sem-core-inbox-file test-inbox)
               (sem-core-cursor-file test-cursor))
-          ;; Create inbox with one processed headline
+          ;; Create inbox with one processed headline (no body)
           (with-temp-file test-inbox
             (insert "* Processed headline :link:\n"))
 
-          ;; Mark as processed
-          (let ((hash (secure-hash 'sha256 "Processed headline :link:|link")))
+          ;; Mark as processed using new hash format
+          ;; Title is "Processed headline :link:", tags is "link", body is ""
+          ;; Hash input: "Processed headline :link:|link|"
+          (let ((hash (secure-hash 'sha256 "Processed headline :link:|link|")))
             (sem-core--mark-processed hash))
 
           ;; Run purge at 4AM

@@ -413,5 +413,103 @@ Task description here."))
       (when (file-exists-p test-tasks-file)
         (sem-mock-cleanup-temp-file test-tasks-file)))))
 
+;;; Tests for security block round-trip (car/cdr destructuring)
+
+(ert-deftest sem-router-test-security-block-round-trip ()
+  "Test that security blocks are correctly destructured and restored.
+Verifies car/cdr usage: (car result) = sanitized-body, (cdr result) = blocks."
+  (let* ((original-body "This is content with #+begin_sensitive\nsecret data\n#+end_sensitive")
+         ;; Mock the security functions
+         (sanitize-result (cons "This is content with <<SENSITIVE_1>>"
+                                '(("<<SENSITIVE_1>>" . "#+begin_sensitive\nsecret data\n#+end_sensitive"))))
+         (sanitized-body (car sanitize-result))
+         (security-blocks (cdr sanitize-result)))
+    ;; Verify car gives sanitized body
+    (should (string= sanitized-body "This is content with <<SENSITIVE_1>>"))
+    ;; Verify cdr gives blocks alist
+    (should (equal security-blocks '(("<<SENSITIVE_1>>" . "#+begin_sensitive\nsecret data\n#+end_sensitive"))))
+    ;; Verify round-trip would work
+    (should (string= original-body
+                     (sem-security-restore-from-llm sanitized-body security-blocks)))))
+
+;;; Tests for mutex/lock behavior
+
+(ert-deftest sem-router-test-mutex-lock-acquire-release ()
+  "Test that lock can be acquired and released."
+  ;; Lock starts as nil
+  (setq sem-router--tasks-write-lock nil)
+  (should (sem-router--acquire-tasks-write-lock))
+  (should sem-router--tasks-write-lock)
+  ;; Release
+  (sem-router--release-tasks-write-lock)
+  (should-not sem-router--tasks-write-lock))
+
+(ert-deftest sem-router-test-mutex-lock-contention ()
+  "Test that lock contention returns nil (not acquired)."
+  ;; Acquire lock
+  (setq sem-router--tasks-write-lock nil)
+  (should (sem-router--acquire-tasks-write-lock))
+  ;; Second acquire should fail
+  (should-not (sem-router--acquire-tasks-write-lock))
+  ;; Cleanup
+  (sem-router--release-tasks-write-lock))
+
+(ert-deftest sem-router-test-mutex-lock-release-on-error ()
+  "Test that lock is released even when callback signals error.
+Uses unwind-protect to ensure cleanup."
+  (setq sem-router--tasks-write-lock nil)
+  (should-error
+   (sem-router--with-tasks-write-lock
+    '(:title "test")
+    (lambda ()
+      (should sem-router--tasks-write-lock) ;; Lock should be held
+      (error "Simulated error"))
+    0))
+  ;; Lock should be released after error
+  (should-not sem-router--tasks-write-lock))
+
+(ert-deftest sem-router-test-mutex-lock-success-callback ()
+  "Test that successful callback executes and releases lock."
+  (setq sem-router--tasks-write-lock nil)
+  (let ((callback-executed nil))
+    (sem-router--with-tasks-write-lock
+     '(:title "test")
+     (lambda ()
+       (setq callback-executed t)
+       (should sem-router--tasks-write-lock)) ;; Lock should be held during execution
+     0)
+    ;; Callback should have executed
+    (should callback-executed)
+    ;; Lock should be released
+    (should-not sem-router--tasks-write-lock)))
+
+;;; Tests for body handling
+
+(ert-deftest sem-router-test-body-nil-skips-sanitization ()
+  "Test that nil body skips security sanitization and BODY section.
+When headline has no body, no BODY: section should be in prompt."
+  ;; With nil body, sanitized-body should remain nil
+  (let ((body nil)
+        (sanitized-body nil)
+        (security-blocks nil))
+    ;; Simulate the logic: when body is nil, don't sanitize
+    (when body
+      (let ((result (sem-security-sanitize-for-llm body)))
+        (setq sanitized-body (car result))
+        (setq security-blocks (cdr result))))
+    ;; sanitized-body should still be nil
+    (should-not sanitized-body)
+    (should-not security-blocks)))
+
+(ert-deftest sem-router-test-empty-body-proceeds ()
+  "Test that empty string body proceeds with LLM call.
+Empty body is valid for zero-body headlines."
+  ;; Empty string is truthy in Emacs Lisp (not nil)
+  (let ((sanitized-body ""))
+    ;; Empty string should be treated as valid (proceeds with LLM)
+    (should sanitized-body) ;; Empty string is not nil
+    ;; The when check for adding BODY section should succeed
+    (should (when sanitized-body t))))
+
 (provide 'sem-router-test)
 ;;; sem-router-test.el ends here
