@@ -24,15 +24,14 @@
 
 ;; Load the lockfile to pin exact package revisions
 (straight-use-package 'use-package)
-(straight-thaw-versions)
 
 ;; Install required packages
 ;; Each call will fail if the package cannot be installed
-(straight-use-package 'gptel)
-(straight-use-package 'elfeed)
-(straight-use-package 'elfeed-org)
-(straight-use-package 'org-roam)
-(straight-use-package 'websocket)
+(straight-use-package '(gptel :commit "d221329ee3aa0198ad51c003a8d94b2af3a72dce"))
+(straight-use-package '(elfeed :commit "904b6d4feca78e7e5336d7dbb7b8ba53b8c4dac1"))
+(straight-use-package '(elfeed-org :commit "1197cf29f6604e572ec604874a8f50b58081176a"))
+(straight-use-package '(org-roam :commit "7ce95a286ba7d0383f2ab16ca4cdbf79901921ff"))
+(straight-use-package '(websocket :commit "2195e1247ecb04c30321702aa5f5618a51c329c5"))
 
 (message "bootstrap-packages.el: All packages installed successfully")
 
