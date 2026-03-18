@@ -7,6 +7,12 @@
 ;;; Code:
 
 (require 'ert)
+
+;; Set prompts directory before loading sem-rss so tests can find prompt files
+(setq sem-rss-prompts-dir
+      (expand-file-name "../../../data/prompts/"
+                        (file-name-directory load-file-name)))
+
 (require 'sem-rss)
 
 ;;; Tests for sem-rss--clean-text
@@ -53,6 +59,42 @@
       (let ((text (sem-rss--build-entries-text entries)))
         (should (<= (length text) 10))))))
 
+;;; Tests for prompt builders use template variables
+
+(ert-deftest sem-rss-test-general-prompt-uses-template ()
+  "Test that general prompt builder uses the template variable."
+  ;; The prompt should be built from the template
+  (let ((entries nil)
+        (days 1))
+    (let ((prompt (sem-rss--build-general-prompt entries days)))
+      ;; Should be a non-empty string
+      (should (stringp prompt))
+      (should (> (length prompt) 0))
+      ;; Should contain expected content from template
+      (should (string-match-p "RSS" prompt)))))
+
+(ert-deftest sem-rss-test-arxiv-prompt-uses-template ()
+  "Test that arxiv prompt builder uses the template variable."
+  ;; The prompt should be built from the template
+  (let ((entries nil)
+        (days 1))
+    (let ((prompt (sem-rss--build-arxiv-prompt entries days)))
+      ;; Should be a non-empty string
+      (should (stringp prompt))
+      (should (> (length prompt) 0))
+      ;; Should contain expected content from template
+      (should (string-match-p "Research" prompt)))))
+
+(ert-deftest sem-rss-test-prompt-templates-loaded ()
+  "Test that prompt templates are loaded at module load time."
+  ;; Both template variables should be non-nil and non-empty
+  (should sem-rss-general-prompt-template)
+  (should (stringp sem-rss-general-prompt-template))
+  (should (> (length sem-rss-general-prompt-template) 0))
+  (should sem-rss-arxiv-prompt-template)
+  (should (stringp sem-rss-arxiv-prompt-template))
+  (should (> (length sem-rss-arxiv-prompt-template) 0)))
+
 ;;; Tests for prompt builders contain category names
 
 (ert-deftest sem-rss-test-build-general-prompt-contains-categories ()
@@ -83,7 +125,7 @@ This is a structural test - actual Elfeed DB testing requires mock DB."
   ;; since it requires Elfeed DB setup
   (should t))
 
-;;; Test RSS uses sem-llm-request (Task 5.6)
+;;; Test RSS uses sem-llm-request
 
 (ert-deftest sem-rss-test-generate-file-uses-sem-llm-request ()
   "Test that sem-rss--generate-file invokes sem-llm-request (not gptel-request).
@@ -110,7 +152,7 @@ RSS digest passes nil hash - this should be a no-op."
                 (insert-file-contents test-cursor)
                 (should (or (string-blank-p (buffer-string))
                             (string= (buffer-string) "()"))))))
-      (sem-mock-cleanup-temp-file test-cursor))))
+      (delete-file test-cursor))))
 
 (provide 'sem-rss-test)
 ;;; sem-rss-test.el ends here

@@ -24,9 +24,40 @@
 
 ;;; Headline Parsing
 
+(defun sem-router--extract-headline-body (headline-element)
+  "Extract body text from HEADLINE-ELEMENT.
+Returns the concatenated text of all non-headline child elements,
+or nil if no body content exists. Nested sub-headlines are excluded."
+  (let ((contents-begin (org-element-property :contents-begin headline-element))
+        (contents-end (org-element-property :contents-end headline-element))
+        (body-text nil))
+    (when (and contents-begin contents-end (> contents-end contents-begin))
+      ;; Extract text between contents-begin and contents-end
+      ;; but stop at any nested headline
+      (setq body-text
+            (save-excursion
+              (save-restriction
+                (narrow-to-region contents-begin contents-end)
+                (goto-char (point-min))
+                ;; Skip any nested headlines at the start
+                (while (and (not (eobp)) (looking-at "^\\*+"))
+                  (forward-line 1))
+                ;; If we're not at end, extract the body
+                (if (eobp)
+                    nil
+                  (let ((start (point))
+                        (end (point-max)))
+                    ;; Find where nested headline starts (if any)
+                    (when (re-search-forward "^\\*+" nil t)
+                      (setq end (match-beginning 0)))
+                    (string-trim (buffer-substring-no-properties start end))))))))
+    (if (and body-text (not (string-empty-p body-text)))
+        body-text
+      nil)))
+
 (defun sem-router--parse-headlines ()
-  "Parse all headlines from inbox-mobile.org.
-Returns a list of headline plists with :title, :tags, :link, :point, :hash."
+  "Parse all headlines from inbox-mobile.org using org-element.
+Returns a list of headline plists with :title, :tags, :body, :link, :point, :hash."
   (cl-block sem-router--parse-headlines
     (unless (file-exists-p sem-router-inbox-file)
       (sem-core-log "router" "INBOX-ITEM" "SKIP" "inbox-mobile.org does not exist")
@@ -35,27 +66,27 @@ Returns a list of headline plists with :title, :tags, :link, :point, :hash."
     (let ((headlines '()))
       (with-temp-buffer
         (insert-file-contents sem-router-inbox-file)
-        (goto-char (point-min))
-
-        (while (re-search-forward "^\\*+ " nil t)
-          (let* ((start (match-beginning 0))
-                 (headline-start (match-end 0))  ; Position after "* "
-                 (line (buffer-substring-no-properties
-                        (line-beginning-position) (line-end-position)))
-                 (title (string-trim (substring line (- headline-start (line-beginning-position)))))
-                 (tags (save-excursion
-                         (when (re-search-forward ":\\([[:word:]:]+\\):" (line-end-position) t)
-                           (split-string (match-string 1) ":" t))))
-                 (link (when (string-match-p "^https?://" title)
-                         (substring-no-properties title)))
-                 (hash (secure-hash 'sha256 (concat title "|" (or (string-join tags ":") "")))))
-
-            (push (list :title title
-                        :tags tags
-                        :link link
-                        :point start
-                        :hash hash)
-                  headlines))))
+        (org-mode)
+        (let ((ast (org-element-parse-buffer)))
+          (org-element-map ast 'headline
+            (lambda (headline-element)
+              (let* ((begin (org-element-property :begin headline-element))
+                     (title (org-element-property :raw-value headline-element))
+                     (tags (org-element-property :tags headline-element))
+                     (body (sem-router--extract-headline-body headline-element))
+                     (link (when (string-match-p "^https?://" title)
+                             (substring-no-properties title)))
+                     (tags-str (if tags (string-join tags " ") ""))
+                     (body-str (or body ""))
+                     (hash (secure-hash 'sha256
+                                        (concat title "|" tags-str "|" body-str))))
+                (push (list :title title
+                            :tags tags
+                            :body body
+                            :link link
+                            :point begin
+                            :hash hash)
+                      headlines))))))
 
       (nreverse headlines))))
 
@@ -120,7 +151,7 @@ Returns the saved filepath on success, nil on failure."
 (defun sem-router--route-to-task-llm (headline callback)
   "Route a task headline to LLM for task generation.
 
-HEADLINE is the headline plist with :title, :tags, :hash, etc.
+HEADLINE is the headline plist with :title, :tags, :body, :hash, etc.
 CALLBACK is a function of (success context) called when processing completes.
   - SUCCESS is t if task was processed (including DLQ), nil for retry.
   - CONTEXT contains :hash, :title, and other metadata.
@@ -131,6 +162,10 @@ The LLM is prompted to return a valid Org TODO entry with:
 - One-line description
 - :PROPERTIES: drawer with :ID: (pre-generated UUID injected into prompt)
 - :FILETAGS: set to one of the allowed tags
+
+If the headline has a non-nil :body, it is sanitized with
+`sem-security-sanitize-for-llm` before sending to the LLM, and the
+response is restored with `sem-security-restore-from-llm` before validation.
 
 The Elisp layer pre-generates the UUID via org-id-new and injects it into
 the prompt. The LLM must use the provided ID verbatim. The response is
@@ -143,8 +178,18 @@ Returns immediately (async). The CALLBACK is invoked when complete."
       (let* ((title (plist-get headline :title))
              (hash (plist-get headline :hash))
              (tags (plist-get headline :tags))
+             (body (plist-get headline :body))
              ;; Pre-generate UUID for injection and validation
-             (injected-id (org-id-new)))
+             (injected-id (org-id-new))
+             ;; Sanitize body if present
+             (security-blocks nil)
+             (sanitized-body nil))
+
+        ;; Sanitize body content if present
+        (when body
+          (require 'sem-security)
+          (setq security-blocks (sem-security-sanitize-for-llm body))
+          (setq sanitized-body (cdr (assoc 'sanitized security-blocks))))
 
         ;; Build the LLM prompt for task processing
         (let* ((system-prompt "You are a Task Management assistant. Your ONLY task is to output a valid Org-mode TODO entry based on the provided task description.
@@ -177,18 +222,19 @@ RULES:
 4. Clean up the task title to be concise and actionable
 
 CRITICAL: Use EXACTLY the :ID: value provided in the template below. Do not generate, modify, or substitute it.")
-               (user-prompt (format "Convert this task headline into a structured Org TODO entry:
+               (user-prompt (concat
+                             (format "Convert this task headline into a structured Org TODO entry:
 
-HEADLINE: * %s %s
-
-Use this EXACT :ID: value in your output: %s
-
-Generate the complete Org TODO entry following the required format above."
-                                    title
-                                    (if tags
-                                        (format ":%s:" (string-join tags ":"))
-                                      "")
-                                    injected-id)))
+HEADLINE: * %s %s"
+                                     title
+                                     (if tags
+                                         (format ":%s:" (string-join tags ":"))
+                                       ""))
+                             (when sanitized-body
+                               (format "\n\nBODY:\n%s" sanitized-body))
+                             (format "\n\nUse this EXACT :ID: value in your output: %s
+\nGenerate the complete Org TODO entry following the required format above."
+                                     injected-id))))
 
           ;; Call sem-llm-request with callback
           (require 'sem-llm)
@@ -199,12 +245,19 @@ Validates the LLM response and writes to tasks.org."
                              (let ((headline-hash (plist-get context :hash))
                                    (headline-title (plist-get context :title))
                                    (injected-uuid (plist-get context :injected-id))
+                                   (stored-security-blocks (plist-get context :security-blocks))
+                                   (restored-response response)
                                    (success nil))
-                               (if (and response (not (string-empty-p response)))
+                               ;; Restore security blocks if they were stored
+                               (when stored-security-blocks
+                                 (require 'sem-security)
+                                 (setq restored-response
+                                       (sem-security-restore-from-llm response stored-security-blocks)))
+                               (if (and restored-response (not (string-empty-p restored-response)))
                                    ;; Validate and process response
-                                   (if (sem-router--validate-task-response response injected-uuid)
+                                   (if (sem-router--validate-task-response restored-response injected-uuid)
                                        ;; Valid response - write to tasks.org
-                                       (if (sem-router--write-task-to-file response)
+                                       (if (sem-router--write-task-to-file restored-response)
                                            (progn
                                              (sem-core-log "router" "INBOX-ITEM" "OK"
                                                            (format "Task written to tasks.org: %s" headline-title)
@@ -215,14 +268,14 @@ Validates the LLM response and writes to tasks.org."
                                            (sem-core-log-error "router" "INBOX-ITEM"
                                                                "Failed to write task to file"
                                                                headline-title
-                                                               response)
+                                                               restored-response)
                                            (setq success nil)))
                                      ;; Malformed output - send to DLQ
                                      (progn
                                        (sem-core-log-error "router" "INBOX-ITEM"
                                                            "Malformed LLM output for task (UUID mismatch or missing)"
                                                            headline-title
-                                                           response)
+                                                           restored-response)
                                        (sem-router--mark-processed headline-hash)
                                        (setq success t)))
                                  ;; API error - do NOT mark as processed (retry)
@@ -234,7 +287,7 @@ Validates the LLM response and writes to tasks.org."
                                ;; Call the completion callback
                                (when callback
                                  (funcall callback success context))))
-                           (list :hash hash :title title :headline headline :injected-id injected-id)))
+                           (list :hash hash :title title :headline headline :injected-id injected-id :security-blocks security-blocks)))
 
         ;; Return immediately - processing continues asynchronously
         t)

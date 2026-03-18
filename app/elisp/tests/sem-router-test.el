@@ -17,36 +17,36 @@
 
 (ert-deftest sem-router-test-link-tag-detection ()
   "Test that @link tag is detected for URL routing."
-  (let ((headline '(:title "https://example.com" :tags ("link"))))
+  (let ((headline '(:title "https://example.com" :tags ("link") :body nil)))
     (should (sem-router--is-link-headline headline))))
 
 (ert-deftest sem-router-test-url-as-title-detection ()
   "Test that URL as title is detected without @link tag."
-  (let ((headline '(:title "https://example.com/article" :tags nil)))
+  (let ((headline '(:title "https://example.com/article" :tags nil :body nil)))
     (should (sem-router--is-link-headline headline))))
 
 (ert-deftest sem-router-test-non-link-not-routed ()
   "Test that non-link headlines are not routed to url-capture."
-  (let ((headline '(:title "Regular task headline" :tags ("task"))))
+  (let ((headline '(:title "Regular task headline" :tags ("task") :body nil)))
     (should-not (sem-router--is-link-headline headline))))
 
 ;;; Test @task routing to LLM pipeline
 
 (ert-deftest sem-router-test-task-tag-detection ()
   "Test that @task tag is detected for LLM routing."
-  (let ((headline '(:title "Buy milk" :tags ("task"))))
+  (let ((headline '(:title "Buy milk" :tags ("task") :body nil)))
     (should (sem-router--is-task-headline headline))))
 
 (ert-deftest sem-router-test-non-task-not-routed ()
   "Test that non-task headlines are not routed to task LLM."
-  (let ((headline '(:title "Just a note" :tags ("note"))))
+  (let ((headline '(:title "Just a note" :tags ("note") :body nil)))
     (should-not (sem-router--is-task-headline headline))))
 
 ;;; Test unknown tag skip
 
 (ert-deftest sem-router-test-unknown-tag-skip ()
   "Test that unknown tags are skipped with log."
-  (let ((headline '(:title "Unknown tag headline" :tags ("unknown"))))
+  (let ((headline '(:title "Unknown tag headline" :tags ("unknown") :body nil)))
     (should-not (sem-router--is-link-headline headline))
     (should-not (sem-router--is-task-headline headline))))
 
@@ -68,13 +68,13 @@
 
 (ert-deftest sem-router-test-url-extraction ()
   "Test URL extraction from headline title."
-  (let ((headline '(:title "https://example.com/article/path" :tags nil)))
+  (let ((headline '(:title "https://example.com/article/path" :tags nil :body nil)))
     (should (string= "https://example.com/article/path"
                      (sem-router--is-link-headline headline)))))
 
 (ert-deftest sem-router-test-url-extraction-with-query ()
   "Test URL extraction with query parameters."
-  (let ((headline '(:title "https://example.com/search?q=test&page=1" :tags ("link"))))
+  (let ((headline '(:title "https://example.com/search?q=test&page=1" :tags ("link") :body nil)))
     (should (string= "https://example.com/search?q=test&page=1"
                      (sem-router--is-link-headline headline)))))
 
@@ -85,28 +85,7 @@
   (sem-mock-reset-all)
   (should t))
 
-;;; Test cl-block wrapper for parse-headlines (Task 6.1-6.2)
-
-(ert-deftest sem-router-test-parse-headlines-cl-block ()
-  "Test that sem-router--parse-headlines has cl-block wrapper and doesn't crash.
-This proves the cl-block fix at runtime, not just parse time."
-  (let ((test-file (make-temp-file "inbox-test-")))
-    (unwind-protect
-        (progn
-          ;; Create temp inbox file with headlines
-          (with-temp-file test-file
-            (insert "* Headline 1 :link:\n")
-            (insert "Body line 1\n")
-            (insert "* Headline 2 :task:\n")
-            (insert "Body line 2\n"))
-          ;; Temporarily override inbox file path
-          (let ((sem-router-inbox-file test-file))
-            ;; This should NOT crash with cl-return-from
-            (let ((headlines (sem-router--parse-headlines)))
-              ;; Should return parsed headlines
-              (should (listp headlines))
-              (should (= (length headlines) 2)))))
-      (sem-mock-cleanup-temp-file test-file))))
+;;; Test org-element based headline parsing
 
 (ert-deftest sem-router-test-parse-headlines-missing-file ()
   "Test that sem-router--parse-headlines handles missing file gracefully."
@@ -114,9 +93,153 @@ This proves the cl-block fix at runtime, not just parse time."
     ;; Should return nil without crashing
     (should (null (sem-router--parse-headlines)))))
 
-;;; Tests for task LLM pipeline with UUID injection (Task 4.3.1-4.3.6)
+(ert-deftest sem-router-test-parse-headlines-basic ()
+  "Test basic headline parsing with org-element."
+  (let ((test-file (make-temp-file "inbox-test-")))
+    (unwind-protect
+        (progn
+          ;; Create temp inbox file with headlines
+          (with-temp-file test-file
+            (insert "* Headline 1 :link:\n")
+            (insert "* Headline 2 :task:\n"))
+          ;; Temporarily override inbox file path
+          (let ((sem-router-inbox-file test-file))
+            (let ((headlines (sem-router--parse-headlines)))
+              ;; Should return parsed headlines
+              (should (listp headlines))
+              (should (= (length headlines) 2))
+              ;; Check first headline
+              (let ((h1 (car headlines)))
+                (should (string= "Headline 1" (plist-get h1 :title)))
+                (should (equal '("link") (plist-get h1 :tags)))
+                (should (null (plist-get h1 :body))))
+              ;; Check second headline
+              (let ((h2 (cadr headlines)))
+                (should (string= "Headline 2" (plist-get h2 :title)))
+                (should (equal '("task") (plist-get h2 :tags)))
+                (should (null (plist-get h2 :body)))))))
+      (sem-mock-cleanup-temp-file test-file))))
 
-;; Updated tests for new signature with injected-id
+(ert-deftest sem-router-test-parse-headlines-with-body ()
+  "Test headline parsing with body content."
+  (let ((test-file (make-temp-file "inbox-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "* Task with body :@task:\n")
+            (insert "This is the body text\n")
+            (insert "* Next headline :link:\n"))
+          (let ((sem-router-inbox-file test-file))
+            (let ((headlines (sem-router--parse-headlines)))
+              (should (= (length headlines) 2))
+              ;; First headline should have body
+              (let ((h1 (car headlines)))
+                (should (string= "Task with body" (plist-get h1 :title)))
+                (should (equal '("@task") (plist-get h1 :tags)))
+                (should (string= "This is the body text" (plist-get h1 :body))))
+              ;; Second headline should have nil body
+              (let ((h2 (cadr headlines)))
+                (should (null (plist-get h2 :body)))))))
+      (sem-mock-cleanup-temp-file test-file))))
+
+(ert-deftest sem-router-test-parse-headlines-without-body ()
+  "Test headline parsing without body content."
+  (let ((test-file (make-temp-file "inbox-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "* Task without body :@task:\n")
+            (insert "* Next headline :link:\n"))
+          (let ((sem-router-inbox-file test-file))
+            (let ((headlines (sem-router--parse-headlines)))
+              (should (= (length headlines) 2))
+              ;; First headline should have nil body (no content between headlines)
+              (let ((h1 (car headlines)))
+                (should (null (plist-get h1 :body)))))))
+      (sem-mock-cleanup-temp-file test-file))))
+
+(ert-deftest sem-router-test-parse-headlines-nested-excluded ()
+  "Test that nested sub-headlines are excluded from body."
+  (let ((test-file (make-temp-file "inbox-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "* Parent :@task:\n")
+            (insert "Parent body text\n")
+            (insert "** Child :child:\n")
+            (insert "Child body text\n"))
+          (let ((sem-router-inbox-file test-file))
+            (let ((headlines (sem-router--parse-headlines)))
+              (should (= (length headlines) 2))
+              ;; Parent should only have its own body
+              (let ((parent (car headlines)))
+                (should (string= "Parent" (plist-get parent :title)))
+                (should (string= "Parent body text" (plist-get parent :body))))
+              ;; Child should have its own body
+              (let ((child (cadr headlines)))
+                (should (string= "Child" (plist-get child :title)))
+                (should (string= "Child body text" (plist-get child :body)))))))
+      (sem-mock-cleanup-temp-file test-file))))
+
+(ert-deftest sem-router-test-parse-headlines-body-with-list ()
+  "Test body extraction with list items."
+  (let ((test-file (make-temp-file "inbox-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "* Task with list :@task:\n")
+            (insert "- Item 1\n")
+            (insert "- Item 2\n")
+            (insert "\n")
+            (insert "Paragraph text\n"))
+          (let ((sem-router-inbox-file test-file))
+            (let ((headlines (sem-router--parse-headlines)))
+              (should (= (length headlines) 1))
+              (let ((h1 (car headlines)))
+                (should (string-match-p "Item 1" (plist-get h1 :body)))
+                (should (string-match-p "Item 2" (plist-get h1 :body)))
+                (should (string-match-p "Paragraph text" (plist-get h1 :body)))))))
+      (sem-mock-cleanup-temp-file test-file))))
+
+(ert-deftest sem-router-test-parse-headlines-hash-includes-body ()
+  "Test that hash computation includes body content."
+  (let ((test-file (make-temp-file "inbox-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "* Same title :@task:\n")
+            (insert "Body one\n"))
+          (let ((sem-router-inbox-file test-file))
+            (let ((headlines1 (sem-router--parse-headlines)))
+              (let ((hash1 (plist-get (car headlines1) :hash)))
+                ;; Now change the file with same title but different body
+                (with-temp-file test-file
+                  (insert "* Same title :@task:\n")
+                  (insert "Body two\n"))
+                (let ((headlines2 (sem-router--parse-headlines)))
+                  (let ((hash2 (plist-get (car headlines2) :hash)))
+                    ;; Hashes should be different because bodies are different
+                    (should-not (string= hash1 hash2))))))))
+      (sem-mock-cleanup-temp-file test-file))))
+
+(ert-deftest sem-router-test-parse-headlines-tags-without-colons ()
+  "Test that tags are extracted without colons."
+  (let ((test-file (make-temp-file "inbox-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "* Task :tag1:tag2:\n"))
+          (let ((sem-router-inbox-file test-file))
+            (let ((headlines (sem-router--parse-headlines)))
+              (should (= (length headlines) 1))
+              (let ((tags (plist-get (car headlines) :tags)))
+                (should (equal '("tag1" "tag2") tags))
+                ;; Ensure no colons in tags
+                (should-not (member ":tag1:" tags))
+                (should-not (member ":tag2:" tags))))))
+      (sem-mock-cleanup-temp-file test-file))))
+
+;;; Tests for task LLM pipeline with UUID injection
 
 (ert-deftest sem-router-test-task-validation-valid-response ()
   "Test validation of valid LLM task response with matching UUID.
@@ -173,7 +296,7 @@ DLQ path: missing FILETAGS should fail validation."
 Task description here."))
     (should-not (sem-router--validate-task-response response injected-id))))
 
-;; New tests for UUID validation (Task 4.3.2-4.3.6)
+;; New tests for UUID validation
 
 (ert-deftest sem-router-test-uuid-match-validation-passes ()
   "Test that UUID match passes validation.

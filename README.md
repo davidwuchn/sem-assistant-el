@@ -56,7 +56,24 @@ Shared volume: `/data` contains all Org files, databases, and logs.
    - Clone existing org-roam notes to `./data/org-roam/`
    - Copy `feeds.org` to `./data/feeds.org` for Elfeed subscriptions
 
-5. **Start the daemon**:
+5. **Create prompt files** (required for RSS digest generation):
+   ```bash
+   mkdir -p ./data/prompts
+   ```
+   Create `./data/prompts/general-prompt.txt` with your RSS digest template. Available placeholders:
+   - `%s` (1st) - Number of days
+   - `%s` (2nd) - Category list
+   - `%s` (3rd) - Number of days (repeated for summary section)
+   - `%s` (4th) - Entries text
+
+   Create `./data/prompts/arxiv-prompt.txt` with your arXiv digest template. Available placeholders:
+   - `%s` (1st) - Category list
+   - `%s` (2nd) - Number of days
+   - `%s` (3rd) - Entries text
+
+   Example templates are in `data/prompts/` after first run, or copy from the repository examples.
+
+6. **Start the daemon**:
    ```bash
    docker-compose up -d
    ```
@@ -66,6 +83,8 @@ Shared volume: `/data` contains all Org files, databases, and logs.
    docker-compose logs -f emacs
    ```
    Look for: `SEM: Daemon ready`
+
+   **Note:** If startup fails with "Required prompt file missing", ensure step 5 is completed.
 
 ### Orgzly Configuration
 
@@ -133,6 +152,19 @@ Headlines that start with `http://` or `https://` are automatically treated as l
 | 4:00 AM | Inbox Purge | Remove processed headlines (atomic) |
 | 5:00-8:00 AM | Elfeed Update | Refresh RSS feed database (hourly) |
 | 9:30 AM | RSS Digest | Generate daily digest from last 24 hours |
+
+### ⚠️ WARNING: Orgzly Sync Timing
+
+**Orgzly must NOT sync (push or pull) during the following windows to prevent silent data loss:**
+
+| Window | Time | Reason |
+|--------|------|--------|
+| Processing | `XX:28–XX:32` and `XX:58–XX:02` (every hour) | Inbox processing performs non-atomic read-modify-write on `tasks.org` |
+| Purge | `04:00–04:05` (daily) | Inbox purge performs non-atomic file replacement on `inbox-mobile.org` |
+
+**Why this matters:** The server performs non-atomic read-modify-write operations on `tasks.org` and non-atomic file replacement on `inbox-mobile.org` during these windows. If Orgzly syncs concurrently, the server's write may overwrite Orgzly's changes (or vice versa) with **no error logged** and **no warning shown**.
+
+**Recommendation:** Configure Orgzly to sync at safe times like `XX:15` or `XX:45` (midway between cron triggers), or sync manually when needed.
 
 ## File Structure
 
@@ -307,6 +339,9 @@ Configure Orgzly to sync via HTTPS:
 - **URL sanitization**: Applied to `tasks.org` and `morning-read/` (http → hxxp)
 - **Sensitive blocks**: Content between `#+begin_sensitive` / `#+end_sensitive` never sent to LLM
 - **TLS**: WebDAV uses HTTPS with host-mounted certificates
+
+**Environment Variable:**
+- `SEM_PROMPTS_DIR` - Override prompt files location (default: `/data/prompts/`)
 
 ## License
 

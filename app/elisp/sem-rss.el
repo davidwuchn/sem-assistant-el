@@ -38,6 +38,57 @@
       'gptel-default)
   "Model to use for summarization. Read from OPENROUTER_MODEL.")
 
+;;; Prompt Templates (loaded from external files)
+
+(defvar sem-rss-prompts-dir nil
+  "Directory containing prompt template files.
+If nil, defaults to /data/prompts/ or SEM_PROMPTS_DIR env var.
+Set this before loading sem-rss to override the default location.")
+
+(defun sem-rss--get-prompts-dir ()
+  "Get the prompts directory.
+Uses sem-rss-prompts-dir if set, otherwise SEM_PROMPTS_DIR env var,
+or defaults to /data/prompts/."
+  (or sem-rss-prompts-dir
+      (getenv "SEM_PROMPTS_DIR")
+      "/data/prompts/"))
+
+(defvar sem-rss-general-prompt-template nil
+  "Template for general RSS digest prompts.
+Loaded from general-prompt.txt at module load time.")
+
+(defvar sem-rss-arxiv-prompt-template nil
+  "Template for arXiv digest prompts.
+Loaded from arxiv-prompt.txt at module load time.")
+
+(defun sem-rss--load-prompt-template (file-path var-name)
+  "Load prompt template from FILE-PPATH into variable VAR-NAME.
+Signals an error if the file is missing or empty."
+  (let ((content nil))
+    (with-temp-buffer
+      (condition-case err
+          (progn
+            (insert-file-contents file-path)
+            (setq content (string-trim (buffer-string)))
+            (when (or (null content) (string-empty-p content))
+              (error "Prompt file %s is empty" file-path)))
+        (file-missing
+         (error "Required prompt file missing: %s" file-path))
+        (error
+         (error "Failed to load prompt file %s: %s" file-path (error-message-string err)))))
+    content))
+
+;; Load prompt templates at module load time
+(setq sem-rss-general-prompt-template
+      (sem-rss--load-prompt-template
+       (expand-file-name "general-prompt.txt" (sem-rss--get-prompts-dir))
+       "sem-rss-general-prompt-template"))
+
+(setq sem-rss-arxiv-prompt-template
+      (sem-rss--load-prompt-template
+       (expand-file-name "arxiv-prompt.txt" (sem-rss--get-prompts-dir))
+       "sem-rss-arxiv-prompt-template"))
+
 ;;; Category Mappings
 
 (defconst sem-rss-categories
@@ -163,33 +214,7 @@ Truncates to `sem-rss-max-input-chars' if needed."
   "Build prompt for general RSS digest.
 ENTRIES is the list of entry plists.
 DAYS is the number of days the digest covers."
-  (format "Analyze the following RSS entries from the last %d days.
-Target Audience: Senior Software Engineer.
-Language: Russian.
-Output Format: Org-mode.
-
-CRITICAL OUTPUT RULES:
-- Return ONLY raw Org-mode text. No markdown, no code fences (no ``` symbols), no reasoning, no explanations before or after.
-- Start your response directly with the first Org-mode heading.
-- Do not wrap the output in any block or container.
-
-Task:
-1. Group articles by categories: %s.
-2. Structure:
-   * 🚀 Главное за %d дней (Executive Summary — 3-5 sentences overview of the period)
-   * 📂 Категории
-     ** Category Name
-        - [[Link][Title]] (Source) - 1 concise sentence summary.
-        *** 💎 Топ-3 категории (Top 3 most interesting reads in this category)
-            **** [[Link][Title]]
-                 :SCORE: X/10
-                 :WHY: Brief reasoning why this is a must-read.
-3. Every category MUST have its own 💎 Топ-3 subsection with exactly 3 entries (or fewer if the category has less than 3 articles).
-4. Follow ORG-mode convention strictly: * -- top-level header, ** -- second level, *** -- third level, **** -- fourth level.
-5. Result must be valid Org-mode, optimized for human reading.
-
-Data:
-%s"
+  (format sem-rss-general-prompt-template
           days
           (mapconcat #'cdr sem-rss-categories ", ")
           days
@@ -199,35 +224,7 @@ Data:
   "Build prompt for arXiv digest.
 ENTRIES is the list of entry plists.
 DAYS is the number of days the digest covers."
-  (format "You are a Research Assistant monitoring Arxiv preprints.
-Target Audience: Graph & Data Systems Researcher.
-Language: Russian.
-Output Format: Org-mode.
-
-Context: The user is interested in Databases, Distributed Systems, and Graph Algorithms/Networks.
-
-Task:
-1. Group papers by Arxiv categories: %s.
-2. For EACH Category, generate a report with specific subsections (if applicable):
-
-   ** Category Name (e.g. cs.DB)
-      *** 🧐 Обзор (Overview of last %d days trend)
-      *** 🛠 Практика и Системы (New DBs, DistSys, Optimizations)
-          - [[Link][Title]]
-            :WHAT: What they built/optimized.
-            :IMPACT: Practical value.
-      *** 🕸 Графы и Алгоритмы (Graph Algorithms, GNNs, Network Analysis)
-          - [[Link][Title]]
-            :ALGO: Key algorithmic contribution.
-      *** 📄 Остальное (Brief list)
-          - [[Link][Title]] - One sentence summary.
-
-3. Ignore purely theoretical papers unless they have clear system applications or graph algorithm breakthroughs.
-4. Follow ORG-mode convention: * -- top-level header (Category Name), ** -- sub-header (Обзор, Графы, etc.)
-5. Result should be org-mode formatted and optimized for reading by human.
-
-Data:
-%s"
+  (format sem-rss-arxiv-prompt-template
           (mapconcat #'cdr sem-rss-arxiv-categories ", ")
           days
           (sem-rss--build-entries-text entries)))
