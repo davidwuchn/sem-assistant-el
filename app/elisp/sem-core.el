@@ -390,71 +390,34 @@ Hash computation matches sem-router--parse-headlines format:
          ;; 4AM and file exists - do purge
          (t
           ;; Read inbox and filter out processed headlines
-          ;; Use region-based copy to preserve full headline subtrees
+          ;; Use org-element parsing for consistent body extraction with sem-router
+          (require 'sem-router)
           (let ((keep-headlines '()))
             (with-temp-buffer
               (insert-file-contents inbox-file)
-              (goto-char (point-min))
-              (let ((current-headline-start nil)
-                    (current-headline-title nil)
-                    (current-headline-tags nil)
-                    (current-headline-body nil)
-                    (current-subtree nil))
-                (while (not (eobp))
-                  (if (looking-at "^\\*+ ")
-                      (progn
-                        ;; Save previous headline subtree if any
-                        (when current-headline-title
-                          (let* ((tags-str (if current-headline-tags
-                                               (string-join current-headline-tags " ")
-                                             ""))
-                                 (body-str (or current-headline-body ""))
-                                 (hash (secure-hash 'sha256
-                                                    (concat current-headline-title "|" tags-str "|" body-str))))
-                            (if (sem-core--is-processed hash)
-                                (setq purged-count (1+ purged-count))
-                              (push current-subtree keep-headlines))))
-                        ;; Start new headline - capture full subtree
-                        (setq current-headline-start (point))
-                        ;; Move past the "* " prefix
-                        (goto-char (match-end 0))
-                        (let ((start (point)))
-                          (end-of-line)
-                          (setq current-headline-title (string-trim (buffer-substring-no-properties start (point)))))
-                        ;; Extract tags from title (without colons, space-joined for hash)
-                        (setq current-headline-tags
-                              (save-match-data
-                                (when (string-match ":\\([[:word:]:]+\\):$" current-headline-title)
-                                  (split-string (match-string 1 current-headline-title) ":" t))))
-                        ;; Reset body for new headline
-                        (setq current-headline-body nil)
-                        ;; Initialize subtree with title line
-                        (setq current-subtree (concat current-headline-title "\n")))
-                    ;; Collect body lines for current subtree
-                    (when current-headline-start
-                      (let ((line (thing-at-point 'line)))
-                        (setq current-subtree (concat current-subtree line))
-                        ;; Accumulate body content (exclude headline lines)
-                        (unless (string-match-p "^\\*+ " line)
-                          (setq current-headline-body
-                                (concat (or current-headline-body "")
-                                        (string-trim-right line "\\n")))))))
-                  (forward-line 1))
-                ;; Don't forget the last headline subtree
-                (when current-headline-title
-                  (let* ((tags-str (if current-headline-tags
-                                       (string-join current-headline-tags " ")
-                                     ""))
-                         (body-str (or current-headline-body ""))
-                         (hash (secure-hash 'sha256
-                                            (concat current-headline-title "|" tags-str "|" body-str))))
-                    (if (sem-core--is-processed hash)
-                        (setq purged-count (1+ purged-count))
-                      (push current-subtree keep-headlines)))))
+              (org-mode)
+              (let ((ast (org-element-parse-buffer)))
+                (org-element-map ast 'headline
+                  (lambda (headline-element)
+                    (let* ((title (org-element-property :raw-value headline-element))
+                           (tags (org-element-property :tags headline-element))
+                           (body (sem-router--extract-headline-body headline-element))
+                           (tags-str (if tags (string-join tags " ") ""))
+                           (body-str (or body ""))
+                           (hash (secure-hash 'sha256
+                                              (concat title "|" tags-str "|" body-str))))
+                      (if (sem-core--is-processed hash)
+                          (setq purged-count (1+ purged-count))
+                        ;; Keep the headline subtree in the inbox
+                        (let ((begin (org-element-property :begin headline-element))
+                              (end (org-element-property :end headline-element)))
+                          (push (buffer-substring-no-properties begin end)
+                                keep-headlines)))))))
             ;; Write purged content to temp file - preserve full subtrees
             (with-temp-file tmp-file
               (dolist (subtree (nreverse keep-headlines))
-                (insert subtree))))
+                (insert subtree)
+                (insert "\n"))))
             ;; Atomic rename
             (rename-file tmp-file inbox-file t)
             (sem-core-log "purge" "PURGE" "OK" (format "Removed %d nodes from inbox-mobile.org" purged-count))

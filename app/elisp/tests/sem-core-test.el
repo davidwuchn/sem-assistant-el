@@ -10,7 +10,10 @@
 (require 'sem-mock)
 
 ;; Load the module under test
-(load-file (expand-file-name "../sem-core.el" (file-name-directory load-file-name)))
+;; Note: The test runner sets up load-path, so we use require
+(require 'sem-prompts)
+(require 'sem-core)
+(require 'sem-router)
 
 ;;; Tests for sem-core-log format
 
@@ -249,7 +252,7 @@ The function should catch errors and return nil without signaling."
   "Test that sem-core-purge-inbox preserves full headline subtrees.
 Creates inbox with processed and unprocessed headlines (each with body lines),
 runs purge, and asserts the unprocessed headline's body is present.
-Hash format: title|space-joined-tags|body"
+Hash format: title|space-joined-tags|body (using sem-router--extract-headline-body)"
   (let ((test-inbox (make-temp-file "inbox-test-"))
         (test-cursor (make-temp-file "cursor-test-")))
     (unwind-protect
@@ -265,13 +268,24 @@ Hash format: title|space-joined-tags|body"
             (insert "Body line 2 for unprocessed\n")
             (insert "Body line 3 for unprocessed\n"))
 
-          ;; Mark first headline as processed using the new hash computation format
-          ;; Title is "Processed headline :link:", tags is "link", body is "Body line 1 for processed\nBody line 2 for processed"
-          ;; Hash input: "Processed headline :link:|link|Body line 1 for processed\nBody line 2 for processed"
-          (let ((processed-hash (secure-hash 'sha256
-                                              (concat "Processed headline :link:"
-                                                      "|link"
-                                                      "|Body line 1 for processed\nBody line 2 for processed"))))
+          ;; Mark first headline as processed using org-element-based body extraction
+          ;; This matches what sem-core-purge-inbox now uses (sem-router--extract-headline-body)
+          (let ((processed-hash nil))
+            (with-temp-buffer
+              (insert-file-contents test-inbox)
+              (org-mode)
+              (let ((ast (org-element-parse-buffer)))
+                (org-element-map ast 'headline
+                  (lambda (headline-element)
+                    (let ((title (org-element-property :raw-value headline-element)))
+                      (when (string= title "Processed headline")
+                        (let* ((tags (org-element-property :tags headline-element))
+                               (body (sem-router--extract-headline-body headline-element))
+                               (tags-str (if tags (string-join tags " ") ""))
+                               (body-str (or body "")))
+                          (setq processed-hash (secure-hash 'sha256
+                                                           (concat title "|" tags-str "|" body-str)))))))))
+            (should processed-hash)
             (sem-core--mark-processed processed-hash))
 
           ;; Run purge at 4AM (mock the hour)
@@ -292,11 +306,11 @@ Hash format: title|space-joined-tags|body"
               (should (string-match-p "Body line 2 for unprocessed" content))
               (should (string-match-p "Body line 3 for unprocessed" content)))))
       (sem-mock-cleanup-temp-file test-inbox)
-      (sem-mock-cleanup-temp-file test-cursor))))
+      (sem-mock-cleanup-temp-file test-cursor)))))
 
 (ert-deftest sem-core-test-purge-atomic-rename ()
   "Test that sem-core-purge-inbox uses atomic rename.
-Hash format: title|space-joined-tags|body"
+Hash format: title|space-joined-tags|body (using sem-router--extract-headline-body)"
   (let ((test-inbox (make-temp-file "inbox-test-"))
         (test-cursor (make-temp-file "cursor-test-")))
     (unwind-protect
@@ -306,11 +320,25 @@ Hash format: title|space-joined-tags|body"
           (with-temp-file test-inbox
             (insert "* Processed headline :link:\n"))
 
-          ;; Mark as processed using new hash format
-          ;; Title is "Processed headline :link:", tags is "link", body is ""
-          ;; Hash input: "Processed headline :link:|link|"
-          (let ((hash (secure-hash 'sha256 "Processed headline :link:|link|")))
-            (sem-core--mark-processed hash))
+          ;; Mark as processed using org-element-based body extraction
+          ;; This matches what sem-core-purge-inbox now uses (sem-router--extract-headline-body)
+          (let ((processed-hash nil))
+            (with-temp-buffer
+              (insert-file-contents test-inbox)
+              (org-mode)
+              (let ((ast (org-element-parse-buffer)))
+                (org-element-map ast 'headline
+                  (lambda (headline-element)
+                    (let ((title (org-element-property :raw-value headline-element)))
+                      (when (string= title "Processed headline")
+                        (let* ((tags (org-element-property :tags headline-element))
+                               (body (sem-router--extract-headline-body headline-element))
+                               (tags-str (if tags (string-join tags " ") ""))
+                               (body-str (or body "")))
+                          (setq processed-hash (secure-hash 'sha256
+                                                           (concat title "|" tags-str "|" body-str)))))))))
+            (should processed-hash)
+            (sem-core--mark-processed processed-hash))
 
           ;; Run purge at 4AM
           (cl-letf (((symbol-function 'format-time-string)
@@ -325,7 +353,7 @@ Hash format: title|space-joined-tags|body"
             (should (or (string-blank-p (buffer-string))
                         (string= (buffer-string) "")))))
       (sem-mock-cleanup-temp-file test-inbox)
-      (sem-mock-cleanup-temp-file test-cursor))))
+      (sem-mock-cleanup-temp-file test-cursor)))))
 
 (provide 'sem-core-test)
 ;;; sem-core-test.el ends here

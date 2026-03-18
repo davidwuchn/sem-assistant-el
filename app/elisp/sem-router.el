@@ -10,6 +10,7 @@
 
 (require 'org)
 (require 'sem-core)
+(require 'sem-prompts)
 
 ;;; Constants
 
@@ -248,36 +249,29 @@ Returns immediately (async). The CALLBACK is invoked when complete."
             (setq security-blocks (cdr sanitize-result))))
 
         ;; Build the LLM prompt for task processing
-        (let* ((system-prompt "You are a Task Management assistant. Your ONLY task is to output a valid Org-mode TODO entry based on the provided task description.
-
-CRITICAL REQUIREMENT: YOU MUST USE STRICT ORG-MODE SYNTAX.
-
-=== ORG-MODE SYNTAX CHEAT SHEET ===
-- Headings: Use asterisks `* TODO Heading` (NEVER use `# Heading`).
-- Bold: `*bold text*` (NEVER use `**bold**`).
-- Italic: `/italic text/` (NEVER use `*italic*` or `_italic_`).
-- Inline code: `=code=` or `~verbatim~` (NEVER use backticks).
-
-=== REQUIRED OUTPUT FORMAT ===
-Your output MUST follow this exact structure:
-
-* TODO <Cleaned Task Title>
-:PROPERTIES:
-:ID: <injected-id-value>
-:FILETAGS: :<one-of:work:family:routine:opensource>:
-:END:
-<Brief one-line description or notes>
-<Optional: SCHEDULED: <YYYY-MM-DD Day>>
-<Optional: DEADLINE: <YYYY-MM-DD Day>>
-<Optional: PRIORITY: [A/B/C]>
-
-RULES:
-1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:
-2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it
-3. Output ONLY the Org entry - no explanations, no markdown wrappers
-4. Clean up the task title to be concise and actionable
-
-CRITICAL: Use EXACTLY the :ID: value provided in the template below. Do not generate, modify, or substitute it.")
+        ;; Read OUTPUT_LANGUAGE at call time (not load time) with default "English"
+        (let* ((output-language (or (getenv "OUTPUT_LANGUAGE") "English"))
+               (language-instruction (format "\n\nOUTPUT LANGUAGE: Write your entire response in %s. Do not use any other language." output-language))
+               (system-prompt (concat "You are a Task Management assistant. Your ONLY task is to output a valid Org-mode TODO entry based on the provided task description.\n\n"
+                                      sem-prompts-org-mode-cheat-sheet
+                                      "\n\n=== REQUIRED OUTPUT FORMAT ===\n"
+                                      "Your output MUST follow this exact structure:\n\n"
+                                      "* TODO <Cleaned Task Title>\n"
+                                      ":PROPERTIES:\n"
+                                      ":ID: <injected-id-value>\n"
+                                      ":FILETAGS: :<one-of:work:family:routine:opensource>:\n"
+                                      ":END:\n"
+                                      "<Brief one-line description or notes>\n"
+                                      "<Optional: SCHEDULED: <YYYY-MM-DD Day>>\n"
+                                      "<Optional: DEADLINE: <YYYY-MM-DD Day>>\n"
+                                      "<Optional: PRIORITY: [A/B/C]>\n\n"
+                                      "RULES:\n"
+                                      "1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:\n"
+                                      "2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it\n"
+                                      "3. Output ONLY the Org entry - no explanations, no markdown wrappers\n"
+                                      "4. Clean up the task title to be concise and actionable\n\n"
+                                      "CRITICAL: Use EXACTLY the :ID: value provided in the template below. Do not generate, modify, or substitute it."
+                                      language-instruction))
                (user-prompt (concat
                              (format "Convert this task headline into a structured Org TODO entry:
 

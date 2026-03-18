@@ -146,12 +146,14 @@ Handles missing /data/org-roam/ gracefully."
 
 (defun sem-init--load-modules ()
   "Load all SEM modules in dependency order.
-sem-core must load first as it defines sem-core-log."
+sem-core must load first as it defines sem-core-log.
+sem-prompts must load before sem-router and sem-url-capture."
   (let ((load-path (cons (file-name-directory load-file-name) load-path)))
     (require 'sem-core)
     (require 'sem-security)
     (require 'sem-llm)
     (require 'sem-rss)
+    (require 'sem-prompts)
     (require 'sem-url-capture)
     (require 'sem-git-sync)
     (require 'sem-router)

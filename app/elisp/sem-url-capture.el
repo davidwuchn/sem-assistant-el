@@ -23,6 +23,7 @@
 (require 'org-id)
 (require 'sem-core)
 (require 'sem-llm)
+(require 'sem-prompts)
 
 ;;; Constants
 
@@ -120,42 +121,24 @@ Returns nil if no umbrella nodes exist or on database error."
 
 (defun sem-url-capture--build-system-prompt ()
   "Build the system prompt for LLM org-roam node generation.
-Includes a comprehensive org-mode syntax cheat sheet to prevent markdown hallucinations."
-  "You are a specialized Knowledge Management assistant. Your ONLY task is to output valid, raw `org-roam` node text based on the provided article.
-
-CRITICAL REQUIREMENT: YOU MUST USE STRICT ORG-MODE SYNTAX. ABSOLUTELY NO MARKDOWN.
-
-=== ORG-MODE SYNTAX CHEAT SHEET ===
-- Headings: Use asterisks `* Heading 1`, `** Heading 2` (NEVER use `# Heading`).
-- Bold: `*bold text*` (NEVER use `**bold**`).
-- Italic: `/italic text/` (NEVER use `*italic*` or `_italic_`).
-- Underline: `_underlined text_`.
-- Strikethrough: `+strikethrough+` (NEVER use `~~strike~~`).
-- Inline code: `=code=` or `~verbatim~` (NEVER use backticks ` ` `).
-- Code blocks:
-  #+begin_src language
-  // code here
-  #+end_src
-  (NEVER use ```language ... ```).
-- Blockquotes:
-  #+begin_quote
-  Quoted text here.
-  #+end_quote
-  (NEVER use `> quote`).
-- External Links: `[[https://example.com][Link description]]` (NEVER use `[desc](url)`).
-- Lists: Use `-` or `+` for unordered, and `1.` for ordered.
-
-=== RULES FOR THIS TASK ===
-1. NEVER wrap your overall response in markdown code blocks (e.g., do NOT start with ```org). Output raw text only.
-2. At the very top, include a property drawer with the provided ID.
-3. Below the property drawer, include:
-   `#+title: <Article Title>`
-   `#+ROAM_REFS: <Original URL>`
-   `#+filetags: :article:`
-4. Write a brief summary and bullet points extracting the core value of the article.
-5. Link to the provided Umbrella Nodes IF AND ONLY IF highly relevant. Use exact IDs provided: `[[id:GIVEN-ID][Title]]`.
-6. Structure the note with `* Summary` and `* Key Takeaways` sections.
-7. The first line of the `* Summary` section MUST be: `Source: [[ARTICLE_URL][ARTICLE_URL]]`")
+Includes a comprehensive org-mode syntax cheat sheet to prevent markdown hallucinations.
+Reads OUTPUT_LANGUAGE at call time with default \"English\" and appends as final line."
+  (let* ((output-language (or (getenv "OUTPUT_LANGUAGE") "English"))
+         (language-instruction (format "\n\nOUTPUT LANGUAGE: Write your entire response in %s. Do not use any other language." output-language)))
+    (concat "You are a specialized Knowledge Management assistant. Your ONLY task is to output valid, raw `org-roam` node text based on the provided article.\n\n"
+            sem-prompts-org-mode-cheat-sheet
+            "\n\n=== RULES FOR THIS TASK ===\n"
+            "1. NEVER wrap your overall response in markdown code blocks (e.g., do NOT start with ```org). Output raw text only.\n"
+            "2. At the very top, include a property drawer with the provided ID.\n"
+            "3. Below the property drawer, include:\n"
+            "   `#+title: <Article Title>`\n"
+            "   `#+ROAM_REFS: <Original URL>`\n"
+            "   `#+filetags: :article:`\n"
+            "4. Write a brief summary and bullet points extracting the core value of the article.\n"
+            "5. Link to the provided Umbrella Nodes IF AND ONLY IF highly relevant. Use exact IDs provided: `[[id:GIVEN-ID][Title]]`.\n"
+            "6. Structure the note with `* Summary` and `* Key Takeaways` sections.\n"
+            "7. The first line of the `* Summary` section MUST be: `Source: [[ARTICLE_URL][ARTICLE_URL]]`"
+            language-instruction)))
 
 (defun sem-url-capture--make-slug (title)
   "Generate a URL-safe slug from TITLE for filename generation.
