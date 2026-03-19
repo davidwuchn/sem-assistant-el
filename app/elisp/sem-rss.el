@@ -55,14 +55,14 @@ or defaults to /data/prompts/."
 
 (defvar sem-rss-general-prompt-template nil
   "Template for general RSS digest prompts.
-Loaded from general-prompt.txt at module load time.")
+Loaded lazily on first use from general-prompt.txt.")
 
 (defvar sem-rss-arxiv-prompt-template nil
   "Template for arXiv digest prompts.
-Loaded from arxiv-prompt.txt at module load time.")
+Loaded lazily on first use from arxiv-prompt.txt.")
 
-(defun sem-rss--load-prompt-template (file-path var-name)
-  "Load prompt template from FILE-PPATH into variable VAR-NAME.
+(defun sem-rss--load-prompt-template (file-path)
+  "Load prompt template from FILE-PATH.
 Signals an error if the file is missing or empty."
   (let ((content nil))
     (with-temp-buffer
@@ -78,16 +78,17 @@ Signals an error if the file is missing or empty."
          (error "Failed to load prompt file %s: %s" file-path (error-message-string err)))))
     content))
 
-;; Load prompt templates at module load time
-(setq sem-rss-general-prompt-template
-      (sem-rss--load-prompt-template
-       (expand-file-name "general-prompt.txt" (sem-rss--get-prompts-dir))
-       "sem-rss-general-prompt-template"))
-
-(setq sem-rss-arxiv-prompt-template
-      (sem-rss--load-prompt-template
-       (expand-file-name "arxiv-prompt.txt" (sem-rss--get-prompts-dir))
-       "sem-rss-arxiv-prompt-template"))
+(defun sem-rss--ensure-prompts-loaded ()
+  "Load prompt templates if not already loaded.
+This is a lazy-loading function to avoid blocking daemon startup."
+  (unless sem-rss-general-prompt-template
+    (setq sem-rss-general-prompt-template
+          (sem-rss--load-prompt-template
+           (expand-file-name "general-prompt.txt" (sem-rss--get-prompts-dir)))))
+  (unless sem-rss-arxiv-prompt-template
+    (setq sem-rss-arxiv-prompt-template
+          (sem-rss--load-prompt-template
+           (expand-file-name "arxiv-prompt.txt" (sem-rss--get-prompts-dir))))))
 
 ;;; Category Mappings
 
@@ -313,6 +314,9 @@ This is the cron entry point callable via `emacsclient -e`."
   (condition-case err
       (progn
         (sem-core-log "rss" "RSS-DIGEST" "OK" "Morning digest generation started")
+
+        ;; Ensure prompt templates are loaded (lazy loading)
+        (sem-rss--ensure-prompts-loaded)
 
         ;; Ensure output directory exists
         (make-directory sem-rss-dir t)

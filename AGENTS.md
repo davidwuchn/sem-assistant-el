@@ -355,3 +355,30 @@ order (after `sem-mock.el`, before any modules that depend on yours).
 - **`message` for runtime diagnostics:** Use `(message "SEM: ...")` for
   operator-visible output. These appear in `*Messages*` and are persisted to
   daily log files via `sem-core--flush-messages-daily`.
+
+---
+
+## Integration Tests — DO NOT RUN
+
+**Agents must never execute the integration test suite.**
+
+The integration test suite (`dev/integration/run-integration-tests.sh`) makes **real LLM API calls**
+via OpenRouter that **cost money**. It is designed to be run **only by human operators** who
+explicitly intend to incur these costs.
+
+**What agents must not do:**
+- Execute `dev/integration/run-integration-tests.sh`
+- Run `podman-compose` commands referencing `docker-compose.test.yml`
+- Modify or delete integration test artifacts in `test-results/` or `test-data/`
+
+**What agents may do:**
+- Read integration test files for context
+- Suggest improvements to integration test code
+- Update integration test documentation
+
+If a human operator asks you to run the integration tests, clarify that you cannot do so and
+suggest they run it manually with:
+
+```sh
+bash dev/integration/run-integration-tests.sh
+```

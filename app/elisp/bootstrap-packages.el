@@ -19,8 +19,13 @@
         (or (bound-and-true-p straight-base-dir)
             user-emacs-directory)))
       (bootstrap-version 7))
-  (when (file-exists-p bootstrap-file)
-    (load bootstrap-file nil 'nomessage)))
+  (unless (file-exists-p bootstrap-file)
+    (with-current-buffer
+        (url-retrieve-synchronously "https://raw.githubusercontent.com/radian-software/straight.el/develop/install.el"
+                                    'silent 'inhibit-cookies)
+      (goto-char (point-max))
+      (eval-print-last-sexp)))
+  (load bootstrap-file nil 'nomessage))
 
 ;; Load the lockfile to pin exact package revisions
 (straight-use-package 'use-package)

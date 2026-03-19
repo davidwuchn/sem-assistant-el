@@ -1,0 +1,16 @@
+#!/bin/sh
+# Start cron daemon and keep container running in Docker
+# Cron runs in background, emacs runs as daemon, tail keeps foreground alive
+
+# Set correct permissions on cron directories (cron requires this)
+chmod -R go-w /etc/cron.d
+
+# Start cron daemon in background
+service cron start
+
+# Start emacs daemon in background  
+emacs --daemon --load=/app/elisp/init.el
+
+# Keep container alive by tailing the log file
+# This runs in foreground and keeps PID 1 alive
+tail -F /var/log/cron.log

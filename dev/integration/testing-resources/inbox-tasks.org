@@ -1,0 +1,16 @@
+* TODO Process quarterly financial reports :routine:@task:
+  SCHEDULED: <2026-03-20 Fri>
+  This routine task should be categorized under routine projects.
+
+* TODO Review pull request #452 for authentication module :work:@task:
+  This work task tests the work tag routing.
+
+* TODO Plan team building activity for next quarter @task:
+  This is a bare task with no secondary tag, testing the default tag normalization path.
+  
+  The activity should include:
+  - Outdoor team exercises
+  - Problem-solving challenges
+  - Group lunch at a local restaurant
+  
+  Please coordinate with the HR department for scheduling.

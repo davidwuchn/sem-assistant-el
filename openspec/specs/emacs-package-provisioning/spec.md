@@ -13,7 +13,7 @@ All required Emacs packages SHALL be installed at container image build time usi
 
 #### Scenario: No runtime package installation
 - **WHEN** the container starts
-- **THEN** `init.el` only calls `(require ...)`, never `straight-use-package`
+- **THEN** `init.el` only calls `straight-use-package` for load-path activation of pre-built packages, never for network-based installation or downloading
 
 ### Requirement: bootstrap-packages.el separate from init.el
 A dedicated `/app/elisp/bootstrap-packages.el` file SHALL contain only straight.el bootstrapping and package installation logic. This file SHALL be separate from `init.el`.

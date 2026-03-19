@@ -343,6 +343,75 @@ Configure Orgzly to sync via HTTPS:
 **Environment Variable:**
 - `SEM_PROMPTS_DIR` - Override prompt files location (default: `/data/prompts/`)
 
+## Integration Tests
+
+The integration test suite provides end-to-end verification of the full inbox processing pipeline.
+
+### Prerequisites
+
+- **podman** and **podman-compose** installed (not Docker)
+- `OPENROUTER_KEY` environment variable set
+- WebDAV credentials configured in `.env`
+
+### Running Tests
+
+**WARNING: Real LLM API calls are made. This incurs cost (~3 API calls per run).**
+
+**DO NOT RUN this script unless you intend to make real API calls.** The test suite is designed to be run manually by human operators only — it is never run automatically.
+
+From the repository root:
+
+```bash
+bash dev/integration/run-integration-tests.sh
+```
+
+The script will:
+1. Start containers with test configuration (port 16065)
+2. Upload a test inbox with 3 headlines via WebDAV
+3. Trigger inbox processing via emacsclient
+4. Poll for task completion (max 120 seconds)
+5. Collect all artifacts (tasks.org, logs, container logs)
+6. Run assertions (TODO count, keyword presence, Org validity)
+7. Tear down containers unconditionally
+
+### Test Results
+
+Results are saved to timestamped directories:
+
+```
+test-results/
+└── YYYY-MM-DD:HH:MM:SS-run/
+    ├── inbox-sent.org        # Copy of test inbox
+    ├── tasks.org             # Processed output
+    ├── sem-log.org           # Structured logs
+    ├── errors.org            # Error DLQ (may be empty)
+    ├── messages-*.log        # Message logs
+    ├── emacs-container.log   # Emacs container logs
+    ├── webdav-container.log  # WebDAV container logs
+    └── validation.txt        # Assertion results
+```
+
+### Exit Codes
+
+- **0**: All assertions passed
+- **1**: One or more assertions failed, or timeout occurred
+
+### Post-Mortem Analysis
+
+If tests fail, inspect the run directory:
+- Check `validation.txt` for which assertions failed
+- Review `emacs-container.log` for daemon errors
+- Compare `inbox-sent.org` vs `tasks.org` to see LLM output
+- Check `messages-*.log` for runtime diagnostics
+
+### Cleanup
+
+Containers are stopped automatically via EXIT trap. Test data persists in `test-data/` for inspection. To clean up manually:
+
+```bash
+rm -rf test-data/ test-results/
+```
+
 ## License
 
 GPL-3.0-or-later

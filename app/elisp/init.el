@@ -8,14 +8,15 @@
 ;;
 ;; Startup sequence (must execute in strict order):
 ;; 1. Validate required env vars
-;; 2. Configure gptel with OpenRouter backend
-;; 3. Set hardcoded paths as globals
-;; 4. Set security globals
-;; 5. Initialize git repo for org-roam
-;; 6. Run db-initialization (elfeed + org-roam)
-;; 7. Load all modules
-;; 8. Install *Messages* redirection hook
-;; 9. Daemon ready
+;; 2. Bootstrap straight.el (makes build-time packages available)
+;; 3. Configure gptel with OpenRouter backend
+;; 4. Set hardcoded paths as globals
+;; 5. Set security globals
+;; 6. Initialize git repo for org-roam
+;; 7. Run db-initialization (elfeed + org-roam)
+;; 8. Load all modules
+;; 9. Install *Messages* redirection hook
+;; 10. Daemon ready
 
 ;;; Code:
 
@@ -32,7 +33,34 @@ Signal an error if OPENROUTER_KEY or OPENROUTER_MODEL is unset or empty."
       (error "SEM: OPENROUTER_MODEL environment variable is not set or empty"))
     (message "SEM: Environment variables validated successfully")))
 
-;;; 2. Configure gptel with OpenRouter Backend
+;;; 2. Bootstrap straight.el (packages installed at build time)
+
+(defun sem-init--bootstrap-straight ()
+  "Bootstrap straight.el and activate build-time-installed packages."
+  (setq straight-repository-branch "develop")
+  (defvar bootstrap-version)
+  (let ((bootstrap-file
+         (expand-file-name
+          "straight/repos/straight.el/bootstrap.el"
+          (or (bound-and-true-p straight-base-dir)
+              user-emacs-directory)))
+        (bootstrap-version 7))
+    (unless (file-exists-p bootstrap-file)
+      (with-current-buffer
+          (url-retrieve-synchronously "https://raw.githubusercontent.com/radian-software/straight.el/develop/install.el"
+                                      'silent 'inhibit-cookies)
+        (goto-char (point-max))
+        (eval-print-last-sexp)))
+    (load bootstrap-file nil 'nomessage))
+  (message "SEM: straight.el bootstrapped")
+  (dolist (pkg '(gptel elfeed elfeed-org org-roam websocket))
+    (condition-case err
+        (straight-use-package pkg)
+      (error
+       (message "SEM: Failed to activate package %s: %s"
+                pkg (error-message-string err))))))
+
+;;; 3. Configure gptel with OpenRouter Backend
 
 (defun sem-init--configure-gptel ()
   "Configure gptel with OpenRouter backend.
@@ -170,34 +198,61 @@ sem-prompts must load before sem-router and sem-url-capture."
 
 (defun sem-init--startup ()
   "Execute the complete daemon startup sequence.
-All steps run in strict order. Errors are caught to prevent daemon abort."
+All steps run in strict order. Errors are logged to stderr and
+written to errors.org to aid debugging."
   (condition-case err
       (progn
         ;; Step 1: Validate env vars
+        (message "SEM: Starting init step 1/9 - validate env vars")
         (sem-init--validate-env)
-        ;; Step 2: Configure gptel
+        (message "SEM: Step 1/9 complete - env vars validated")
+        ;; Step 2: Bootstrap straight.el
+        (message "SEM: Starting init step 2/10 - bootstrap straight")
+        (sem-init--bootstrap-straight)
+        (message "SEM: Step 2/10 complete - straight bootstrapped")
+        ;; Step 3: Configure gptel
+        (message "SEM: Starting init step 3/10 - configure gptel")
         (sem-init--configure-gptel)
-        ;; Step 3: Set paths
+        (message "SEM: Step 3/10 complete - gptel configured")
+        ;; Step 4: Set paths
+        (message "SEM: Starting init step 4/10 - set paths")
         (sem-init--set-paths)
-        ;; Step 4: Set security globals
+        (message "SEM: Step 4/10 complete - paths configured")
+        ;; Step 5: Set security globals
+        (message "SEM: Starting init step 5/10 - set security globals")
         (sem-init--set-security-globals)
-        ;; Step 5: Init git repo
+        (message "SEM: Step 5/10 complete - security globals set")
+        ;; Step 6: Init git repo
+        (message "SEM: Starting init step 6/10 - init git repo")
         (sem-init--init-git-repo)
-        ;; Step 6: Init databases
+        (message "SEM: Step 6/10 complete - git repo ready")
+        ;; Step 7: Init databases
+        (message "SEM: Starting init step 7/10 - init databases")
         (sem-init--init-databases)
-        ;; Step 7: Load modules
+        (message "SEM: Step 7/10 complete - databases initialized")
+        ;; Step 8: Load modules
+        (message "SEM: Starting init step 8/10 - load modules")
         (sem-init--load-modules)
-        ;; Step 8: Install messages hook
+        (message "SEM: Step 8/10 complete - modules loaded")
+        ;; Step 9: Install messages hook
+        (message "SEM: Starting init step 9/10 - install messages hook")
         (sem-init--install-messages-hook)
-        ;; Step 9: Daemon ready
-        (message "SEM: Daemon ready"))
+        (message "SEM: Step 9/10 complete - messages hook installed")
+        ;; Step 10: Daemon ready
+        (message "SEM: Step 10/10 complete - daemon ready")
+        (message "SEM: Daemon ready")
+        (princ "SEM: Daemon started successfully\n" t))
     (error
-     (message "SEM: Startup error: %s" (error-message-string err))
-     ;; Log to errors.org if possible
-     (condition-case _err2
-         (when (fboundp 'sem-core-log-error)
-           (sem-core-log-error "init" "STARTUP" (error-message-string err) nil))
-       (error nil)))))
+     (let ((error-msg (error-message-string err)))
+       ;; Log to stderr for immediate visibility in container logs
+       (princ (format "SEM: STARTUP ERROR: %s\n" error-msg) t)
+       ;; Also log via message (goes to *Messages*)
+       (message "SEM: Startup error: %s" error-msg)
+       ;; Log to errors.org if sem-core-log-error is available
+       (condition-case _err2
+           (when (fboundp 'sem-core-log-error)
+             (sem-core-log-error "init" "STARTUP" error-msg nil))
+         (error nil))))))
 
 ;; Run startup when this file is loaded
 (sem-init--startup)

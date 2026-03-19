@@ -9,9 +9,10 @@
 (require 'ert)
 
 ;; Set prompts directory before loading sem-rss so tests can find prompt files
+;; Test file is at app/elisp/tests/sem-rss-test.el, prompts at data/prompts/
 (setq sem-rss-prompts-dir
       (expand-file-name "../../../data/prompts/"
-                        (file-name-directory load-file-name)))
+                        (file-name-directory (or load-file-name buffer-file-name))))
 
 (require 'sem-rss)
 
@@ -63,6 +64,8 @@
 
 (ert-deftest sem-rss-test-general-prompt-uses-template ()
   "Test that general prompt builder uses the template variable."
+  ;; Load prompt templates (lazy loading)
+  (sem-rss--ensure-prompts-loaded)
   ;; The prompt should be built from the template
   (let ((entries nil)
         (days 1))
@@ -75,6 +78,8 @@
 
 (ert-deftest sem-rss-test-arxiv-prompt-uses-template ()
   "Test that arxiv prompt builder uses the template variable."
+  ;; Load prompt templates (lazy loading)
+  (sem-rss--ensure-prompts-loaded)
   ;; The prompt should be built from the template
   (let ((entries nil)
         (days 1))
@@ -86,7 +91,9 @@
       (should (string-match-p "Research" prompt)))))
 
 (ert-deftest sem-rss-test-prompt-templates-loaded ()
-  "Test that prompt templates are loaded at module load time."
+  "Test that prompt templates are loaded on demand."
+  ;; Load prompt templates (lazy loading)
+  (sem-rss--ensure-prompts-loaded)
   ;; Both template variables should be non-nil and non-empty
   (should sem-rss-general-prompt-template)
   (should (stringp sem-rss-general-prompt-template))
@@ -99,6 +106,8 @@
 
 (ert-deftest sem-rss-test-build-general-prompt-contains-categories ()
   "Test that general prompt contains category mappings."
+  ;; Load prompt templates (lazy loading)
+  (sem-rss--ensure-prompts-loaded)
   (let ((entries nil))
     (let ((prompt (sem-rss--build-general-prompt entries 1)))
       (should (string-match-p "Data Engineering" prompt))
@@ -107,6 +116,8 @@
 
 (ert-deftest sem-rss-test-build-arxiv-prompt-contains-categories ()
   "Test that arxiv prompt contains category mappings."
+  ;; Load prompt templates (lazy loading)
+  (sem-rss--ensure-prompts-loaded)
   (let ((entries nil))
     (let ((prompt (sem-rss--build-arxiv-prompt entries 1)))
       (should (string-match-p "cs.DB" prompt))

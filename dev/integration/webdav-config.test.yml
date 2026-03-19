@@ -1,16 +1,13 @@
-# WebDAV configuration for hacdias/webdav image
-# TLS certificates must be mounted from host
-# User credentials use environment variable substitution
+# WebDAV configuration for integration tests
+# Non-TLS, test-specific port mapping
 
 # Server configuration
 server:
-  # Listen on port 6065 (mapped to 443 externally)
+  # Listen on port 6065 (mapped to 16065 externally in docker-compose.test.yml)
   port: 6065
 
-  # TLS configuration - certificates mounted from host
-  tls: true
-  cert: /certs/live/{env}WEBDAV_DOMAIN/fullchain.pem
-  key: /certs/live/{env}WEBDAV_DOMAIN/privkey.pem
+  # No TLS in test environment
+  tls: false
 
 # User configuration with environment variable substitution
 users:

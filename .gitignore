@@ -22,3 +22,8 @@ app/elisp/eln-cache/
 # AI
 .qwen
 .opencode
+.aider*
+
+# Integration test data and results
+test-results/
+test-data/
