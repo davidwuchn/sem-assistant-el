@@ -70,6 +70,21 @@ trap cleanup EXIT
 # Test Data Directory Setup
 # =============================================================================
 
+cleanup_test_results() {
+    echo ""
+    echo "=== Cleaning Up Test Results Directory ==="
+    
+    if [[ -d "$TEST_RESULTS_DIR" ]]; then
+        echo "Removing existing test-results directory..."
+        rm -rf "$TEST_RESULTS_DIR"
+    fi
+    
+    echo "Creating fresh test-results directory..."
+    mkdir -p "$TEST_RESULTS_DIR"
+    
+    echo "Test results directory ready: $TEST_RESULTS_DIR"
+}
+
 setup_test_data() {
     echo ""
     echo "=== Setting Up Test Data Directory ==="
@@ -156,7 +171,7 @@ wait_for_daemon() {
         attempt=$((attempt + 1))
         echo "Polling daemon (attempt $attempt/$DAEMON_MAX_ATTEMPTS)..."
         
-        if podman exec sem-emacs emacsclient -e "(t)" 2>/dev/null | grep -q "t"; then
+        if podman-compose exec emacs emacsclient -s sem-server --eval 't' &>/dev/null; then
             echo "Daemon is ready!"
             ready=true
             break
@@ -170,6 +185,20 @@ wait_for_daemon() {
         TEST_STATUS="FAIL"
         return 1
     fi
+}
+
+# =============================================================================
+# Debug emacsclient connectivity
+# =============================================================================
+
+debug_emacsclient() {
+    echo ""
+    echo "=== Debug: Testing emacsclient connectivity ==="
+    
+    echo "Running: emacsclient -s sem-server --eval '(message \"EMACSCLIENT: server is up and accessible\")'"
+    podman-compose exec emacs emacsclient -s sem-server --eval '(message "EMACSCLIENT: server is up and accessible")'
+    
+    echo "Debug call complete - check container logs for 'EMACSCLIENT:' message"
 }
 
 # =============================================================================
@@ -187,6 +216,137 @@ upload_inbox() {
         "${WEBDAV_BASE_URL}/inbox-mobile.org"
     
     echo "Inbox uploaded successfully"
+    
+    echo "Also copying to TEST_DATA_DIR for reference..."
+    cp "$TEST_INBOX" "$TEST_DATA_DIR/inbox-mobile.org"
+}
+
+verify_inbox_upload() {
+    echo ""
+    echo "=== Verifying Inbox Upload ==="
+    
+    local temp_verify
+    temp_verify=$(mktemp)
+    
+    if curl --fail --silent --show-error \
+        -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
+        -o "$temp_verify" \
+        "${WEBDAV_BASE_URL}/inbox-mobile.org" 2>/dev/null; then
+        echo "Inbox fetched successfully from WebDAV"
+        
+        local sent_lines verify_lines
+        sent_lines=$(wc -l < "$TEST_INBOX")
+        verify_lines=$(wc -l < "$temp_verify")
+        echo "Sent file: $sent_lines lines, Fetched file: $verify_lines lines"
+        
+        if [[ "$sent_lines" -eq "$verify_lines" ]]; then
+            echo "PASS: Line count matches"
+            echo "Computing checksums for comparison..."
+            echo "  Sent file MD5:     $(md5sum "$TEST_INBOX" | awk '{print $1}')"
+            echo "  Fetched file MD5:  $(md5sum "$temp_verify" | awk '{print $1}')"
+        else
+            echo "FAIL: Line count mismatch"
+            echo "--- Sent content ---"
+            head -5 "$TEST_INBOX"
+            echo "--- Fetched content ---"
+            head -5 "$temp_verify"
+            TEST_STATUS="FAIL"
+        fi
+    else
+        echo "FAIL: Could not fetch inbox from WebDAV"
+        TEST_STATUS="FAIL"
+    fi
+    
+    rm -f "$temp_verify"
+}
+
+diagnose_inbox_file() {
+    echo ""
+    echo "=== Diagnosing Inbox File Visibility ==="
+    
+    # Step 1: Check that emacs can read the file
+    echo "[Step 1] Checking if emacs can read /data/inbox-mobile.org..."
+    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: Starting file existence check")'
+    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: file-exists-p = %s" (file-exists-p "/data/inbox-mobile.org"))'
+    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: file-readable-p = %s" (file-readable-p "/data/inbox-mobile.org"))'
+    podman-compose exec emacs emacsclient -s sem-server --eval '(message "DIAG-CHECK: file-writable-p = %s" (file-writable-p "/data/inbox-mobile.org"))'
+    echo "[Step 1] File existence check complete"
+    
+    # Step 2: Read the file and write it back with a different name
+    echo "[Step 2] Reading inbox-mobile.org and writing copy to inbox-mobile.copy.org..."
+    podman-compose exec emacs emacsclient -s sem-server --eval '
+(with-temp-buffer
+  (let ((src "/data/inbox-mobile.org")
+        (dst "/data/inbox-mobile.copy.org"))
+    (message "DIAG-COPY: Starting copy operation from %s to %s" src dst)
+    (if (file-exists-p src)
+        (progn
+          (insert-file-contents src)
+          (let ((size (point-max)))
+            (message "DIAG-COPY: Read %d bytes from source" size)
+            (write-region (point-min) (point-max) dst nil (quote silent))
+            (message "DIAG-COPY: Wrote %d bytes to destination" size)
+            (message "DIAG-COPY: Destination file exists after write: %s" (file-exists-p dst))))
+      (message "DIAG-COPY: Source file does not exist, cannot copy")))
+  (message "DIAG-COPY: Copy operation complete"))
+' 2>&1 || echo "WARNING: file copy operation failed"
+    echo "[Step 2] File copy operation complete"
+    
+    # Step 3: Write full diagnostics (verbose - output to both buffer and stdout via message)
+    echo "[Step 3] Writing full diagnostic report..."
+    podman-compose exec emacs emacsclient -s sem-server --eval '
+(progn
+  (require (quote org-element))
+  (let ((diag-output ""))
+    (cl-flet ((diag-insert (fmt &rest args)
+                           (let ((text (apply (function format) (cons fmt args))))
+                             (setq diag-output (concat diag-output text "\n")))))
+      (diag-insert "=== INBOX DIAGNOSTIC ===")
+      (diag-insert "Time: %s" (current-time-string))
+      (diag-insert "File exists: %s" (file-exists-p "/data/inbox-mobile.org"))
+      (diag-insert "File readable: %s" (file-readable-p "/data/inbox-mobile.org"))
+      (diag-insert "File writable: %s" (file-writable-p "/data/inbox-mobile.org"))
+      (diag-insert "Copy file exists: %s" (file-exists-p "/data/inbox-mobile.copy.org"))
+      (when (file-exists-p "/data/inbox-mobile.org")
+        (insert-file-contents "/data/inbox-mobile.org")
+        (diag-insert "Buffer size: %d bytes" (point-max))
+        (diag-insert "First 300 chars:")
+        (diag-insert "%s" (buffer-substring-no-properties (point-min) (min (point-max) 300)))
+        (diag-insert "Last 100 chars:")
+        (diag-insert "%s" (buffer-substring-no-properties (max (point-min) (- (point-max) 100)) (point-max)))
+        (condition-case err
+            (progn
+              (org-mode)
+              (let ((ast (org-element-parse-buffer)))
+                (diag-insert "AST parsed OK, root type: %s" (org-element-type ast))
+                (let ((headlines (org-element-map ast (quote headline) (lambda (h) h))))
+                  (diag-insert "Headline count: %d" (length headlines))
+                  (dolist (h headlines)
+                    (diag-insert "  - %s | tags: %s"
+                             (org-element-property :raw-value h)
+                             (org-element-property :tags h))))))
+          (error (diag-insert "PARSE ERROR: %s" (error-message-string err))))))
+    ;; Write to file
+    (with-temp-buffer
+      (insert diag-output)
+      (write-region nil nil "/data/sem-diag.txt"))
+    ;; Also print to stdout via message (will appear in container logs)
+    (message "DIAG-VERBOSE:\n%s" diag-output)
+    (message "DIAG-VERBOSE: End of diagnostic output")))
+' 2>&1 || echo "WARNING: emacsclient diagnose failed"
+    echo "[Step 3] Diagnostic report written"
+    
+    # Fetch the diagnostic file from WebDAV
+    echo "Fetching diagnostic file from WebDAV..."
+    curl --silent --show-error \
+        -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
+        -o "$RUN_DIR/sem-diag.txt" \
+        "${WEBDAV_BASE_URL}/data/sem-diag.txt" 2>/dev/null || echo "Could not fetch sem-diag.txt"
+    
+    echo "Diagnostic file saved to: $RUN_DIR/sem-diag.txt"
+    echo "=== Diagnostic content ==="
+    cat "$RUN_DIR/sem-diag.txt" 2>/dev/null || echo "(empty or not found)"
+    echo "=== End diagnostic ==="
 }
 
 trigger_inbox_processing() {
@@ -194,7 +354,7 @@ trigger_inbox_processing() {
     echo "=== Triggering Inbox Processing ==="
     
     echo "Calling sem-core-process-inbox..."
-    podman exec sem-emacs emacsclient -e "(sem-core-process-inbox)"
+    podman-compose exec emacs emacsclient -s sem-server -e "(sem-core-process-inbox)"
     
     echo "Inbox processing triggered"
 }
@@ -216,7 +376,7 @@ wait_for_tasks() {
         if curl --fail --silent --show-error \
             -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
             -o "$temp_file" \
-            "${WEBDAV_BASE_URL}/tasks.org" 2>/dev/null; then
+            "${WEBDAV_BASE_URL}/data/tasks.org" 2>/dev/null; then
             
             # Count TODO entries
             todo_count=$(grep -c '^\* TODO ' "$temp_file" 2>/dev/null || echo "0")
@@ -268,7 +428,7 @@ collect_artifacts() {
         curl --silent --show-error \
             -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
             -o "$RUN_DIR/tasks.org" \
-            "${WEBDAV_BASE_URL}/tasks.org" 2>/dev/null || touch "$RUN_DIR/tasks.org"
+            "${WEBDAV_BASE_URL}/data/tasks.org" 2>/dev/null || touch "$RUN_DIR/tasks.org"
     fi
     
     # GET sem-log.org
@@ -276,17 +436,23 @@ collect_artifacts() {
     curl --silent --show-error \
         -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
         -o "$RUN_DIR/sem-log.org" \
-        "${WEBDAV_BASE_URL}/sem-log.org" 2>/dev/null || touch "$RUN_DIR/sem-log.org"
+        "${WEBDAV_BASE_URL}/data/sem-log.org" 2>/dev/null || touch "$RUN_DIR/sem-log.org"
     
     # GET errors.org (may 404 - handle silently)
     echo "Fetching errors.org (may not exist)..."
     if ! curl --fail --silent --show-error \
         -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
         -o "$RUN_DIR/errors.org" \
-        "${WEBDAV_BASE_URL}/errors.org" 2>/dev/null; then
+        "${WEBDAV_BASE_URL}/data/errors.org" 2>/dev/null; then
         echo "errors.org not found (this is OK)"
         touch "$RUN_DIR/errors.org"
     fi
+    
+    # Copy diagnostic files (may have been created during test)
+    echo "Copying diagnostic files..."
+    [[ -f "$RUN_DIR/sem-diag.txt" ]] && echo "  sem-diag.txt already present" || echo "  sem-diag.txt not found"
+    [[ -f "$RUN_DIR/sem-proc-diag.txt" ]] && echo "  sem-proc-diag.txt already present" || echo "  sem-proc-diag.txt not found"
+    [[ -f "$RUN_DIR/container-inbox-mobile.org" ]] && echo "  container-inbox-mobile.org already present" || echo "  container-inbox-mobile.org not found"
     
     # Copy log files from ./logs/
     echo "Copying message logs..."
@@ -299,8 +465,8 @@ collect_artifacts() {
     
     # Collect container logs
     echo "Collecting container logs..."
-    podman logs sem-emacs > "$RUN_DIR/emacs-container.log" 2>&1 || true
-    podman logs sem-webdav > "$RUN_DIR/webdav-container.log" 2>&1 || true
+    podman-compose logs emacs > "$RUN_DIR/emacs-container.log" 2>&1 || true
+    podman-compose logs webdav > "$RUN_DIR/webdav-container.log" 2>&1 || true
     
     echo "Artifacts collected to: $RUN_DIR"
 }
@@ -397,6 +563,7 @@ main() {
     cd "$REPO_ROOT"
     
     # Setup phase
+    cleanup_test_results
     setup_test_data
     setup_logs
     create_run_dir
@@ -411,9 +578,58 @@ main() {
         exit 1
     fi
     
+    # Debug emacsclient connectivity
+    debug_emacsclient
+    
     # Process inbox
     upload_inbox
+    verify_inbox_upload
+    diagnose_inbox_file
+    
+    echo "Saving container view of inbox-mobile.org..."
+    podman-compose exec emacs cat /data/inbox-mobile.org > "$RUN_DIR/container-inbox-mobile.org" 2>/dev/null || echo "Could not save container inbox"
+    
     trigger_inbox_processing
+    
+    # Wait for processing to complete
+    echo "Waiting 5 seconds for inbox processing to complete..."
+    sleep 5
+    
+    # Write processing results diagnostic
+    echo "Writing post-processing diagnostic..."
+    podman-compose exec emacs emacsclient -s sem-server --eval '
+(with-temp-buffer
+  (require (quote org-element))
+  (insert "=== PROCESSING DIAGNOSTIC ===\n")
+  (insert (format "Time: %s\n" (current-time-string)))
+  (insert (format "inbox-mobile.org exists: %s\n" (file-exists-p "/data/inbox-mobile.org")))
+  (insert (format "tasks.org exists: %s\n" (file-exists-p "/data/tasks.org")))
+  (when (file-exists-p "/data/tasks.org")
+    (insert-file-contents "/data/tasks.org")
+    (insert (format "Tasks file size: %d bytes\n" (point-max)))
+    (insert (format "Tasks content (first 500 chars):\n%s\n"
+            (buffer-substring-no-properties (point-min) (min (point-max) 500)))))
+  (when (file-exists-p "/data/inbox-mobile.org")
+    (insert "\n--- Inbox still exists, content (first 200 chars): ---\n")
+    (insert-file-contents "/data/inbox-mobile.org")
+    (insert (format "\n%s\n" (buffer-substring-no-properties (point-min) (min (point-max) 200)))))
+  (condition-case err
+      (progn
+        (when (file-exists-p "/data/tasks.org")
+          (org-mode)
+          (let ((ast (org-element-parse-buffer)))
+            (let ((headlines (org-element-map ast (quote headline) (lambda (h) t))))
+              (insert (format "Headline count in tasks.org: %d\n" (length headlines)))))))
+    (error (insert (format "PARSE ERROR on tasks.org: %s\n" err))))
+  (write-region (point-min) (point-max) "/data/sem-proc-diag.txt" nil (quote silent)))
+' 2>/dev/null || echo "WARNING: emacsclient processing diagnostic failed"
+
+    # Fetch processing diagnostic
+    curl --silent --show-error \
+        -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
+        -o "$RUN_DIR/sem-proc-diag.txt" \
+        "${WEBDAV_BASE_URL}/sem-proc-diag.txt" 2>/dev/null || echo "Could not fetch sem-proc-diag.txt"
+    echo "Post-processing diagnostic saved to: $RUN_DIR/sem-proc-diag.txt"
     
     # Wait for tasks
     if ! wait_for_tasks; then

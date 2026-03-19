@@ -115,14 +115,19 @@ or nil if no body content exists. Nested sub-headlines are excluded."
 Returns a list of headline plists with :title, :tags, :body, :link, :point, :hash."
   (cl-block sem-router--parse-headlines
     (unless (file-exists-p sem-router-inbox-file)
+      (message "SEM: sem-router--parse-headlines: file does not exist: %s" sem-router-inbox-file)
       (sem-core-log "router" "INBOX-ITEM" "SKIP" "inbox-mobile.org does not exist")
       (cl-return-from sem-router--parse-headlines nil))
 
+    (message "SEM: sem-router--parse-headlines: parsing %s" sem-router-inbox-file)
     (let ((headlines '()))
       (with-temp-buffer
         (insert-file-contents sem-router-inbox-file)
+        (message "SEM: sem-router--parse-headlines: buffer has %d chars, first 100: %s"
+                 (point-max) (buffer-substring-no-properties (point-min) (min (point-min-marker) 100)))
         (org-mode)
         (let ((ast (org-element-parse-buffer)))
+          (message "SEM: sem-router--parse-headlines: AST root type: %s" (org-element-type ast))
           (org-element-map ast 'headline
             (lambda (headline-element)
               (let* ((begin (org-element-property :begin headline-element))
@@ -135,6 +140,7 @@ Returns a list of headline plists with :title, :tags, :body, :link, :point, :has
                      (body-str (or body ""))
                      (hash (secure-hash 'sha256
                                         (concat title "|" tags-str "|" body-str))))
+                (message "SEM:   parsed headline: %s | tags: %s | hash: %.8s..." title tags-str hash)
                 (push (list :title title
                             :tags tags
                             :body body
@@ -143,6 +149,7 @@ Returns a list of headline plists with :title, :tags, :body, :link, :point, :has
                             :hash hash)
                       headlines))))))
 
+      (message "SEM: sem-router--parse-headlines: found %d headlines" (length headlines))
       (nreverse headlines))))
 
 ;;; Tag Detection
@@ -473,22 +480,28 @@ This is called by sem-core-process-inbox."
               (skipped-count 0)
               (error-count 0))
 
+          (message "SEM: sem-router-process-inbox: found %d headlines" (length headlines))
           (unless headlines
+            (message "SEM: sem-router-process-inbox: no headlines, returning nil")
             (cl-return-from sem-router-process-inbox nil))
+
+          (message "SEM: Processing %d headlines..." (length headlines))
 
           (dolist (headline headlines)
             (let ((hash (plist-get headline :hash))
                   (title (plist-get headline :title)))
 
-              ;; Skip if already processed
+              (message "SEM: Headline: %s | tags: %s" title (plist-get headline :tags))
               (if (sem-router--is-processed hash)
                   (progn
+                    (message "SEM: Already processed, skipping: %s" title)
                     (setq skipped-count (1+ skipped-count)))
                 ;; Route based on tag/type
                 (let ((url (sem-router--is-link-headline headline)))
                   (cond
                    ;; Link headline -> URL capture (async)
                    (url
+                    (message "SEM: Routing to URL capture: %s" url)
                     (sem-url-capture-process
                      url
                      (lambda (filepath context)
@@ -512,6 +525,7 @@ Handles success, retry, and DLQ escalation."
                              (message "SEM: URL capture failed (attempt %d/3), will retry: %s" retry-count url)))))))
                    ;; Task headline -> LLM task generation (async)
                    ((sem-router--is-task-headline headline)
+                    (message "SEM: Routing to LLM task generation: %s" title)
                     (sem-router--route-to-task-llm
                      headline
                      (lambda (success context)
@@ -523,6 +537,7 @@ Handles success, retry, and DLQ escalation."
                     (setq processed-count (1+ processed-count)))
                    ;; Unknown - skip
                    (t
+                    (message "SEM: No routing rule matched, skipping: %s" title)
                     (sem-core-log "router" "INBOX-ITEM" "SKIP"
                                   (format "Unknown tag, skipping: %s" title)
                                   nil)

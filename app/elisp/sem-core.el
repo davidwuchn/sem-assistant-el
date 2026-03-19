@@ -356,10 +356,12 @@ Reads unprocessed headlines from inbox-mobile.org and routes them
 to the appropriate handler (url-capture or LLM task generation)."
   (condition-case err
       (progn
-        (sem-core-log "core" "INBOX-ITEM" "OK" "Inbox processing started")
+        (message "SEM: sem-core-process-inbox called")
         (when (fboundp 'sem-router-process-inbox)
-          (sem-router-process-inbox))
-        (sem-core-log "core" "INBOX-ITEM" "OK" "Inbox processing completed"))
+          (message "SEM: Calling sem-router-process-inbox...")
+          (sem-router-process-inbox)
+          (message "SEM: sem-router-process-inbox returned"))
+        (message "SEM: sem-core-process-inbox done"))
     (error
      (sem-core-log-error "core" "INBOX-ITEM" (error-message-string err) nil)
      (message "SEM: Inbox processing error: %s" (error-message-string err)))))

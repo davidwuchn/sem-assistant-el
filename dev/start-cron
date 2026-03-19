@@ -8,8 +8,8 @@ chmod -R go-w /etc/cron.d
 # Start cron daemon in background
 service cron start
 
-# Start emacs daemon in background  
-emacs --daemon --load=/app/elisp/init.el
+# Start emacs daemon in background with explicit socket name
+emacs --bg-daemon=sem-server --load=/app/elisp/init.el
 
 # Keep container alive by tailing the log file
 # This runs in foreground and keeps PID 1 alive
