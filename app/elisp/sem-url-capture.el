@@ -315,7 +315,7 @@ If no callback is provided, processing still happens asynchronously."
                      ;; Apply security masking: sanitize sensitive blocks before LLM
                      (security-result (sem-security-sanitize-for-llm sanitized))
                      (tokenized-text (car security-result))
-                     (security-blocks (cdr security-result))
+                     (security-blocks (cadr security-result))
                      (umbrella-nodes (sem-url-capture--get-umbrella-nodes))
                      (system-prompt (sem-url-capture--build-system-prompt))
                      (user-prompt (sem-url-capture--build-user-prompt url tokenized-text umbrella-nodes)))

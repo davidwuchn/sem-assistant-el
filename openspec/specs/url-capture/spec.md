@@ -102,7 +102,7 @@ The system SHALL send the sanitized content and umbrella node context to the LLM
 - **THEN** it returns a properly formatted org-roam node with all required fields
 
 ### Requirement: Sensitive blocks restored before saving
-The system SHALL restore sensitive content blocks into the LLM response before saving to the org-roam node. After receiving a non-nil LLM response, `sem-security-restore-from-llm` SHALL be called on the raw LLM response string using the `security-blocks` alist from the context plist (under `:security-blocks`), before passing the result to `sem-url-capture--validate-and-save`. Tokens in the LLM response that have no corresponding entry in `security-blocks` SHALL be left as-is. If `security-blocks` is nil or empty, the call to `sem-security-restore-from-llm` SHALL still be made and SHALL return the text unchanged.
+The system SHALL restore sensitive content blocks into the LLM response before saving to the org-roam node. `sem-security-sanitize-for-llm` returns a three-element list `(tokenized-text blocks-alist position-info-alist)`. The `blocks-alist` (second element) SHALL be stored in the context plist under `:security-blocks`. After receiving a non-nil LLM response, `sem-security-restore-from-llm` SHALL be called on the raw LLM response string using the `:security-blocks` from context, before passing the result to `sem-url-capture--validate-and-save`. Tokens in the LLM response that have no corresponding entry in `security-blocks` SHALL be left as-is. If `security-blocks` is nil or empty, the call to `sem-security-restore-from-llm` SHALL still be made and SHALL return the text unchanged.
 
 #### Scenario: Sensitive blocks restored in url-capture
 - **WHEN** `sem-url-capture-process` receives a non-nil LLM response
@@ -112,10 +112,10 @@ The system SHALL restore sensitive content blocks into the LLM response before s
 #### Scenario: Unknown tokens left unchanged
 - **WHEN** the LLM response contains a `<<SENSITIVE_xxx>>` token not present in `security-blocks`
 - **THEN** the token is left as-is in the output (no error, no crash)
+
 #### Scenario: Empty security-blocks handled gracefully
 - **WHEN** `security-blocks` is nil or empty
 - **THEN** `sem-security-restore-from-llm` is still called and returns the text unchanged
-crash)
 
 ### Requirement: LLM output validated before saving
 The system SHALL validate LLM output before writing to disk. Validation SHALL check for presence of `:PROPERTIES:`, `:ID:`, and `#+title:`. Invalid output SHALL be sent to `/data/errors.org`.

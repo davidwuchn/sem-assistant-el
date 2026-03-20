@@ -101,7 +101,7 @@ Asserts that sem-security-sanitize-for-llm is called and tokens are used."
   (let ((text "Normal text\n#+begin_sensitive\nSECRET_API_KEY=abc123\n#+end_sensitive\nMore text"))
     (let* ((result (sem-security-sanitize-for-llm text))
            (tokenized (car result))
-           (blocks (cdr result)))
+           (blocks (cadr result)))
       ;; Tokenized text should NOT contain the sensitive content
       (should-not (string-match-p "SECRET_API_KEY=abc123" tokenized))
       ;; Tokenized text should contain a token

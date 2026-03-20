@@ -248,12 +248,12 @@ Returns immediately (async). The CALLBACK is invoked when complete."
              (sanitized-body nil))
 
         ;; Sanitize body content if present
-        ;; sem-security-sanitize-for-llm returns (sanitized-text . blocks-alist)
+        ;; sem-security-sanitize-for-llm returns (tokenized-text blocks-alist position-info-alist)
         (when body
           (require 'sem-security)
           (let ((sanitize-result (sem-security-sanitize-for-llm body)))
             (setq sanitized-body (car sanitize-result))
-            (setq security-blocks (cdr sanitize-result))))
+            (setq security-blocks (cadr sanitize-result))))
 
         ;; Build the LLM prompt for task processing
         ;; Read OUTPUT_LANGUAGE at call time (not load time) with default "English"
@@ -276,9 +276,18 @@ Returns immediately (async). The CALLBACK is invoked when complete."
                                       "1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:\n"
                                       "2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it\n"
                                       "3. Output ONLY the Org entry - no explanations, no markdown wrappers\n"
-                                      "4. Clean up the task title to be concise and actionable\n\n"
-                                      "CRITICAL: Use EXACTLY the :ID: value provided in the template below. Do not generate, modify, or substitute it."
-                                      language-instruction))
+                                      "4. Clean up the task title to be concise and actionable\n"
+                                       "5. CRITICAL: Preserve ALL <<SENSITIVE_N>> tokens VERBATIM in your output. These tokens represent masked sensitive content and must appear unchanged.\n"
+                                       "6. CRITICAL: Tokens must appear at the SAME semantic position as the original sensitive content appeared in the input.\n\n"
+                                       "TOKEN PRESERVATION EXAMPLE:\n"
+                                       "BEFORE (input with sensitive block):\n"
+                                       "#+begin_sensitive\n"
+                                       "Password: supersecret123\n"
+                                       "#+end_sensitive\n\n"
+                                       "AFTER (correct LLM output - token preserved at same position):\n"
+                                       "Password: <<SENSITIVE_1>>\n\n"
+                                       "CRITICAL: Use EXACTLY the :ID: value provided in the template below. Do not generate, modify, or substitute it."
+                                       language-instruction))
                (user-prompt (concat
                              (format "Convert this task headline into a structured Org TODO entry:
 

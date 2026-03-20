@@ -22,7 +22,7 @@ secret-api-key-12345
 More normal text"))
     (let* ((result (sem-security-sanitize-for-llm original))
            (tokenized (car result))
-           (blocks (cdr result)))
+           (blocks (cadr result)))
       ;; Tokenized text should contain token placeholder
       (should (string-prefix-p "Normal text\n<<" tokenized))
       ;; Detokenize should restore original
@@ -39,11 +39,16 @@ SECRET_PASSWORD_123
 #+end_sensitive
 More public info"))
     (let* ((result (sem-security-sanitize-for-llm original))
-           (tokenized (car result)))
+           (tokenized (car result))
+           (blocks (cadr result))
+           (position-info (caddr result)))
       ;; Tokenized text should NOT contain the sensitive content
       (should-not (string-match-p "SECRET_PASSWORD_123" tokenized))
       ;; Should contain token placeholder instead
-      (should (string-match-p "<<SENSITIVE_[0-9]+>>" tokenized)))))
+      (should (string-match-p "<<SENSITIVE_[0-9]+>>" tokenized))
+      ;; Position info should exist and be non-nil
+      (should (listp position-info))
+      (should (> (length position-info) 0)))))
 
 ;;; Tests for URL sanitization
 
@@ -83,6 +88,83 @@ Org-roam output should NOT call this function (policy check)."
   (should (functionp 'sem-security-sanitize-urls))
   ;; But org-roam modules should not use it (this is a code review check)
   (should t))
+
+;;; Tests for position-preserving round-trip
+
+(ert-deftest sem-security-test-position-roundtrip ()
+  "Test that position info is correctly captured and preserved through round-trip."
+  (let ((original "Update password to\n#+begin_sensitive\nsupersecret123\n#+end_sensitive\nfor access"))
+    (let* ((result (sem-security-sanitize-for-llm original))
+           (tokenized (car result))
+           (blocks (cadr result))
+           (position-info (caddr result)))
+      ;; Token should be present in tokenized text
+      (should (string-match-p "<<SENSITIVE_1>>" tokenized))
+      ;; Original sensitive content should NOT be present
+      (should-not (string-match-p "supersecret123" tokenized))
+      ;; Position info should have entry for <<SENSITIVE_1>>
+      (should (= (length position-info) 1))
+      (let ((entry (car position-info)))
+        (should (string= (car entry) "<<SENSITIVE_1>>"))
+        (should (= (length entry) 4)) ;; token, content, before-context, after-context
+        ;; Before context should contain text before the sensitive block
+        (let ((before-context (caddr entry)))
+          (should (string-match-p "Update password to" before-context)))
+        ;; After context should contain text after the sensitive block
+        (let ((after-context (cadddr entry)))
+          (should (string-match-p "for access" after-context))))
+      ;; Round-trip should restore original
+      (let ((restored (sem-security-restore-from-llm tokenized blocks)))
+        (should (string= original restored))))))
+
+;;; Tests for expansion detection
+
+(ert-deftest sem-security-test-expansion-detection ()
+  "Test that sem-security-verify-tokens-present detects token expansion."
+  (let ((blocks-alist (list
+                       (cons "<<SENSITIVE_1>>" (concat "#+begin_sensitive" (string ?\n) "supersecret123" (string ?\n) "#+end_sensitive"))
+                       (cons "<<SENSITIVE_2>>" (concat "#+begin_sensitive" (string ?\n) "sk-live-abc123xyz789" (string ?\n) "#+end_sensitive")))))
+    ;; Test case 1: No expansion - tokens present, no secret content
+    (let* ((llm-output "Password: <<SENSITIVE_1>> and API key: <<SENSITIVE_2>>")
+           (verification (sem-security-verify-tokens-present llm-output blocks-alist))
+           (missing (cdr (assoc 'missing verification)))
+           (expanded (cdr (assoc 'expanded verification))))
+      (progn
+        (should (null missing))
+        (should (null expanded))))
+    ;; Test case 2: Token missing - secret appeared instead of token
+    ;; Note: The function checks if full block content appears, not just secret.
+    ;; Since the LLM output has "supersecret123" (not the full block with markers),
+    ;; it is NOT detected as expansion of the block. Instead, the token
+    ;; is marked as missing because it was not preserved in the output.
+    (let* ((llm-output "Password: supersecret123 and API key: <<SENSITIVE_2>>")
+           (verification (sem-security-verify-tokens-present llm-output blocks-alist))
+           (missing (cdr (assoc 'missing verification)))
+           (expanded (cdr (assoc 'expanded verification))))
+      (progn
+        (should (= (length missing) 1))
+        (should (string= (car missing) "<<SENSITIVE_1>>"))
+        (should (null expanded))))
+    ;; Test case 3: Missing tokens (acceptable - LLM didn't use them)
+    (let* ((llm-output "Password: <<SENSITIVE_1>>")
+           (verification (sem-security-verify-tokens-present llm-output blocks-alist))
+           (missing (cdr (assoc 'missing verification)))
+           (expanded (cdr (assoc 'expanded verification))))
+      (progn
+        (should (= (length missing) 1))
+        (should (string= (car missing) "<<SENSITIVE_2>>"))
+        (should (null expanded))))
+    ;; Test case 4: Full block expansion detected
+    ;; When the full block with markers appears in output, it is detected as expansion.
+    ;; Token <<SENSITIVE_2>> is in output, so it's not missing.
+    (let* ((llm-output (concat "Password: #+begin_sensitive\nsupersecret123\n#+end_sensitive and API key: <<SENSITIVE_2>>"))
+           (verification (sem-security-verify-tokens-present llm-output blocks-alist))
+           (missing (cdr (assoc 'missing verification)))
+           (expanded (cdr (assoc 'expanded verification))))
+      (progn
+        (should (null missing))
+        (should (= (length expanded) 1))
+        (should (string= (car expanded) "<<SENSITIVE_1>>"))))))
 
 (provide 'sem-security-test)
 ;;; sem-security-test.el ends here

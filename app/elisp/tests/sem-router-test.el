@@ -417,17 +417,22 @@ Task description here."))
 
 (ert-deftest sem-router-test-security-block-round-trip ()
   "Test that security blocks are correctly destructured and restored.
-Verifies car/cdr usage: (car result) = sanitized-body, (cdr result) = blocks."
+Verifies 3-element return: (car result) = sanitized-body, (cadr result) = blocks, (caddr result) = position-info."
   (let* ((original-body "This is content with #+begin_sensitive\nsecret data\n#+end_sensitive")
-         ;; Mock the security functions
-         (sanitize-result (cons "This is content with <<SENSITIVE_1>>"
-                                '(("<<SENSITIVE_1>>" . "#+begin_sensitive\nsecret data\n#+end_sensitive"))))
+         ;; Mock the security functions - now 3-element list
+         (sanitize-result (list "This is content with <<SENSITIVE_1>>"
+                                '(("<<SENSITIVE_1>>" . "#+begin_sensitive\nsecret data\n#+end_sensitive"))
+                                '(("<<SENSITIVE_1>>" "#+begin_sensitive\nsecret data\n#+end_sensitive" "This is content with " " for access"))))
          (sanitized-body (car sanitize-result))
-         (security-blocks (cdr sanitize-result)))
+         (security-blocks (cadr sanitize-result))
+         (position-info (caddr sanitize-result)))
     ;; Verify car gives sanitized body
     (should (string= sanitized-body "This is content with <<SENSITIVE_1>>"))
-    ;; Verify cdr gives blocks alist
+    ;; Verify cadr gives blocks alist
     (should (equal security-blocks '(("<<SENSITIVE_1>>" . "#+begin_sensitive\nsecret data\n#+end_sensitive"))))
+    ;; Verify caddr gives position-info
+    (should (listp position-info))
+    (should (= (length position-info) 1))
     ;; Verify round-trip would work
     (should (string= original-body
                      (sem-security-restore-from-llm sanitized-body security-blocks)))))
@@ -496,7 +501,7 @@ When headline has no body, no BODY: section should be in prompt."
     (when body
       (let ((result (sem-security-sanitize-for-llm body)))
         (setq sanitized-body (car result))
-        (setq security-blocks (cdr result))))
+        (setq security-blocks (cadr result))))
     ;; sanitized-body should still be nil
     (should-not sanitized-body)
     (should-not security-blocks)))

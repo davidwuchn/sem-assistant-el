@@ -94,7 +94,7 @@ The task LLM pipeline SHALL use `sem-llm-request` for all LLM API calls, ensurin
 - **AND** this ID is passed to `sem-router--validate-task-response`
 
 ### Requirement: Task LLM pipeline receives and uses body content
-The function `sem-router--route-to-task-llm` SHALL read the `:body` key from the headline plist. If `:body` is non-nil, it SHALL call `sem-security-sanitize-for-llm` on the body text, store the returned `security-blocks` in the context plist, and append a `BODY:` section to the user prompt after the `HEADLINE:` line. The prompt SHALL include explicit instructions that `<<SENSITIVE_N>>` tokens MUST be preserved verbatim in the LLM output at the same semantic position as the original sensitive content appeared in the input. The prompt SHALL include a BEFORE/AFTER example demonstrating this requirement. After the LLM response arrives, it SHALL call `sem-security-restore-from-llm` using the stored `security-blocks` before passing the response to `sem-router--validate-task-response`.
+The function `sem-router--route-to-task-llm` SHALL read the `:body` key from the headline plist. If `:body` is non-nil, it SHALL call `sem-security-sanitize-for-llm` on the body text, store the returned `security-blocks` in the context plist, and append a `BODY:` section to the user prompt after the `HEADLINE:` line. After the LLM response arrives, it SHALL call `sem-security-restore-from-llm` using the stored `security-blocks` before passing the response to `sem-router--validate-task-response`.
 
 #### Scenario: @task with body sanitizes and includes in prompt
 - **WHEN** `sem-router--route-to-task-llm` receives a headline with non-nil `:body`
@@ -115,49 +115,6 @@ The function `sem-router--route-to-task-llm` SHALL read the `:body` key from the
 #### Scenario: Context plist contains security blocks
 - **WHEN** `sem-llm-request` is called for an `@task` with body
 - **THEN** the context plist contains `:injected-id`, `:hash`, and `:security-blocks`
-
-#### Scenario: Prompt includes token preservation instruction
-- **WHEN** `sem-router--route-to-task-llm` constructs the prompt for a headline with sensitive body
-- **THEN** the prompt explicitly instructs the LLM to preserve `<<SENSITIVE_N>>` tokens verbatim
-- **AND** the prompt instructs that tokens must appear at the same semantic position
-
-#### Scenario: Prompt includes BEFORE/AFTER example
-- **WHEN** constructing prompt with sensitive body
-- **THEN** the prompt includes a concrete example showing:
-- **AND** BEFORE: `#+begin_sensitive\nPassword: supersecret123\n#+end_sensitive`
-- **AND** AFTER: `Password: <<SENSITIVE_1>>`
-
-#### Scenario: Token preserved in semantic position after LLM response
-- **WHEN** LLM output is detokenized
-- **THEN** the original sensitive content appears at the same logical position as in the input
-
-### Requirement: Security block destructuring handles three-element return
-The function `sem-router--route-to-task-llm` SHALL correctly destructure the return value of `sem-security-sanitize-for-llm`. The result is now a list of three elements: `(tokenized-text blocks-alist position-info-alist)` where `tokenized-text` is `(car result)`, `blocks-alist` is `(cadr result)`, and `position-info-alist` is `(caddr result)`.
-
-#### Scenario: Correct destructuring of three-element sanitize result
-- **WHEN** `sem-security-sanitize-for-llm` returns a three-element list
-- **THEN** `sanitized-body` is bound to `(car result)`
-- **AND** `security-blocks` is bound to `(cadr result)`
-- **AND** `position-info` is bound to `(caddr result)`
-
-#### Scenario: Position info passed to verification
-- **WHEN** LLM response is received
-- **THEN** `position-info` is used to verify semantic token preservation
-- **AND** expansion detection uses both `blocks-alist` and `position-info`
-
-### Requirement: Pre-write token verification
-Before writing LLM output to tasks.org, the system SHALL verify that no token expansion occurred. Token expansion means the LLM output contains actual secret content (from the blocks-alist) instead of the corresponding tokens.
-
-#### Scenario: Expansion detected rejects response
-- **WHEN** LLM output contains original secret content instead of tokens
-- **THEN** the response is rejected
-- **AND** the error is logged as CRITICAL security incident
-- **AND** the task is sent to DLQ
-
-#### Scenario: Missing tokens (non-expansion) are acceptable
-- **WHEN** LLM output does not contain a token that was in the sanitized body
-- **THEN** this is NOT considered expansion
-- **AND** the response is accepted (LLM may omit unused tokens)
 
 ### Requirement: Empty body proceeds with LLM call
 When `sanitized-body` is the empty string after sanitization, the LLM call SHALL proceed with an empty body. The system SHALL NOT skip the LLM call for empty bodies.
@@ -187,3 +144,51 @@ All writes to `/data/tasks.org` from `sem-router--route-to-task-llm` SHALL be pr
 - **WHEN** the lock is held by another callback
 - **THEN** the current callback re-schedules itself with 0.5s delay
 - **AND** retries up to 10 times before routing to DLQ
+
+## MODIFIED Requirements
+
+### Requirement: Task LLM pipeline receives and uses body content (ENHANCED)
+The prompt SHALL include explicit instructions that `<<SENSITIVE_N>>` tokens MUST be preserved verbatim in the LLM output at the same semantic position as the original sensitive content appeared in the input. The prompt SHALL include a BEFORE/AFTER example demonstrating this requirement.
+
+#### Scenario: Prompt includes token preservation instruction
+- **WHEN** `sem-router--route-to-task-llm` constructs the prompt for a headline with sensitive body
+- **THEN** the prompt explicitly instructs the LLM to preserve `<<SENSITIVE_N>>` tokens verbatim
+- **AND** the prompt instructs that tokens must appear at the same semantic position
+
+#### Scenario: Prompt includes BEFORE/AFTER example
+- **WHEN** constructing prompt with sensitive body
+- **THEN** the prompt includes a concrete example showing:
+- **AND** BEFORE: `#+begin_sensitive\nPassword: supersecret123\n#+end_sensitive`
+- **AND** AFTER: `Password: <<SENSITIVE_1>>`
+
+#### Scenario: Token preserved in semantic position after LLM response
+- **WHEN** LLM output is detokenized
+- **THEN** the original sensitive content appears at the same logical position as in the input
+
+### Requirement: Pre-write token verification (NEW)
+Before writing LLM output to tasks.org, the system SHALL verify that no token expansion occurred. Token expansion means the LLM output contains actual secret content (from the blocks-alist) instead of the corresponding tokens.
+
+#### Scenario: Expansion detected rejects response
+- **WHEN** LLM output contains original secret content instead of tokens
+- **THEN** the response is rejected
+- **AND** the error is logged as CRITICAL security incident
+- **AND** the task is sent to DLQ
+
+#### Scenario: Missing tokens (non-expansion) are acceptable
+- **WHEN** LLM output does not contain a token that was in the sanitized body
+- **THEN** this is NOT considered expansion
+- **AND** the response is accepted (LLM may omit unused tokens)
+
+### Requirement: Security block destructuring handles three-element return (UPDATED)
+The function `sem-router--route-to-task-llm` SHALL correctly destructure the return value of `sem-security-sanitize-for-llm`. The result is now a list of three elements: `(tokenized-text blocks-alist position-info-alist)` where `tokenized-text` is `(car result)`, `blocks-alist` is `(cadr result)`, and `position-info-alist` is `(caddr result)`.
+
+#### Scenario: Correct destructuring of three-element sanitize result
+- **WHEN** `sem-security-sanitize-for-llm` returns a three-element list
+- **THEN** `sanitized-body` is bound to `(car result)`
+- **AND** `security-blocks` is bound to `(cadr result)`
+- **AND** `position-info` is bound to `(caddr result)`
+
+#### Scenario: Position info passed to verification
+- **WHEN** LLM response is received
+- **THEN** `position-info` is used to verify semantic token preservation
+- **AND** expansion detection uses both `blocks-alist` and `position-info`

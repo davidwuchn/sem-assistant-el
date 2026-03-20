@@ -5,7 +5,7 @@ This capability defines the security masking system that protects sensitive cont
 ## Requirements
 
 ### Requirement: Sensitive blocks replaced with tokens before LLM call
-The system SHALL replace all `#+begin_sensitive` / `#+end_sensitive` blocks with opaque tokens before any content is sent to the LLM API. The original text SHALL be stored in a token map for restoration. The function `sem-security-sanitize-for-llm` SHALL be called in `sem-url-capture-process` on the sanitized article text before passing it to `sem-llm-request`. The returned `blocks` alist SHALL be stored in the context plist under `:security-blocks`.
+The system SHALL replace all `#+begin_sensitive` / `#+end_sensitive` blocks with opaque tokens before any content is sent to the LLM API. The original text SHALL be stored in a token map for restoration. The function `sem-security-sanitize-for-llm` SHALL return a three-element list: `(tokenized-text blocks-alist position-info-alist)`. The function SHALL be called in `sem-url-capture-process` on the sanitized article text before passing it to `sem-llm-request`. The returned `blocks-alist` SHALL be stored in the context plist under `:security-blocks`.
 
 #### Scenario: Sensitive content tokenized
 - **WHEN** content contains `#+begin_sensitive...#+end_sensitive` blocks
@@ -22,6 +22,18 @@ The system SHALL replace all `#+begin_sensitive` / `#+end_sensitive` blocks with
 #### Scenario: Security blocks stored in context
 - **WHEN** content is tokenized for url-capture
 - **THEN** the blocks alist is stored in the context plist under `:security-blocks`
+
+#### Scenario: Sanitize returns three-element list
+- **WHEN** `sem-security-sanitize-for-llm` is called
+- **THEN** it returns a list of three elements: `(tokenized-text blocks-alist position-info-alist)`
+- **AND** `tokenized-text` is the body with sensitive content replaced by tokens
+- **AND** `blocks-alist` maps tokens to original content
+- **AND** `position-info-alist` maps tokens to `(before-context . after-context)` pairs
+
+#### Scenario: Position info captured for each block
+- **WHEN** content contains multiple sensitive blocks
+- **THEN** each block contributes an entry to position-info-alist
+- **AND** each entry contains up to 20 chars of surrounding context
 
 ### Requirement: Tokens restored in output before writing
 The system SHALL restore original sensitive content from the token map after receiving LLM output and before writing to disk. The detokenization SHALL use the same token map from the input phase. For `sem-url-capture-process`, `sem-security-restore-from-llm` SHALL be called on the raw LLM response string, using the `:security-blocks` from context, before passing the result to `sem-url-capture--validate-and-save`.
@@ -46,6 +58,15 @@ The system SHALL ensure that no content between `#+begin_sensitive` and `#+end_s
 - **WHEN** content with sensitive blocks is prepared for LLM
 - **THEN** only tokens (not original sensitive text) are in the request
 
+### Requirement: Token expansion detection
+The system SHALL detect when an LLM output contains actual secret content instead of tokens. This SHALL be treated as a CRITICAL security incident indicating sanitizer failure.
+
+#### Scenario: Expansion detected in LLM output
+- **WHEN** LLM output contains original sensitive content from blocks-alist
+- **THEN** expansion is flagged
+- **AND** the response is rejected (not written to tasks.org)
+- **AND** a CRITICAL error is logged
+
 ## REMOVED Requirements
 
 ### Requirement: URL sanitization for url-capture output
@@ -54,15 +75,11 @@ The system SHALL ensure that no content between `#+begin_sensitive` and `#+end_s
 **Migration**: This requirement is removed. URL sanitization for org-roam (url-capture) output is explicitly excluded.
 
 ### Requirement: Local variable blocks disabled
-The system SHALL disable local variable blocks in Org files (`enable-local-variables nil`) to prevent malicious RSS payloads from re-enabling org-babel evaluation.
+**Reason**: This security requirement is handled by Emacs configuration at the daemon level, not within this capability.
 
-#### Scenario: Local variables ignored
-- **WHEN** an Org file contains a local variables block
-- **THEN** Emacs does not evaluate the variables
+**Migration**: This requirement is removed from security-masking spec.
 
 ### Requirement: org-babel evaluation disabled
-The system SHALL disable org-babel evaluation (`org-export-babel-evaluate nil`, `org-confirm-babel-evaluate t`) to prevent execution of embedded code blocks in processed content.
+**Reason**: This security requirement is handled by Emacs configuration at the daemon level, not within this capability.
 
-#### Scenario: Babel blocks not evaluated
-- **WHEN** an Org file contains source blocks
-- **THEN** they are not automatically evaluated
+**Migration**: This requirement is removed from security-masking spec.
