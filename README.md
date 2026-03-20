@@ -108,9 +108,9 @@ The SEM Assistant processes headlines from `inbox-mobile.org` based on tags:
 Headlines tagged with `@task` are sent to the LLM for structured task generation:
 
 ```org
-* Buy groceries :@task:
-* Review PR for project X :@task:work:
-* Call dentist tomorrow :@task:routine:
+* Buy groceries :task:
+* Review PR for project X :task:work:
+* Call dentist tomorrow :task:routine:
 ```
 
 **Allowed Tags:**

@@ -14,3 +14,10 @@
   - Group lunch at a local restaurant
   
   Please coordinate with the HR department for scheduling.
+
+* TODO Update password manager with new credentials :task:
+  #+begin_sensitive
+  Password: supersecret123
+  API Key: sk-live-abc123xyz789
+  #+end_sensitive
+  This task contains sensitive credentials that should be masked before sending to LLM.

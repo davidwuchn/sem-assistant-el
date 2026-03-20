@@ -18,13 +18,13 @@
 ;;; Configuration (from environment variables)
 
 (defconst sem-rss-max-entries-per-feed
-  (or (when-let ((val (getenv "RSS_MAX_ENTRIES_PER_FEED")))
+  (or (when-let* ((val (getenv "RSS_MAX_ENTRIES_PER_FEED")))
         (string-to-number val))
       10)
   "Maximum number of entries per feed. Read from RSS_MAX_ENTRIES_PER_FEED.")
 
 (defconst sem-rss-max-input-chars
-  (or (when-let ((val (getenv "RSS_MAX_INPUT_CHARS")))
+  (or (when-let* ((val (getenv "RSS_MAX_INPUT_CHARS")))
         (string-to-number val))
       199000)
   "Maximum input characters for LLM. Read from RSS_MAX_INPUT_CHARS.")

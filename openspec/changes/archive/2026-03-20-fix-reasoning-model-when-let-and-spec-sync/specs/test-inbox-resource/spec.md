@@ -1,10 +1,4 @@
-# Specification: test-inbox-resource
-
-## Purpose
-
-Define requirements for test inbox org file.
-
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Test inbox resource file exists
 The system SHALL provide a test inbox org file at `dev/integration/testing-resources/inbox-tasks.org` that exercises the inbox processing pipeline.
@@ -36,4 +30,8 @@ The system SHALL provide a test inbox org file at `dev/integration/testing-resou
 
 #### Scenario: Test inbox has no link headlines
 - **WHEN** the test inbox is loaded
-- **THEN** it MUST NOT contain any headlines tagged with `:link:`
+- **THEN** it MUST NOT contain any headlines tagged with `@link`
+
+#### Scenario: Test inbox has sensitive block
+- **WHEN** the test inbox is loaded
+- **THEN** one headline MUST contain a `#+begin_sensitive` / `#+end_sensitive` block to exercise sensitive content restoration

@@ -72,7 +72,8 @@ Model is read from OPENROUTER_MODEL at call time."
     :endpoint "/api/v1/chat/completions"
     :stream t
     :key (lambda () (getenv "OPENROUTER_KEY"))
-    :models (list (intern (getenv "OPENROUTER_MODEL"))))
+    :models (list (intern (getenv "OPENROUTER_MODEL")))
+    :request-params '(:reasoning (:exclude t)))
   (setq gptel-backend (gptel-get-backend "OpenRouter"))
   (setq gptel-model (intern (getenv "OPENROUTER_MODEL")))
   (message "SEM: gptel configured with OpenRouter backend"))

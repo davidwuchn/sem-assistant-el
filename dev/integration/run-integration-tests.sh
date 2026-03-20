@@ -202,6 +202,43 @@ debug_emacsclient() {
 }
 
 # =============================================================================
+# Cron/emacsclient verification
+# =============================================================================
+
+verify_cron_emacsclient() {
+    echo ""
+    echo "=== Cron/emacsclient Verification ==="
+    
+    echo "Testing emacsclient can execute scheduled functions..."
+    
+    local test_result
+    test_result=$(podman-compose exec emacs emacsclient -s sem-server --eval '
+(progn
+  (require (quote sem-core))
+  (condition-case err
+      (progn
+        (message "CRON-VERIFY: Testing sem-core-log availability")
+        (if (fboundp (quote sem-core-log))
+            (message "CRON-VERIFY: SUCCESS - sem-core-log is available")
+          (message "CRON-VERIFY: FAIL - sem-core-log not found"))
+        (message "CRON-VERIFY: Testing emacsclient execution successful"))
+    (error
+     (message "CRON-VERIFY: ERROR - %s" (error-message-string err))))
+  t
+)' 2>&1)
+    
+    echo "emacsclient execution result: $test_result"
+    
+    if echo "$test_result" | grep -q "CRON-VERIFY: SUCCESS"; then
+        echo "PASS: emacsclient can execute scheduled commands"
+        return 0
+    else
+        echo "FAIL: emacsclient execution verification failed"
+        return 1
+    fi
+}
+
+# =============================================================================
 # Inbox Processing
 # =============================================================================
 
@@ -480,7 +517,7 @@ run_assertions() {
     echo "=== Running Assertions ==="
     
     local validation_file="$RUN_DIR/validation.txt"
-    local all_passed=true
+    rm -f "$RUN_DIR/assertion-results.txt"
     
     # Assertion 1: TODO count
     echo "Assertion 1: TODO count..."
@@ -492,12 +529,13 @@ run_assertions() {
         
         if [[ "$todo_count" -ne 3 ]]; then
             echo "FAIL: expected 3 TODO entries, got $todo_count"
-            all_passed=false
+            echo "ASSERTION_1_RESULT:FAIL"
         else
             echo "PASS: TODO count is 3"
+            echo "ASSERTION_1_RESULT:PASS"
         fi
         echo ""
-    } | tee -a "$validation_file"
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
     # Assertion 2: Keyword presence
     echo "Assertion 2: Keyword presence..."
@@ -512,15 +550,18 @@ run_assertions() {
             else
                 echo "FAIL: Missing keyword '$keyword'"
                 keyword_failed=true
-                all_passed=false
             fi
         done
         
-        if [[ "$keyword_failed" != "true" ]]; then
+        if [[ "$keyword_failed" == "true" ]]; then
+            echo "FAIL: Some keywords missing"
+            echo "ASSERTION_2_RESULT:FAIL"
+        else
             echo "PASS: All keywords present"
+            echo "ASSERTION_2_RESULT:PASS"
         fi
         echo ""
-    } | tee -a "$validation_file"
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
     # Assertion 3: Org validity
     echo "Assertion 3: Org validity..."
@@ -535,24 +576,60 @@ run_assertions() {
                              (message \"ORG-VALID\")) \
                     (error (error \"ORG-INVALID: %s\" err)))" 2>&1 | grep -q "ORG-VALID"; then
             echo "PASS: tasks.org is valid Org"
+            echo "ASSERTION_3_RESULT:PASS"
         else
             echo "FAIL: tasks.org is not valid Org"
-            all_passed=false
+            echo "ASSERTION_3_RESULT:FAIL"
         fi
         echo ""
-    } | tee -a "$validation_file"
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
-    # Final result
+    # Assertion 4: Sensitive content restoration
+    echo "Assertion 4: Sensitive content restoration..."
     {
-        echo "=== Final Result ==="
-        if [[ "$all_passed" == "true" && "$TEST_STATUS" == "PASS" ]]; then
-            echo "ALL ASSERTIONS PASSED"
-            exit 0
+        echo "=== Assertion 4: Sensitive Content Restoration ==="
+        
+        local sensitive_keywords=("supersecret123" "sk-live-abc123xyz789")
+        local sensitive_failed=false
+        
+        for keyword in "${sensitive_keywords[@]}"; do
+            if grep -q "$keyword" "$RUN_DIR/tasks.org" 2>/dev/null; then
+                echo "PASS: Sensitive content restored: '$keyword'"
+            else
+                echo "FAIL: Sensitive content NOT restored: '$keyword'"
+                sensitive_failed=true
+            fi
+        done
+        
+        if [[ "$sensitive_failed" == "true" ]]; then
+            echo "FAIL: Some sensitive content not restored"
+            echo "ASSERTION_4_RESULT:FAIL"
         else
-            echo "SOME ASSERTIONS FAILED"
-            exit 1
+            echo "PASS: All sensitive content properly restored"
+            echo "ASSERTION_4_RESULT:PASS"
         fi
-    } | tee -a "$validation_file"
+        echo ""
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
+    
+    # Final result - read from temp file (avoids subshell variable loss issue)
+    echo "=== Final Result ==="
+    local final_assertion1 final_assertion2 final_assertion3 final_assertion4
+    final_assertion1=$(grep "ASSERTION_1_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion2=$(grep "ASSERTION_2_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion3=$(grep "ASSERTION_3_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion4=$(grep "ASSERTION_4_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    
+    if [[ "$final_assertion1" == "PASS" && "$final_assertion2" == "PASS" && "$final_assertion3" == "PASS" && "$final_assertion4" == "PASS" && "$TEST_STATUS" == "PASS" ]]; then
+        echo "ALL ASSERTIONS PASSED"
+        exit 0
+    else
+        echo "SOME ASSERTIONS FAILED"
+        echo "  Assertion 1 (TODO count): $final_assertion1"
+        echo "  Assertion 2 (Keywords): $final_assertion2"
+        echo "  Assertion 3 (Org validity): $final_assertion3"
+        echo "  Assertion 4 (Sensitive content): $final_assertion4"
+        exit 1
+    fi
 }
 
 # =============================================================================
@@ -580,6 +657,11 @@ main() {
     
     # Debug emacsclient connectivity
     debug_emacsclient
+    
+    # Cron/emacsclient verification
+    if ! verify_cron_emacsclient; then
+        echo "WARNING: emacsclient verification failed - continuing anyway"
+    fi
     
     # Process inbox
     upload_inbox
