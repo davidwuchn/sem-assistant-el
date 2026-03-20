@@ -11,6 +11,7 @@
 
 ;; Load modules under test
 (load-file (expand-file-name "../sem-core.el" (file-name-directory load-file-name)))
+(load-file (expand-file-name "../sem-security.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "../sem-router.el" (file-name-directory load-file-name)))
 
 ;;; Test @link routing to url-capture
@@ -416,7 +417,7 @@ Task description here."))
 ;;; Tests for security block round-trip (car/cdr destructuring)
 
 (ert-deftest sem-router-test-security-block-round-trip ()
-  "Test that security blocks are correctly destructured and restored.
+  "Test that security blocks are correctly destructured and restored as plain text.
 Verifies 3-element return: (car result) = sanitized-body, (cadr result) = blocks, (caddr result) = position-info."
   (let* ((original-body "This is content with #+begin_sensitive\nsecret data\n#+end_sensitive")
          ;; Mock the security functions - now 3-element list
@@ -433,8 +434,8 @@ Verifies 3-element return: (car result) = sanitized-body, (cadr result) = blocks
     ;; Verify caddr gives position-info
     (should (listp position-info))
     (should (= (length position-info) 1))
-    ;; Verify round-trip would work
-    (should (string= original-body
+    ;; Verify round-trip restores plain text (no markers)
+    (should (string= "This is content with secret data"
                      (sem-security-restore-from-llm sanitized-body security-blocks)))))
 
 ;;; Tests for mutex/lock behavior

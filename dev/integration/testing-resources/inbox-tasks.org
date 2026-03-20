@@ -21,3 +21,11 @@
   API Key: sk-live-abc123xyz789
   #+end_sensitive
   This task contains sensitive credentials that should be masked before sending to LLM.
+
+* TODO Process payment to vendor :task:
+  Contact the bookkeeper ask to pay the bill
+  #+begin_sensitive
+  IBAN: DE89370400440532013000
+  ACCOUNT NUMBER: 123456789
+  #+end_sensitive
+  and sent the pdf to the vendor portal.

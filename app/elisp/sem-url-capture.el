@@ -328,20 +328,22 @@ If no callback is provided, processing still happens asynchronously."
 Calls sem-url-capture--validate-and-save with restored sensitive content."
                                    (let ((filepath nil)
                                          (url (plist-get context :url)))
-                                     (if (and response (not (string-empty-p response)))
-                                         ;; Restore sensitive blocks before validation
-                                         (let ((restored-response (sem-security-restore-from-llm response (plist-get context :security-blocks))))
-                                           (setq filepath (sem-url-capture--validate-and-save restored-response url)))
-                                       (progn
-                                         (sem-core-log-error "url-capture" "URL-CAPTURE"
-                                                             (format "LLM request failed: %s"
-                                                                     (plist-get info :error))
-                                                             url
-                                                             response)
-                                         (setq filepath nil)))
-                                     ;; Call the completion callback if provided
-                                     (when callback
-                                       (funcall callback filepath context))))
+                                      (if (and response (not (string-empty-p response)))
+                                          ;; Restore sensitive blocks before validation
+                                          (let ((restored-response (sem-security-restore-from-llm response (plist-get context :security-blocks))))
+                                            (setq filepath (sem-url-capture--validate-and-save restored-response url))
+                                            (when filepath
+                                              (setq context (plist-put context :security-blocks nil))))
+                                        (progn
+                                          (sem-core-log-error "url-capture" "URL-CAPTURE"
+                                                              (format "LLM request failed: %s"
+                                                                      (plist-get info :error))
+                                                              url
+                                                              response)
+                                          (setq filepath nil)))
+                                      ;; Call the completion callback if provided
+                                      (when callback
+                                        (funcall callback filepath context))))
                                  (list :security-blocks security-blocks :url url))
 
                 ;; Return immediately - processing continues asynchronously

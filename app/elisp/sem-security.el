@@ -78,13 +78,32 @@ Returns the tokenized text."
 
 (defun sem-security--detokenize (text blocks)
   "Replace tokens in TEXT with original content from BLOCKS.
-Returns the restored text."
+Returns the restored text with sensitive content as plain text.
+
+Multi-line content is indented 2 spaces per line with leading/trailing
+newlines. Single-line content is placed at token position verbatim."
   (let ((result text))
     (dolist (block blocks)
       (let ((token (car block))
             (content (cdr block)))
-        (setq result (replace-regexp-in-string (regexp-quote token) content result t))))
+        (let ((plain-text (sem-security--extract-block-content content)))
+          (setq result (replace-regexp-in-string
+                        (regexp-quote token)
+                        plain-text
+                        result
+                        t)))))
     result))
+
+(defun sem-security--extract-block-content (block)
+  "Extract plain text content from BLOCK (which includes markers).
+Multi-line content gets exactly 2-space indentation per line with leading/trailing
+newlines. Single-line content is returned verbatim."
+  (let* ((lines (split-string block "\n"))
+         (content-lines (butlast (cdr lines))) ; drop first (begin marker) and last (end marker)
+         (trimmed (string-trim (mapconcat 'identity content-lines "\n"))))
+    (if (string-match-p "\n" trimmed)
+        (concat "\n" (mapconcat (lambda (line) (concat "  " (replace-regexp-in-string "^[ \t]+" "" line))) (split-string trimmed "\n") "\n") "\n")
+      trimmed)))
 
 (defun sem-security-sanitize-for-llm (text)
   "Sanitize TEXT before sending to LLM.

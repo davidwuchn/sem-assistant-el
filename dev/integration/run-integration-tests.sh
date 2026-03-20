@@ -595,7 +595,7 @@ run_assertions() {
     {
         echo "=== Assertion 4: Sensitive Content Restoration ==="
         
-        local sensitive_keywords=("supersecret123" "sk-live-abc123xyz789")
+        local sensitive_keywords=("supersecret123" "sk-live-abc123xyz789" "IBAN: DE89370400440532013000" "ACCOUNT NUMBER: 123456789")
         local sensitive_failed=false
         
         for keyword in "${sensitive_keywords[@]}"; do
@@ -617,15 +617,85 @@ run_assertions() {
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
+    # Assertion 4a: Negative marker check - no #+begin_sensitive markers in output
+    echo "Assertion 4a: Negative marker check..."
+    {
+        echo "=== Assertion 4a: Negative Marker Check ==="
+        
+        if grep -q '#+begin_sensitive' "$RUN_DIR/tasks.org" 2>/dev/null; then
+            echo "FAIL: Found '#+begin_sensitive' markers in output - markers should not be present"
+            echo "ASSERTION_4A_RESULT:FAIL"
+        else
+            echo "PASS: No '#+begin_sensitive' markers found in output"
+            echo "ASSERTION_4A_RESULT:PASS"
+        fi
+        echo ""
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
+    
+    # Assertion 4b: Order verification - within each task, sensitive content appears in same order as original
+    echo "Assertion 4b: Sensitive content within-task order verification..."
+    {
+        echo "=== Assertion 4b: Sensitive Content Within-Task Order Verification ==="
+        
+        local tasks_content
+        tasks_content=$(cat "$RUN_DIR/tasks.org" 2>/dev/null || echo "")
+        
+        # For "Update password manager" task: supersecret123 should appear before sk-live-abc123xyz789
+        local pos1 pos2 pos3 pos4
+        pos1=$(echo "$tasks_content" | grep -n 'supersecret123' | head -1 | cut -d: -f1)
+        pos2=$(echo "$tasks_content" | grep -n 'sk-live-abc123xyz789' | head -1 | cut -d: -f1)
+        pos3=$(echo "$tasks_content" | grep -n 'IBAN: DE89370400440532013000' | head -1 | cut -d: -f1)
+        pos4=$(echo "$tasks_content" | grep -n 'ACCOUNT NUMBER: 123456789' | head -1 | cut -d: -f1)
+        
+        local order_failed=false
+        
+        echo "Task 'Update password manager': supersecret123 at line $pos1, sk-live-abc123xyz789 at line $pos2"
+        if [[ -n "$pos1" && -n "$pos2" ]]; then
+            if [[ "$pos1" -lt "$pos2" ]]; then
+                echo "PASS: supersecret123 appears before sk-live-abc123xyz789"
+            else
+                echo "FAIL: supersecret123 does NOT appear before sk-live-abc123xyz789"
+                order_failed=true
+            fi
+        else
+            echo "FAIL: Could not find both keywords in password manager task"
+            order_failed=true
+        fi
+        
+        echo "Task 'Process payment to vendor': IBAN at line $pos3, ACCOUNT NUMBER at line $pos4"
+        if [[ -n "$pos3" && -n "$pos4" ]]; then
+            if [[ "$pos3" -lt "$pos4" ]]; then
+                echo "PASS: IBAN appears before ACCOUNT NUMBER"
+            else
+                echo "FAIL: IBAN does NOT appear before ACCOUNT NUMBER"
+                order_failed=true
+            fi
+        else
+            echo "FAIL: Could not find both keywords in payment task"
+            order_failed=true
+        fi
+        
+        if [[ "$order_failed" == "true" ]]; then
+            echo "ASSERTION_4B_RESULT:FAIL"
+        else
+            echo "PASS: All sensitive content within-task order correct"
+            echo "ASSERTION_4B_RESULT:PASS"
+        fi
+        
+        echo ""
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
+    
     # Final result - read from temp file (avoids subshell variable loss issue)
     echo "=== Final Result ==="
-    local final_assertion1 final_assertion2 final_assertion3 final_assertion4
+    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion4a final_assertion4b
     final_assertion1=$(grep "ASSERTION_1_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion2=$(grep "ASSERTION_2_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion3=$(grep "ASSERTION_3_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion4=$(grep "ASSERTION_4_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion4a=$(grep "ASSERTION_4A_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion4b=$(grep "ASSERTION_4B_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     
-    if [[ "$final_assertion1" == "PASS" && "$final_assertion2" == "PASS" && "$final_assertion3" == "PASS" && "$final_assertion4" == "PASS" && "$TEST_STATUS" == "PASS" ]]; then
+    if [[ "$final_assertion1" == "PASS" && "$final_assertion2" == "PASS" && "$final_assertion3" == "PASS" && "$final_assertion4" == "PASS" && "$final_assertion4a" == "PASS" && "$final_assertion4b" == "PASS" && "$TEST_STATUS" == "PASS" ]]; then
         echo "ALL ASSERTIONS PASSED"
         exit 0
     else
@@ -634,6 +704,8 @@ run_assertions() {
         echo "  Assertion 2 (Keywords): $final_assertion2"
         echo "  Assertion 3 (Org validity): $final_assertion3"
         echo "  Assertion 4 (Sensitive content): $final_assertion4"
+        echo "  Assertion 4a (No markers): $final_assertion4a"
+        echo "  Assertion 4b (Order verification): $final_assertion4b"
         exit 1
     fi
 }

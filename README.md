@@ -337,7 +337,7 @@ Configure Orgzly to sync via HTTPS:
 - **Lock files**: Disabled to prevent WebDAV sync issues
 - **Local variables**: Disabled to prevent malicious Org payloads
 - **URL sanitization**: Applied to `tasks.org` and `morning-read/` (http → hxxp)
-- **Sensitive blocks**: Content between `#+begin_sensitive` / `#+end_sensitive` never sent to LLM
+- **Sensitive blocks**: Content between `#+begin_sensitive` / `#+end_sensitive` never sent to LLM; restored as plain text (no markers) after LLM processing
 - **TLS**: WebDAV uses HTTPS with host-mounted certificates
 
 **Environment Variable:**

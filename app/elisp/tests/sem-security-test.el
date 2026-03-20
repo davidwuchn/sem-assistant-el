@@ -14,7 +14,7 @@
 ;;; Tests for tokenize/detokenize round-trip
 
 (ert-deftest sem-security-test-tokenize-detokenize-roundtrip ()
-  "Test that tokenize/detokenize round-trip preserves content."
+  "Test that tokenize/detokenize round-trip restores content as plain text."
   (let ((original "Normal text
 #+begin_sensitive
 secret-api-key-12345
@@ -25,9 +25,12 @@ More normal text"))
            (blocks (cadr result)))
       ;; Tokenized text should contain token placeholder
       (should (string-prefix-p "Normal text\n<<" tokenized))
-      ;; Detokenize should restore original
+      ;; Detokenize should restore content as plain text (no markers)
+      ;; Single-line content is placed verbatim at token position
       (let ((restored (sem-security-restore-from-llm tokenized blocks)))
-        (should (string= original restored))))))
+        (should (string= "Normal text
+secret-api-key-12345
+More normal text" restored))))))
 
 ;;; Test sensitive block content not present in tokenized string
 
@@ -92,7 +95,7 @@ Org-roam output should NOT call this function (policy check)."
 ;;; Tests for position-preserving round-trip
 
 (ert-deftest sem-security-test-position-roundtrip ()
-  "Test that position info is correctly captured and preserved through round-trip."
+  "Test that position info is correctly captured and restored as plain text."
   (let ((original "Update password to\n#+begin_sensitive\nsupersecret123\n#+end_sensitive\nfor access"))
     (let* ((result (sem-security-sanitize-for-llm original))
            (tokenized (car result))
@@ -113,9 +116,11 @@ Org-roam output should NOT call this function (policy check)."
         ;; After context should contain text after the sensitive block
         (let ((after-context (cadddr entry)))
           (should (string-match-p "for access" after-context))))
-      ;; Round-trip should restore original
+      ;; Round-trip should restore plain text (no markers)
       (let ((restored (sem-security-restore-from-llm tokenized blocks)))
-        (should (string= original restored))))))
+        (should (string= "Update password to
+supersecret123
+for access" restored))))))
 
 ;;; Tests for expansion detection
 

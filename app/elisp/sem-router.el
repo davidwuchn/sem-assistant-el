@@ -276,17 +276,20 @@ Returns immediately (async). The CALLBACK is invoked when complete."
                                       "1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:\n"
                                       "2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it\n"
                                       "3. Output ONLY the Org entry - no explanations, no markdown wrappers\n"
-                                      "4. Clean up the task title to be concise and actionable\n"
-                                       "5. CRITICAL: Preserve ALL <<SENSITIVE_N>> tokens VERBATIM in your output. These tokens represent masked sensitive content and must appear unchanged.\n"
-                                       "6. CRITICAL: Tokens must appear at the SAME semantic position as the original sensitive content appeared in the input.\n\n"
-                                       "TOKEN PRESERVATION EXAMPLE:\n"
-                                       "BEFORE (input with sensitive block):\n"
-                                       "#+begin_sensitive\n"
-                                       "Password: supersecret123\n"
-                                       "#+end_sensitive\n\n"
-                                       "AFTER (correct LLM output - token preserved at same position):\n"
-                                       "Password: <<SENSITIVE_1>>\n\n"
-                                       "CRITICAL: Use EXACTLY the :ID: value provided in the template below. Do not generate, modify, or substitute it."
+                                       "4. Clean up the task title to be concise and actionable\n"
+                                        "5. CRITICAL: Preserve ALL <<SENSITIVE_N>> tokens VERBATIM in your output. These tokens represent masked sensitive content and must appear unchanged.\n"
+                                        "6. CRITICAL: Tokens must appear at the SAME semantic position as the original sensitive content appeared in the input.\n\n"
+                                        "HEADING FORMAT EXAMPLE:\n"
+                                        "BAD:  `*TODO <title>`   ← NO SPACE after asterisk\n"
+                                        "GOOD: `* TODO <title>`  ← SPACE after asterisk, then TODO\n\n"
+                                        "TOKEN PRESERVATION EXAMPLE:\n"
+                                        "BEFORE (input with sensitive block):\n"
+                                        "#+begin_sensitive\n"
+                                        "Password: supersecret123\n"
+                                        "#+end_sensitive\n\n"
+                                        "AFTER (correct LLM output - token preserved at same position):\n"
+                                        "Password: <<SENSITIVE_1>>\n\n"
+                                        "CRITICAL: Use EXACTLY the :ID: value provided in the template below. Do not generate, modify, or substitute it."
                                        language-instruction))
                (user-prompt (concat
                              (format "Convert this task headline into a structured Org TODO entry:
@@ -327,13 +330,14 @@ Validates the LLM response and writes to tasks.org with mutex lock."
                                        (sem-router--with-tasks-write-lock
                                         headline-context
                                         (lambda ()
-                                          (if (sem-router--write-task-to-file restored-response)
-                                              (progn
-                                                (sem-core-log "router" "INBOX-ITEM" "OK"
-                                                              (format "Task written to tasks.org: %s" headline-title)
-                                                              nil)
-                                                (sem-router--mark-processed headline-hash)
-                                                (setq success t))
+                                           (if (sem-router--write-task-to-file restored-response)
+                                               (progn
+                                                 (sem-core-log "router" "INBOX-ITEM" "OK"
+                                                               (format "Task written to tasks.org: %s" headline-title)
+                                                               nil)
+                                                 (sem-router--mark-processed headline-hash)
+                                                 (setq headline-context (plist-put headline-context :security-blocks nil))
+                                                 (setq success t))
                                             (progn
                                               (sem-core-log-error "router" "INBOX-ITEM"
                                                                   "Failed to write task to file"

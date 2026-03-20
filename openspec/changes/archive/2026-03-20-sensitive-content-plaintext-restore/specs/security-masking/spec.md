@@ -35,6 +35,8 @@ The system SHALL replace all `#+begin_sensitive` / `#+end_sensitive` blocks with
 - **THEN** each block contributes an entry to position-info-alist
 - **AND** each entry contains up to 20 chars of surrounding context
 
+## MODIFIED Requirements
+
 ### Requirement: Tokens restored in output before writing
 The system SHALL restore original sensitive content from the token map after receiving LLM output and before writing to disk. The detokenization SHALL use the same token map from the input phase. For `sem-url-capture-process`, `sem-security-restore-from-llm` SHALL be called on the raw LLM response string, using the `:security-blocks` from context, before passing the result to `sem-url-capture--validate-and-save`.
 
