@@ -9,9 +9,10 @@ Define requirements for test inbox org file.
 ### Requirement: Test inbox resource file exists
 The system SHALL provide a test inbox org file at `dev/integration/testing-resources/inbox-tasks.org` that exercises the inbox processing pipeline.
 
-#### Scenario: Test inbox has exactly three headlines
+#### Scenario: Test inbox has at least one task headline
 - **WHEN** the test inbox is loaded
-- **THEN** it MUST contain exactly 3 headlines, each tagged with `:task:`
+- **THEN** it MUST contain at least 1 headline tagged with `:task:`
+- **AND** the expected task count is derived dynamically at runtime by counting `^\* TODO .*:task:` lines
 
 #### Scenario: Test inbox has routine-tagged headline
 - **WHEN** the test inbox is parsed

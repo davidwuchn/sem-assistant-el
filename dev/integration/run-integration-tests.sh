@@ -32,6 +32,11 @@ DAEMON_MAX_ATTEMPTS=30
 TASKS_POLL_INTERVAL=5
 TASKS_MAX_ATTEMPTS=24
 
+# Derived: expected task count from test inbox (count :task: headlines)
+# IMPORTANT: When adding/removing task headlines in the test inbox,
+# this value is derived automatically and used for polling and assertions.
+EXPECTED_TASK_COUNT=$(grep -c '^\* TODO .*:task:' "$TEST_INBOX" 2>/dev/null || echo "0")
+
 # Test status
 TEST_STATUS="PASS"
 RUN_DIR=""
@@ -397,8 +402,9 @@ trigger_inbox_processing() {
 }
 
 wait_for_tasks() {
+    local expected_count="${1:-0}"
     echo ""
-    echo "=== Waiting for Tasks.org ==="
+    echo "=== Waiting for Tasks.org (expecting $expected_count tasks) ==="
     
     local attempt=0
     local todo_count=0
@@ -419,8 +425,8 @@ wait_for_tasks() {
             todo_count=$(grep -c '^\* TODO ' "$temp_file" 2>/dev/null || echo "0")
             echo "Found $todo_count TODO entries"
             
-            if [[ "$todo_count" -ge 3 ]]; then
-                echo "All 3 tasks detected!"
+            if [[ "$todo_count" -ge "$expected_count" ]]; then
+                echo "All $expected_count tasks detected!"
                 # Save the temp file as our authoritative tasks.org
                 mv "$temp_file" "$RUN_DIR/tasks.org"
                 return 0
@@ -525,13 +531,13 @@ run_assertions() {
         echo "=== Assertion 1: TODO Count ==="
         local todo_count
         todo_count=$(grep -c '^\* TODO ' "$RUN_DIR/tasks.org" 2>/dev/null || echo "0")
-        echo "Found $todo_count TODO entries (expected: 3)"
+        echo "Found $todo_count TODO entries (expected: $EXPECTED_TASK_COUNT)"
         
-        if [[ "$todo_count" -ne 3 ]]; then
-            echo "FAIL: expected 3 TODO entries, got $todo_count"
+        if [[ "$todo_count" -ne "$EXPECTED_TASK_COUNT" ]]; then
+            echo "FAIL: expected $EXPECTED_TASK_COUNT TODO entries, got $todo_count"
             echo "ASSERTION_1_RESULT:FAIL"
         else
-            echo "PASS: TODO count is 3"
+            echo "PASS: TODO count is $EXPECTED_TASK_COUNT"
             echo "ASSERTION_1_RESULT:PASS"
         fi
         echo ""
@@ -714,7 +720,7 @@ main() {
     echo "Post-processing diagnostic saved to: $RUN_DIR/sem-proc-diag.txt"
     
     # Wait for tasks
-    if ! wait_for_tasks; then
+    if ! wait_for_tasks "$EXPECTED_TASK_COUNT"; then
         echo "Tasks poll timeout - proceeding to artifact collection"
     fi
     

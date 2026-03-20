@@ -11,17 +11,17 @@ The system SHALL run assertions after artifact collection to validate the integr
 
 #### Scenario: All assertions run regardless of prior failures
 - **WHEN** running assertions
-- **THEN** all 3 assertions MUST run even if one fails
+- **THEN** all 4 assertions MUST run even if one fails
 - **AND** short-circuiting MUST NOT occur
 
 #### Scenario: TODO count assertion
 - **WHEN** running the TODO count assertion
-- **THEN** `grep -c '^\* TODO ' tasks.org` MUST equal 3
-- **AND** if it fails, the message MUST be "FAIL: expected 3 TODO entries, got N"
+- **THEN** `grep -c '^\* TODO ' tasks.org` MUST equal EXPECTED_TASK_COUNT
+- **AND** if it fails, the message MUST be "FAIL: expected N TODO entries, got M" (where N=EXPECTED_TASK_COUNT)
 
 #### Scenario: Keyword presence assertion
 - **WHEN** running the keyword presence assertion
-- **THEN** the script MUST grep for each of the 3 headline title keywords in tasks.org
+- **THEN** the script MUST grep for each headline title keyword defined in the `keywords` array in tasks.org
 - **AND** each keyword MUST match
 - **AND** if any keyword is missing, the failure message MUST name the missing keyword
 
@@ -39,6 +39,12 @@ The system SHALL run assertions after artifact collection to validate the integr
   ```
 - **AND** exit code 0 indicates valid
 - **AND** non-zero indicates invalid with message "FAIL: tasks.org is not valid Org"
+
+#### Scenario: Sensitive content restoration assertion
+- **WHEN** running the sensitive content restoration assertion
+- **THEN** the script MUST grep for each sensitive keyword defined in the `sensitive_keywords` array in tasks.org
+- **AND** each keyword MUST be present in the output (proving sensitive content was unmasked)
+- **AND** if any keyword is missing, the failure message MUST name the missing keyword
 
 #### Scenario: Final exit code reflects assertion results
 - **WHEN** all assertions have completed

@@ -376,6 +376,10 @@ explicitly intend to incur these costs.
 - Suggest improvements to integration test code
 - Update integration test documentation
 
+**IMPORTANT: When adding a new test task to the integration test inbox** (`dev/integration/testing-resources/inbox-tasks.org`), the `EXPECTED_TASK_COUNT` is derived **automatically** from the inbox file at script runtime (via `grep -c '^\* TODO .*:task:'`). No manual update is needed for the count itself.
+
+However, if you add new keyword assertions (Assertion 2) or change the number of sensitive content checks (Assertion 4), you **must** update the corresponding hardcoded arrays/constants in `run-integration-tests.sh` and in `openspec/specs/assertions/spec.md`.
+
 If a human operator asks you to run the integration tests, clarify that you cannot do so and
 suggest they run it manually with:
 
