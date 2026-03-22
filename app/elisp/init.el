@@ -38,6 +38,8 @@ Signal an error if OPENROUTER_KEY or OPENROUTER_MODEL is unset or empty."
 (defun sem-init--bootstrap-straight ()
   "Bootstrap straight.el and activate build-time-installed packages."
   (setq straight-repository-branch "develop")
+  (setq straight-check-for-modifications nil)
+  (setq straight-vc-use-snapshot-installation t)
   (defvar bootstrap-version)
   (let ((bootstrap-file
          (expand-file-name
