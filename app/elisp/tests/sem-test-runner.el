@@ -20,6 +20,7 @@
 (load-file (expand-file-name "sem-core-test.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "sem-security-test.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "sem-prompts-test.el" (file-name-directory load-file-name)))
+(load-file (expand-file-name "sem-rules-test.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "sem-router-test.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "sem-rss-test.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "sem-url-capture-test.el" (file-name-directory load-file-name)))
@@ -28,6 +29,7 @@
 (load-file (expand-file-name "sem-retry-test.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "sem-git-sync-test.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "sem-url-sanitize-test.el" (file-name-directory load-file-name)))
+(load-file (expand-file-name "sem-planner-test.el" (file-name-directory load-file-name)))
 
 ;; Run all tests
 (let ((result (ert-run-tests-batch-and-exit)))

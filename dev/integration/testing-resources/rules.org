@@ -1,0 +1,4 @@
+* Test Scheduling Rules
+Routine tasks are best scheduled in the afternoon.
+Work tasks should not be scheduled on weekends.
+Free time slots are more available after 4PM on weekdays.

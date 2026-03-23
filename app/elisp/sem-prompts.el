@@ -73,10 +73,71 @@ geo with query: `[[geo:0,0?q=new+york+city][Search]]`
 geo with zoom: `[[geo:40.7128,-74.0060?z=11][Map]]`
 
 --- OUTPUT RULE ---
-NEVER wrap your entire output in markdown code fences (e.g., do NOT start with \`\`\`org). Output raw org-mode text only."
+NEVER wrap your entire output in markdown code fences (e.g., do NOT start with \`\`\`org). Output raw org-mode text only.
+
+--- SCHEDULED TIME RANGE FORMAT ---
+When scheduling tasks with time ranges, use:
+SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
+
+Examples:
+- SCHEDULED: <2024-03-15 09:00-10:30>  (morning block)
+- SCHEDULED: <2024-03-15 14:00-16:00>  (afternoon block)
+- SCHEDULED: <2024-03-16 10:00-11:00>  (next day morning)
+
+Format: date, start time, hyphen, end time (no spaces around hyphen).
+Time is 24-hour format (HH:MM)."
   "Comprehensive org-mode syntax cheat sheet for LLM system prompts.
 This constant is self-contained with no format specifiers.
 It is used by sem-router.el and sem-url-capture.el for LLM prompts.")
+
+(defconst sem-prompts-time-range-format
+  "--- SCHEDULED TIME RANGE FORMAT ---
+When scheduling tasks, use time ranges in the format:
+SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
+
+Examples:
+- SCHEDULED: <2024-03-15 09:00-10:30>  (morning block)
+- SCHEDULED: <2024-03-15 14:00-16:00>  (afternoon block)
+- SCHEDULED: <2024-03-16 10:00-11:00>  (next day morning)
+
+The format is: date, start time, hyphen, end time (no spaces around hyphen).
+Time is 24-hour format (HH:MM).
+Always specify both start and end times for the time block."
+  "Documentation for SCHEDULED time range format.
+Used in Pass 1 prompts to instruct the LLM to output time ranges.")
+
+(defconst sem-prompts-pass1-system-template
+  "You are a Task Management assistant. Your ONLY task is to output a valid Org-mode TODO entry based on the provided task description.
+
+%%CHEAT_SHEET%%
+
+=== REQUIRED OUTPUT FORMAT ===
+Your output MUST follow this exact structure:
+
+* TODO <Cleaned Task Title>
+:PROPERTIES:
+:ID: <injected-id-value>
+:FILETAGS: :<one-of:work:family:routine:opensource>:
+:END:
+<Brief one-line description or notes>
+SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
+<Optional: DEADLINE: <YYYY-MM-DD Day>>
+<Optional: PRIORITY: [A/B/C]>
+
+=== RULES ===
+1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:
+2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it
+3. Output ONLY the Org entry - no explanations, no markdown wrappers
+4. Clean up the task title to be concise and actionable
+5. CRITICAL: Preserve ALL <<SENSITIVE_N>> tokens VERBATIM in your output. These tokens represent masked sensitive content and must appear unchanged.
+6. CRITICAL: Tokens must appear at the SAME semantic position as the original sensitive content appeared in the input.
+7. SCHEDULED must use time range format: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
+
+%%RULES%%
+%%LANGUAGE%%"
+  "Template for Pass 1 system prompt.
+Uses %%CHEAT_SHEET%%, %%RULES%%, and %%LANGUAGE%% as placeholders
+that are substituted at runtime by sem-router.")
 
 (provide 'sem-prompts)
 ;;; sem-prompts.el ends here

@@ -122,7 +122,7 @@ Called with RESULT and CONTEXT."
               ((symbol-function 'sem-router--validate-task-response)
                (lambda (response _injected-id) t))
               ((symbol-function 'sem-router--write-task-to-file)
-               (lambda (response) t))
+                (lambda (response &optional temp-file) t))
               ((symbol-function 'sem-router--mark-processed)
                (lambda (hash) nil)))
       (sem-router--route-to-task-llm headline #'sem-async-test--callback-2arg)

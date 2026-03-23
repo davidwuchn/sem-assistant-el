@@ -185,9 +185,11 @@ sem-prompts must load before sem-router and sem-url-capture."
     (require 'sem-llm)
     (require 'sem-rss)
     (require 'sem-prompts)
+    (require 'sem-rules)
     (require 'sem-url-capture)
     (require 'sem-git-sync)
     (require 'sem-router)
+    (require 'sem-planner)
     (message "SEM: All modules loaded")))
 
 ;;; 8. Install *Messages* Redirection Hook

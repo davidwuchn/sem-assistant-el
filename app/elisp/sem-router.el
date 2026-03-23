@@ -259,38 +259,18 @@ Returns immediately (async). The CALLBACK is invoked when complete."
         ;; Read OUTPUT_LANGUAGE at call time (not load time) with default "English"
         (let* ((output-language (or (getenv "OUTPUT_LANGUAGE") "English"))
                (language-instruction (format "\n\nOUTPUT LANGUAGE: Write your entire response in %s. Do not use any other language." output-language))
-               (system-prompt (concat "You are a Task Management assistant. Your ONLY task is to output a valid Org-mode TODO entry based on the provided task description.\n\n"
-                                      sem-prompts-org-mode-cheat-sheet
-                                      "\n\n=== REQUIRED OUTPUT FORMAT ===\n"
-                                      "Your output MUST follow this exact structure:\n\n"
-                                      "* TODO <Cleaned Task Title>\n"
-                                      ":PROPERTIES:\n"
-                                      ":ID: <injected-id-value>\n"
-                                      ":FILETAGS: :<one-of:work:family:routine:opensource>:\n"
-                                      ":END:\n"
-                                      "<Brief one-line description or notes>\n"
-                                      "<Optional: SCHEDULED: <YYYY-MM-DD Day>>\n"
-                                      "<Optional: DEADLINE: <YYYY-MM-DD Day>>\n"
-                                      "<Optional: PRIORITY: [A/B/C]>\n\n"
-                                      "RULES:\n"
-                                      "1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:\n"
-                                      "2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it\n"
-                                      "3. Output ONLY the Org entry - no explanations, no markdown wrappers\n"
-                                       "4. Clean up the task title to be concise and actionable\n"
-                                        "5. CRITICAL: Preserve ALL <<SENSITIVE_N>> tokens VERBATIM in your output. These tokens represent masked sensitive content and must appear unchanged.\n"
-                                        "6. CRITICAL: Tokens must appear at the SAME semantic position as the original sensitive content appeared in the input.\n\n"
-                                        "HEADING FORMAT EXAMPLE:\n"
-                                        "BAD:  `*TODO <title>`   ← NO SPACE after asterisk\n"
-                                        "GOOD: `* TODO <title>`  ← SPACE after asterisk, then TODO\n\n"
-                                        "TOKEN PRESERVATION EXAMPLE:\n"
-                                        "BEFORE (input with sensitive block):\n"
-                                        "#+begin_sensitive\n"
-                                        "Password: supersecret123\n"
-                                        "#+end_sensitive\n\n"
-                                        "AFTER (correct LLM output - token preserved at same position):\n"
-                                        "Password: <<SENSITIVE_1>>\n\n"
-                                        "CRITICAL: Use EXACTLY the :ID: value provided in the template below. Do not generate, modify, or substitute it."
-                                       language-instruction))
+               (rules-text (when (fboundp 'sem-rules-read)
+                             (or (sem-rules-read) "")))
+               (rules-section (if (string-empty-p rules-text)
+                                  ""
+                                (format "\n\n=== USER SCHEDULING RULES ===\n%s\n" rules-text)))
+               (system-prompt (replace-regexp-in-string
+                              "%%CHEAT_SHEET%%" sem-prompts-org-mode-cheat-sheet
+                              (replace-regexp-in-string
+                               "%%RULES%%" rules-section
+                               (replace-regexp-in-string
+                                "%%LANGUAGE%%" language-instruction
+                                sem-prompts-pass1-system-template t t) t t)))
                (user-prompt (concat
                              (format "Convert this task headline into a structured Org TODO entry:
 
@@ -323,28 +303,24 @@ Validates the LLM response and writes to tasks.org with mutex lock."
                                  (require 'sem-security)
                                  (setq restored-response
                                        (sem-security-restore-from-llm response stored-security-blocks)))
-                               (if (and restored-response (not (string-empty-p restored-response)))
-                                   ;; Validate and process response
-                                   (if (sem-router--validate-task-response restored-response injected-uuid)
-                                       ;; Valid response - write to tasks.org with lock
-                                       (sem-router--with-tasks-write-lock
-                                        headline-context
-                                        (lambda ()
-                                           (if (sem-router--write-task-to-file restored-response)
-                                               (progn
-                                                 (sem-core-log "router" "INBOX-ITEM" "OK"
-                                                               (format "Task written to tasks.org: %s" headline-title)
-                                                               nil)
-                                                 (sem-router--mark-processed headline-hash)
-                                                 (setq headline-context (plist-put headline-context :security-blocks nil))
-                                                 (setq success t))
+                                (if (and restored-response (not (string-empty-p restored-response)))
+                                    ;; Validate and process response
+                                    (if (sem-router--validate-task-response restored-response injected-uuid)
+                                        ;; Valid response - write to temp file (no lock needed for batch temp file)
+                                        (if (sem-router--write-task-to-file restored-response (sem-router--temp-file-path))
                                             (progn
-                                              (sem-core-log-error "router" "INBOX-ITEM"
-                                                                  "Failed to write task to file"
-                                                                  headline-title
-                                                                  restored-response)
-                                              (setq success nil))))
-                                        0)
+                                              (sem-core-log "router" "INBOX-ITEM" "OK"
+                                                            (format "Task written to temp file: %s" headline-title)
+                                                            nil)
+                                              (sem-router--mark-processed headline-hash)
+                                              (setq headline-context (plist-put headline-context :security-blocks nil))
+                                              (setq success t))
+                                          (progn
+                                            (sem-core-log-error "router" "INBOX-ITEM"
+                                                                "Failed to write task to temp file"
+                                                                headline-title
+                                                                restored-response)
+                                            (setq success nil)))
                                      ;; Malformed output - send to DLQ
                                      (progn
                                        (sem-core-log-error "router" "INBOX-ITEM"
@@ -442,31 +418,39 @@ Returns the normalized response string."
           (insert ":FILETAGS: :routine:\n")))
       (buffer-string))))
 
-(defun sem-router--write-task-to-file (response)
-  "Validate and write task RESPONSE to tasks.org.
+(defun sem-router--temp-file-path (&optional batch-id)
+  "Compute the temp file path for a batch.
+BATCH-ID is the batch identifier. Defaults to sem-core--batch-id.
+Returns /tmp/data/tasks-tmp-{batch-id}.org"
+  (let ((id (or batch-id sem-core--batch-id 0)))
+    (format "/tmp/data/tasks-tmp-%d.org" id)))
 
+(defun sem-router--write-task-to-file (response &optional temp-file)
+  "Validate and write task RESPONSE to tasks.org or TEMP-FILE.
+
+If TEMP-FILE is provided, writes to that file instead of tasks.org.
 Normalizes the tag (substitutes :routine: if absent/invalid).
-Creates tasks.org if it doesn't exist.
+Creates the target file if it doesn't exist.
 Appends the task entry to the file.
 
 Returns t on success, nil on failure."
   (condition-case err
       (let* ((normalized (sem-router--validate-and-normalize-tag response))
-             (tasks-file sem-router-tasks-file))
+             (target-file (or temp-file sem-router-tasks-file)))
 
         ;; Create file if it doesn't exist
-        (unless (file-exists-p tasks-file)
-          (make-directory (file-name-directory tasks-file) t)
-          (with-temp-file tasks-file
+        (unless (file-exists-p target-file)
+          (make-directory (file-name-directory target-file) t)
+          (with-temp-file target-file
             (insert "* Tasks\n")))
 
         ;; Append task to file
         (with-temp-buffer
-          (when (file-exists-p tasks-file)
-            (insert-file-contents tasks-file))
+          (when (file-exists-p target-file)
+            (insert-file-contents target-file))
           (goto-char (point-max))
           (insert "\n" normalized "\n")
-          (write-region (point-min) (point-max) tasks-file nil 'silent))
+          (write-region (point-min) (point-max) target-file nil 'silent))
 
         t)
     (error
@@ -513,41 +497,46 @@ This is called by sem-core-process-inbox."
                 (let ((url (sem-router--is-link-headline headline)))
                   (cond
                    ;; Link headline -> URL capture (async)
-                   (url
-                    (message "SEM: Routing to URL capture: %s" url)
-                    (sem-url-capture-process
-                     url
-                     (lambda (filepath context)
-                       "Callback for async URL capture.
+                    (url
+                     (message "SEM: Routing to URL capture: %s" url)
+                     (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
+                     (sem-url-capture-process
+                      url
+                      (lambda (filepath context)
+                        "Callback for async URL capture.
 Handles success, retry, and DLQ escalation."
-                       (if filepath
-                           ;; Success - mark processed and increment count
-                           (progn
-                             (sem-core--clear-retry hash)
-                             (sem-router--mark-processed hash)
-                             (setq processed-count (1+ processed-count))
-                             (message "SEM: URL captured: %s -> %s" url filepath))
-                         ;; Failure - implement bounded retry
-                         (let ((retry-count (sem-core--increment-retry hash)))
-                           (if (>= retry-count 3)
-                               ;; Max retries reached - move to DLQ
-                               (progn
-                                 (sem-core--mark-dlq hash title nil)
-                                 (message "SEM: URL capture failed after 3 retries, moved to DLQ: %s" url))
-                             ;; Will retry on next cron cycle
-                             (message "SEM: URL capture failed (attempt %d/3), will retry: %s" retry-count url)))))))
-                   ;; Task headline -> LLM task generation (async)
-                   ((sem-router--is-task-headline headline)
-                    (message "SEM: Routing to LLM task generation: %s" title)
-                    (sem-router--route-to-task-llm
-                     headline
-                     (lambda (success context)
-                       "Callback for async task LLM processing."
-                       (if success
-                           (message "SEM: Task LLM processed: %s" (plist-get context :title))
-                         (message "SEM: Task LLM failed: %s" (plist-get context :title)))))
-                    ;; Note: Async processing - counts will be inaccurate in summary
-                    (setq processed-count (1+ processed-count)))
+                        (if filepath
+                            ;; Success - mark processed and increment count
+                            (progn
+                              (sem-core--clear-retry hash)
+                              (sem-router--mark-processed hash)
+                              (setq processed-count (1+ processed-count))
+                              (message "SEM: URL captured: %s -> %s" url filepath))
+                          ;; Failure - implement bounded retry
+                          (let ((retry-count (sem-core--increment-retry hash)))
+                            (if (>= retry-count 3)
+                                ;; Max retries reached - move to DLQ
+                                (progn
+                                  (sem-core--mark-dlq hash title nil)
+                                  (message "SEM: URL capture failed after 3 retries, moved to DLQ: %s" url))
+                              ;; Will retry on next cron cycle
+                              (message "SEM: URL capture failed (attempt %d/3), will retry: %s" retry-count url))))
+                        (when (fboundp 'sem-core--batch-barrier-check)
+                          (sem-core--batch-barrier-check)))))
+                    ;; Task headline -> LLM task generation (async)
+                    ((sem-router--is-task-headline headline)
+                     (message "SEM: Routing to LLM task generation: %s" title)
+                     (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
+                     (sem-router--route-to-task-llm
+                      headline
+                      (lambda (success context)
+                        "Callback for async task LLM processing."
+                        (if success
+                            (message "SEM: Task LLM processed: %s" (plist-get context :title))
+                          (message "SEM: Task LLM failed: %s" (plist-get context :title)))
+                        (when (fboundp 'sem-core--batch-barrier-check)
+                          (sem-core--batch-barrier-check))))
+                     (setq processed-count (1+ processed-count)))
                    ;; Unknown - skip
                    (t
                     (message "SEM: No routing rule matched, skipping: %s" title)

@@ -171,6 +171,73 @@ Used to detect date rollover for daily log rotation.
 Initial value is empty string to force first flush to detect as new day.
 Module-level variable that resets on daemon restart.")
 
+(defvar sem-core--batch-id 0
+  "Monotonically increasing batch ID for inbox processing.
+Incremented at the start of each cron-triggered inbox processing run.
+Not incremented during planning phase - creates implicit lock.")
+
+(defvar sem-core--pending-callbacks 0
+  "Counter for pending async callbacks in the current batch.
+Incremented when a callback is registered, decremented when it completes.
+When it reaches 0, the batch barrier fires and planning step is triggered.")
+
+(defvar sem-core--batch-start-time nil
+  "Time when the current batch started.
+Used for the 30-minute watchdog timeout.
+Nil when no batch is in progress.")
+
+(defvar sem-core--batch-watchdog-timer nil
+  "Timer for the batch watchdog.
+Cancels the previous timer before setting a new one.")
+
+(defun sem-core--batch-barrier-check ()
+  "Check if batch is complete and fire planning step if needed.
+Called after each callback completes. Decrements pending-callbacks counter.
+When counter reaches 0, invokes the planning step synchronously.
+Also fires synchronously if counter starts at 0 (no items case)."
+  (when (> sem-core--pending-callbacks 0)
+    (setq sem-core--pending-callbacks (1- sem-core--pending-callbacks)))
+  (sem-core-log "core" "INBOX-ITEM" "OK"
+                (format "Batch barrier check: pending=%d" sem-core--pending-callbacks)
+                nil)
+  (when (= sem-core--pending-callbacks 0)
+    (sem-core--cancel-batch-watchdog)
+    (message "SEM: Batch complete, firing planning step")
+    (when (fboundp 'sem-planner-run-planning-step)
+      (sem-planner-run-planning-step))))
+
+(defun sem-core--batch-watchdog-fired ()
+  "Watchdog callback - fires planning step if barrier hasn't fired.
+Called by the watchdog timer after 30 minutes from batch start.
+Checks if pending-callbacks is still > 0, then fires planning step."
+  (condition-case err
+      (progn
+        (message "SEM: Batch watchdog fired")
+        (sem-core-log "core" "INBOX-ITEM" "OK" "Batch watchdog fired" nil)
+        (setq sem-core--pending-callbacks 0)
+        (when (fboundp 'sem-planner-run-planning-step)
+          (sem-planner-run-planning-step)))
+    (error
+     (message "SEM: Watchdog error: %s" (error-message-string err)))))
+
+(defun sem-core--start-batch-watchdog ()
+  "Start or reset the batch watchdog timer.
+The watchdog fires after 30 minutes if the barrier hasn't fired.
+Cancels any existing watchdog before starting a new one."
+  (setq sem-core--batch-start-time (current-time))
+  (when sem-core--batch-watchdog-timer
+    (cancel-timer sem-core--batch-watchdog-timer))
+  (setq sem-core--batch-watchdog-timer
+        (run-with-timer (* 30 60) nil #'sem-core--batch-watchdog-fired))
+  (message "SEM: Batch watchdog started (30 min timeout)"))
+
+(defun sem-core--cancel-batch-watchdog ()
+  "Cancel the batch watchdog timer if running."
+  (when sem-core--batch-watchdog-timer
+    (cancel-timer sem-core--batch-watchdog-timer)
+    (setq sem-core--batch-watchdog-timer nil)
+    (message "SEM: Batch watchdog cancelled")))
+
 (defun sem-core--flush-messages-daily ()
   "Append *Messages* buffer content to daily log file.
 Writes to /var/log/sem/messages-YYYY-MM-DD.log.
@@ -350,17 +417,41 @@ TITLE and RESPONSE are optional for error logging."
 
 ;;; Inbox Processing Entry Point
 
+(defun sem-core--cleanup-stale-temp-files ()
+  "Remove stale tasks-tmp-*.org files older than 24 hours.
+Called at startup and after each batch to clean up orphaned temp files.
+Never crashes - errors are silently ignored."
+  (ignore-errors
+    (let ((tmp-dir "/tmp/data")
+          (cutoff-time (- (float-time) (* 24 60 60))))
+      (when (file-directory-p tmp-dir)
+        (dolist (file (directory-files tmp-dir t "tasks-tmp-.*\\.org$"))
+          (when (and (file-regular-p file)
+                     (> cutoff-time (float-time (nth 5 (file-attributes file 'string)))))
+            (message "SEM: Cleaning up stale temp file: %s" file)
+            (delete-file file)))))))
+
 (defun sem-core-process-inbox ()
   "Cron entry point for inbox processing.
 Reads unprocessed headlines from inbox-mobile.org and routes them
-to the appropriate handler (url-capture or LLM task generation)."
+to the appropriate handler (url-capture or LLM task generation).
+Initializes batch state for tracking callbacks and triggering planning step."
   (condition-case err
       (progn
         (message "SEM: sem-core-process-inbox called")
+        (sem-core--cleanup-stale-temp-files)
+        (setq sem-core--batch-id (1+ sem-core--batch-id))
+        (setq sem-core--pending-callbacks 0)
+        (sem-core--start-batch-watchdog)
         (when (fboundp 'sem-router-process-inbox)
           (message "SEM: Calling sem-router-process-inbox...")
           (sem-router-process-inbox)
           (message "SEM: sem-router-process-inbox returned"))
+        (when (= sem-core--pending-callbacks 0)
+          (sem-core--cancel-batch-watchdog)
+          (message "SEM: No pending callbacks, firing planning step immediately")
+          (when (fboundp 'sem-planner-run-planning-step)
+            (sem-planner-run-planning-step)))
         (message "SEM: sem-core-process-inbox done"))
     (error
      (sem-core-log-error "core" "INBOX-ITEM" (error-message-string err) nil)

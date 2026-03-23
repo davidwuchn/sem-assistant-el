@@ -142,3 +142,40 @@ The README SHALL contain a **WARNING** section immediately after the "Scheduled 
 #### Scenario: Warning explains reason
 - **WHEN** reading the Orgzly Sync Timing warning
 - **THEN** it explains that concurrent writes cause silent data loss due to non-atomic read-modify-write operations
+
+## ADDED Requirements
+
+### Requirement: sem-core--batch-id incremented at start of each cron-triggered inbox processing
+At the start of each cron-triggered `sem-core-process-inbox`, `sem-core--batch-id` SHALL be incremented.
+
+#### Scenario: Batch ID increments on new cron run
+- **WHEN** `sem-core-process-inbox` is called by cron
+- **THEN** `sem-core--batch-id` is incremented
+
+### Requirement: sem-core--pending-callbacks tracks routed items
+`sem-core--pending-callbacks` SHALL be tracked for each routed inbox item. The counter SHALL be incremented when a callback is registered and decremented when it completes.
+
+#### Scenario: Pending count tracked per item
+- **WHEN** an inbox item is routed to LLM
+- **THEN** `sem-core--pending-callbacks` is incremented
+
+### Requirement: Pass 1 results written to batch temp file
+During inbox processing, Pass 1 results SHALL be written to the batch temp file `/tmp/data/tasks-tmp-{batch-id}.org` instead of tasks.org.
+
+#### Scenario: Results written to temp file
+- **WHEN** Pass 1 generates task entries
+- **THEN** they are written to `/tmp/data/tasks-tmp-{batch-id}.org`
+
+### Requirement: Planning step called when pending count reaches zero
+`sem-planner-run-planning-step` SHALL be called when `sem-core--pending-callbacks` reaches 0.
+
+#### Scenario: Planning step called at barrier
+- **WHEN** the last pending callback completes
+- **THEN** `sem-planner-run-planning-step` is invoked
+
+### Requirement: rules.org read at start of each batch
+`rules.org` SHALL be read fresh at the start of each `sem-core-process-inbox` call via `sem-rules-read`.
+
+#### Scenario: Rules read at batch start
+- **WHEN** `sem-core-process-inbox` starts
+- **THEN** `sem-rules-read` is called to get current rules

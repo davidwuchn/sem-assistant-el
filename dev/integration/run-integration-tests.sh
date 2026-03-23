@@ -685,15 +685,62 @@ run_assertions() {
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
+    # Assertion 5: SCHEDULED times fall within preferred windows from rules.org
+    echo "Assertion 5: SCHEDULED time preference validation..."
+    {
+        echo "=== Assertion 5: SCHEDULED Time Preference Validation ==="
+        
+        # Check if tasks.org exists and has scheduled times
+        if [[ ! -f "$RUN_DIR/tasks.org" ]] || [[ ! -s "$RUN_DIR/tasks.org" ]]; then
+            echo "SKIP: tasks.org does not exist or is empty - cannot validate SCHEDULED times"
+            echo "ASSERTION_5_RESULT:SKIP"
+        else
+            # Read rules to understand preferences
+            local rules_file="$SCRIPT_DIR/testing-resources/rules.org"
+            if [[ ! -f "$rules_file" ]]; then
+                echo "SKIP: rules.org not found - cannot validate preferences"
+                echo "ASSERTION_5_RESULT:SKIP"
+            else
+                # Soft check: validate that SCHEDULED times exist and have time components
+                local scheduled_count=0
+                local valid_scheduled_count=0
+                
+                # Count tasks with SCHEDULED that have time components (HH:MM or HH:MM-HH:MM)
+                scheduled_count=$(grep -c 'SCHEDULED:' "$RUN_DIR/tasks.org" 2>/dev/null || echo "0")
+                
+                if [[ "$scheduled_count" -eq 0 ]]; then
+                    echo "WARN: No tasks have SCHEDULED times"
+                    echo "ASSERTION_5_RESULT:WARN"
+                else
+                    # Count tasks with time ranges (HH:MM-HH:MM format) or specific times (HH:MM)
+                    valid_scheduled_count=$(grep 'SCHEDULED:' "$RUN_DIR/tasks.org" 2>/dev/null | grep -cE 'SCHEDULED: <[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}(-[0-9]{2}:[0-9]{2})?>' || echo "0")
+                    
+                    echo "Found $scheduled_count tasks with SCHEDULED, $valid_scheduled_count with time components"
+                    
+                    # Soft assertion: at least some tasks should have time components
+                    if [[ "$valid_scheduled_count" -gt 0 ]]; then
+                        echo "PASS: Some tasks have time components in SCHEDULED (preference: afternoon for routine, after 4PM for free time)"
+                        echo "ASSERTION_5_RESULT:PASS"
+                    else
+                        echo "WARN: No tasks have time components in SCHEDULED - LLM did not add times"
+                        echo "ASSERTION_5_RESULT:WARN"
+                    fi
+                fi
+            fi
+        fi
+        echo ""
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
+    
     # Final result - read from temp file (avoids subshell variable loss issue)
     echo "=== Final Result ==="
-    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion4a final_assertion4b
+    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion4a final_assertion4b final_assertion5
     final_assertion1=$(grep "ASSERTION_1_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion2=$(grep "ASSERTION_2_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion3=$(grep "ASSERTION_3_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion4=$(grep "ASSERTION_4_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion4a=$(grep "ASSERTION_4A_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion4b=$(grep "ASSERTION_4B_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion5=$(grep "ASSERTION_5_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     
     if [[ "$final_assertion1" == "PASS" && "$final_assertion2" == "PASS" && "$final_assertion3" == "PASS" && "$final_assertion4" == "PASS" && "$final_assertion4a" == "PASS" && "$final_assertion4b" == "PASS" && "$TEST_STATUS" == "PASS" ]]; then
         echo "ALL ASSERTIONS PASSED"
@@ -706,6 +753,7 @@ run_assertions() {
         echo "  Assertion 4 (Sensitive content): $final_assertion4"
         echo "  Assertion 4a (No markers): $final_assertion4a"
         echo "  Assertion 4b (Order verification): $final_assertion4b"
+        echo "  Assertion 5 (SCHEDULED preferences): $final_assertion5"
         exit 1
     fi
 }

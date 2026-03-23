@@ -127,3 +127,17 @@ The cheat sheet string MUST be self-contained with no format specifiers.
 - **WHEN** the cheat sheet string is examined
 - **THEN** it SHALL NOT contain any `%s`, `%d`, or other `format` specifiers
 - **AND** it SHALL be suitable for direct concatenation into system prompts
+
+## MODIFIED Requirements
+
+### Requirement: Cheat sheet includes SCHEDULED time range format
+The cheat sheet SHALL include the SCHEDULED time range format `SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>` in addition to the basic date-only format.
+
+#### Scenario: Basic SCHEDULED format
+- **WHEN** the cheat sheet is used in an LLM prompt
+- **THEN** it SHALL include `SCHEDULED: <YYYY-MM-DD Day>` format
+
+#### Scenario: SCHEDULED time range format
+- **WHEN** the cheat sheet is used in an LLM prompt
+- **THEN** it SHALL include `SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>` format for time ranges
+- **AND** it SHALL note that Pass 2 may use single time format `SCHEDULED: <YYYY-MM-DD HH:MM>` or `DEADLINE: <YYYY-MM-DD HH:MM>`
