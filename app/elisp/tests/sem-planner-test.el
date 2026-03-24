@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'sem-mock)
 
 (load-file (expand-file-name "../sem-core.el" (file-name-directory load-file-name)))
@@ -62,49 +63,178 @@ Some description here")
           (should (string-match-p "TAG:routine" result)))
       (sem-mock-cleanup-temp-file tmp))))
 
-(ert-deftest sem-planner-test-anonymize-temp-tasks-flags-fixed-schedule-exception ()
-  "Test that Pass 2 anonymized task lines flag the fixed-schedule exception."
-  (let ((temp-tasks (concat "* TODO Process quarterly financial reports :routine:\n"
-                            ":PROPERTIES:\n"
-                            ":ID: fixed-123\n"
-                            ":END:\n"
-                            "SCHEDULED: <2026-03-20 Fri>\n"
-                            "\n"
-                            "* TODO Another task :work:\n"
-                            ":PROPERTIES:\n"
-                            ":ID: nonfixed-123\n"
-                            ":END:\n"
-                            "SCHEDULED: <2026-03-21 Sat 10:00-11:00>\n")))
-    (let ((result (sem-planner--anonymize-temp-tasks temp-tasks)))
-      (should (string-match-p "ID: fixed-123" result))
-      (should (string-match-p "FIXED_SCHEDULE_EXCEPTION:true" result))
-      (should-not
-       (string-match-p "ID: nonfixed-123 | TAG:work | .*FIXED_SCHEDULE_EXCEPTION:true" result)))))
-
-(ert-deftest sem-planner-test-merge-scheduling-keeps-fixed-schedule-unchanged ()
-  "Test that merge does not alter the fixed-schedule exception task."
-  (let* ((temp-tasks (concat "* TODO Process quarterly financial reports :routine:\n"
+(ert-deftest sem-planner-test-anonymize-temp-tasks-includes-state-priority-and-schedule ()
+  "Test that Pass 2 anonymized task lines include state and priority context." 
+  (let* ((temp-tasks (concat "* TODO Existing scheduled task :routine:\n"
                              ":PROPERTIES:\n"
-                             ":ID: fixed-456\n"
+                             ":ID: existing-scheduled-123\n"
+                             ":SCHEDULED: <2026-03-20 Fri 09:00-10:00>\n"
                              ":END:\n"
-                             "SCHEDULED: <2026-03-20 Fri>\n"
                              "\n"
-                             "* TODO Review pull request #452 :work:\n"
+                             "* TODO Existing unscheduled task :work:\n"
                              ":PROPERTIES:\n"
-                             ":ID: work-456\n"
+                             ":ID: existing-unscheduled-123\n"
+                             ":END:\n"
+                             "\n"
+                             "* TODO [#A] New task :work:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: new-123\n"
                              ":END:\n"))
-         (decisions '(("fixed-456" . "<2099-01-01 Thu 10:00-11:00>")
-                      ("work-456" . "<2099-01-02 Fri 12:00-13:00>")))
-         (merged (sem-planner--merge-scheduling-into-tasks temp-tasks decisions)))
-    (should (string-match-p "SCHEDULED: <2026-03-20 Fri>" merged))
-    (should-not (string-match-p "SCHEDULED: <2099-01-01 Thu 10:00-11:00>" merged))
-    (should (string-match-p "SCHEDULED: <2099-01-02 Fri 12:00-13:00>" merged))))
+         (existing-index (make-hash-table :test #'equal)))
+    (puthash "existing-scheduled-123" '(:id "existing-scheduled-123") existing-index)
+    (puthash "existing-unscheduled-123" '(:id "existing-unscheduled-123") existing-index)
+    (let ((result (sem-planner--anonymize-temp-tasks temp-tasks existing-index)))
+      (should (string-match-p "ID: existing-scheduled-123" result))
+      (should (string-match-p "STATE:pre-existing-scheduled" result))
+      (should (string-match-p "ID: existing-unscheduled-123" result))
+      (should (string-match-p "STATE:pre-existing-unscheduled" result))
+      (should (string-match-p "ID: new-123" result))
+      (should (string-match-p "PRIORITY:A" result))
+      (should (string-match-p "STATE:newly-generated" result)))))
+
+(ert-deftest sem-planner-test-merge-scheduling-preserves-preexisting-tasks ()
+  "Test that merge preserves pre-existing task schedule states."
+  (let* ((temp-tasks (concat "* TODO Existing scheduled task :routine:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: existing-scheduled-456\n"
+                             ":SCHEDULED: <2026-03-20 09:00-10:00>\n"
+                             ":END:\n"
+                             "\n"
+                             "* TODO Existing unscheduled task :work:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: existing-unscheduled-456\n"
+                             ":END:\n"
+                             "\n"
+                             "* TODO New task :work:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: new-456\n"
+                             ":END:\n"))
+         (decisions '(("existing-scheduled-456" . "<2099-01-01 10:00-11:00>")
+                      ("existing-unscheduled-456" . "<2099-01-01 11:00-12:00>")
+                      ("new-456" . "<2099-01-02 12:00-13:00>")))
+         (task-metadata (make-hash-table :test #'equal))
+         (merged nil))
+    (puthash "existing-scheduled-456"
+             '(:id "existing-scheduled-456" :state pre-existing-scheduled :priority nil)
+             task-metadata)
+    (puthash "existing-unscheduled-456"
+             '(:id "existing-unscheduled-456" :state pre-existing-unscheduled :priority nil)
+             task-metadata)
+    (puthash "new-456"
+             '(:id "new-456" :state newly-generated :priority nil)
+             task-metadata)
+    (setq merged
+          (sem-planner--merge-scheduling-into-tasks
+           temp-tasks decisions task-metadata '() "2026-03-24T13:00:00Z"))
+    (should (string-match-p "SCHEDULED: <2026-03-20 09:00-10:00>" merged))
+    (should-not (string-match-p "SCHEDULED: <2099-01-01 10:00-11:00>" merged))
+    (should-not (string-match-p "SCHEDULED: <2099-01-01 11:00-12:00>" merged))
+    (should (string-match-p "SCHEDULED: <2099-01-02 12:00-13:00>" merged))))
+
+(ert-deftest sem-planner-test-merge-scheduling-enforces-overlap-policy ()
+  "Test that overlap is blocked for non-high priority new tasks."
+  (let* ((temp-tasks (concat "* TODO New low-priority task :work:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: low-789\n"
+                             ":END:\n"
+                             "\n"
+                             "* TODO New high-priority task [#A] :work:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: high-789\n"
+                             ":END:\n"))
+         (decisions '(("low-789" . "<2099-01-02 09:30-10:00>")
+                      ("high-789" . "<2099-01-02 09:45-10:15>")))
+         (task-metadata (make-hash-table :test #'equal))
+         (occupied-windows
+          (list (list :id "existing-occupied"
+                      :title "Existing window"
+                      :scheduled "<2099-01-02 Fri 09:00-10:30>"
+                      :range (cons
+                              (float-time (encode-time 0 0 9 2 1 2099 t))
+                              (float-time (encode-time 0 30 10 2 1 2099 t))))))
+         (merged nil))
+    (puthash "low-789"
+             '(:id "low-789" :state newly-generated :priority nil)
+             task-metadata)
+    (puthash "high-789"
+             '(:id "high-789" :state newly-generated :priority ?A)
+             task-metadata)
+    (setq merged
+          (sem-planner--merge-scheduling-into-tasks
+           temp-tasks decisions task-metadata occupied-windows "2026-03-24T13:00:00Z"))
+    (should-not (string-match-p "SCHEDULED: <2099-01-02 09:30-10:00>" merged))
+    (should (string-match-p "SCHEDULED: <2099-01-02 09:45-10:15>" merged))))
+
+(ert-deftest sem-planner-test-merge-scheduling-replaces-existing-scheduled-line ()
+  "Test that merge replaces preexisting SCHEDULED in a generated task section." 
+  (let* ((temp-tasks (concat "* TODO Generated task :work:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: generated-001\n"
+                             ":FILETAGS: :work:\n"
+                             ":END:\n"
+                             "Body text\n"
+                             "SCHEDULED: <2024-06-01 09:00-10:00>\n"))
+         (decisions '(("generated-001" . "<2099-01-02 16:00-17:00>")))
+         (task-metadata (make-hash-table :test #'equal))
+         (merged nil))
+    (puthash "generated-001"
+             '(:id "generated-001" :state newly-generated :priority nil)
+             task-metadata)
+    (setq merged
+          (sem-planner--merge-scheduling-into-tasks
+           temp-tasks decisions task-metadata '() "2026-03-24T13:00:00Z"))
+    (should (string-match-p "SCHEDULED: <2099-01-02 16:00-17:00>" merged))
+    (should-not (string-match-p "SCHEDULED: <2024-06-01 09:00-10:00>" merged))))
+
+(ert-deftest sem-planner-test-append-merged-strips-tasks-heading ()
+  "Test that append strips a leading '* Tasks' heading from merged content."
+  (let* ((tmp-dir (make-temp-file "sem-test-" t))
+         (tasks-file (expand-file-name "tasks.org" tmp-dir))
+         (sem-planner-tasks-file tasks-file))
+    (unwind-protect
+        (progn
+          (write-region "* TODO Existing\n:PROPERTIES:\n:ID: existing-1\n:END:\n"
+                        nil tasks-file nil 'silent)
+          (should (sem-planner--append-merged-to-tasks-org
+                   "* Tasks\n\n* TODO New\n:PROPERTIES:\n:ID: new-1\n:END:\n"))
+          (with-temp-buffer
+            (insert-file-contents tasks-file)
+            (let ((content (buffer-string)))
+              (should-not (string-match-p "^\\* Tasks$" content))
+              (should (string-match-p "\\* TODO Existing" content))
+              (should (string-match-p "\\* TODO New" content)))))
+      (delete-directory tmp-dir t))))
+
+(ert-deftest sem-planner-test-merge-scheduling-uses-runtime-min-start-without-utc-suffix ()
+  "Test that runtime-min-start is passed directly to `date-to-time'."
+  (let* ((temp-tasks (concat "* TODO New task :work:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: new-runtime-123\n"
+                             ":END:\n"))
+         (decisions '(("new-runtime-123" . "<2099-01-02 12:00-13:00>")))
+         (task-metadata (make-hash-table :test #'equal))
+         (runtime-min-start "2026-03-24T16:09:59Z")
+         (runtime-min-start-arg nil)
+         (merged nil))
+    (puthash "new-runtime-123"
+             '(:id "new-runtime-123" :state newly-generated :priority nil)
+             task-metadata)
+    (cl-letf (((symbol-function 'date-to-time)
+               (lambda (arg)
+                 (setq runtime-min-start-arg arg)
+                 (encode-time 0 0 0 1 1 2026 t))))
+      (setq merged
+            (sem-planner--merge-scheduling-into-tasks
+             temp-tasks decisions task-metadata '() runtime-min-start)))
+    (should (string= runtime-min-start-arg runtime-min-start))
+    (should (string-match-p "SCHEDULED: <2099-01-02 12:00-13:00>" merged))))
 
 (ert-deftest sem-planner-test-build-pass2-prompt-includes-runtime-bounds-and-strict-rule ()
   "Test that Pass 2 prompt includes runtime bounds and strict greater-than semantics."
   (let ((prompt (sem-planner--build-pass2-prompt
-                 "Tasks to schedule:\n- ID: abc | TAG:work | (unscheduled)\n"
+                 "Tasks to schedule:\n- ID: abc | TAG:work | PRIORITY:none | STATE:newly-generated | (unscheduled)\n"
                  "(No existing tasks)"
+                 "- OCCUPIED: <2026-03-24 Tue 16:00-17:00> | SOURCE_ID:existing-123"
                  ""
                  "2026-03-24T12:00:00Z"
                  "2026-03-24T13:00:00Z")))
@@ -112,7 +242,8 @@ Some description here")
     (should (string-match-p "runtime_min_start: 2026-03-24T13:00:00Z" prompt))
     (should (string-match-p "strictly greater than runtime_min_start" prompt))
     (should (string-match-p "SCHEDULED equal to runtime_min_start is NOT allowed" prompt))
-    (should (string-match-p "Process quarterly financial reports" prompt))))
+    (should (string-match-p "Avoid overlap with pre-existing occupied windows by default" prompt))
+    (should (string-match-p "PRE-EXISTING OCCUPIED WINDOWS" prompt))))
 
 ;;; Temp File Path Tests
 

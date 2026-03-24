@@ -22,9 +22,8 @@
 (defvar sem-planner--retry-delays [1 2 4]
   "Delays between retries in seconds.")
 
-(defconst sem-planner-fixed-schedule-exception-title
-  "Process quarterly financial reports"
-  "Task title that must keep its existing fixed schedule in Pass 2.")
+(defconst sem-planner-high-priority-values '(?A ?B)
+  "Priority values treated as high-priority overlap exceptions.")
 
 (defun sem-planner--temp-file-path ()
   "Compute the temp file path for the current batch.
@@ -75,44 +74,135 @@ Returns nil if file doesn't exist or is empty."
   "Format TIME as an ISO 8601 UTC datetime string."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
 
-(defun sem-planner--fixed-schedule-task-ids (temp-tasks)
-  "Return alist of fixed-schedule IDs and original timestamps from TEMP-TASKS.
-Each element is (ID . TIMESTAMP) for tasks matching
-`sem-planner-fixed-schedule-exception-title'."
-  (if (string-empty-p temp-tasks)
+(defun sem-planner--parse-task-state (existing-index id scheduled)
+  "Return task state symbol for ID and SCHEDULED.
+EXISTING-INDEX is a hash table keyed by task ID.
+Return one of `pre-existing-scheduled', `pre-existing-unscheduled', or `newly-generated'."
+  (if (and id (gethash id existing-index))
+      (if scheduled 'pre-existing-scheduled 'pre-existing-unscheduled)
+    'newly-generated))
+
+(defun sem-planner--existing-task-snapshot ()
+  "Return existing task metadata from `sem-planner-tasks-file'.
+Each element is a plist with keys :id, :title, :scheduled, and :priority."
+  (if (not (file-exists-p sem-planner-tasks-file))
       '()
     (with-temp-buffer
-      (insert temp-tasks)
-      (let ((fixed '()))
-        (goto-char (point-min))
-        (while (re-search-forward
-                "^\\*+\\s-+TODO\\s-+\\(.+?\\)\\(?:\\s-+:[^\n]+:\\)?\\s-*$"
-                nil t)
-          (let* ((title (string-trim (match-string 1)))
-                 (section-start (point))
-                 (section-end (or (save-excursion
-                                    (when (re-search-forward "^\\*+\\s-+" nil t)
-                                      (match-beginning 0)))
-                                  (point-max)))
-                 (id nil)
-                 (scheduled nil))
-            (save-excursion
-              (goto-char section-start)
-              (when (re-search-forward "^[ \t]*:ID:[ \t]*\\([^ \t\n]+\\)" section-end t)
-                (setq id (match-string 1)))
-              (goto-char section-start)
-              (when (re-search-forward "^[ \t]*SCHEDULED:[ \t]*\\(<[^>]+>\\)" section-end t)
-                (setq scheduled (match-string 1))))
-            (when (and id
-                       scheduled
-                       (string= title sem-planner-fixed-schedule-exception-title))
-              (push (cons id scheduled) fixed))
-            (goto-char section-end)))
-        (nreverse fixed)))))
+      (insert-file-contents sem-planner-tasks-file)
+      (org-mode)
+      (let ((ast (org-element-parse-buffer))
+            (snapshot '()))
+        (org-element-map ast 'headline
+          (lambda (headline)
+            (let ((id (org-element-property :ID headline)))
+              (when id
+                (push (list :id id
+                            :title (org-element-property :raw-value headline)
+                            :scheduled (org-element-property :SCHEDULED headline)
+                            :priority (org-element-property :priority headline))
+                      snapshot)))))
+        (nreverse snapshot)))))
 
-(defun sem-planner--anonymize-temp-tasks (temp-tasks)
+(defun sem-planner--existing-task-index (snapshot)
+  "Return hash table index for SNAPSHOT keyed by task ID."
+  (let ((index (make-hash-table :test #'equal)))
+    (dolist (entry snapshot)
+      (puthash (plist-get entry :id) entry index))
+    index))
+
+(defun sem-planner--timestamp-to-epoch-range (scheduled)
+  "Convert SCHEDULED timestamp to epoch range as cons cell.
+Returns (START . END) in UTC seconds or nil when parsing fails."
+  (let ((parts (sem-planner--parse-timestamp scheduled)))
+    (when parts
+      (let* ((year (nth 0 parts))
+             (month (nth 1 parts))
+             (day (nth 2 parts))
+             (hour-start (or (nth 3 parts) 0))
+             (minute-start (or (nth 4 parts) 0))
+             (hour-end (or (nth 5 parts) 23))
+             (minute-end (or (nth 6 parts) 59))
+             (start (float-time (encode-time 0 minute-start hour-start day month year t)))
+             (end (float-time (encode-time 0 minute-end hour-end day month year t))))
+        (cons start end)))))
+
+(defun sem-planner--occupied-windows (snapshot)
+  "Return occupied windows derived from pre-existing scheduled tasks in SNAPSHOT.
+Each element is a plist with :id, :title, :range, and :scheduled."
+  (let ((windows '()))
+    (dolist (entry snapshot)
+      (let ((scheduled (plist-get entry :scheduled)))
+        (when scheduled
+          (let ((range (sem-planner--timestamp-to-epoch-range scheduled)))
+            (when range
+              (push (list :id (plist-get entry :id)
+                          :title (plist-get entry :title)
+                          :scheduled (org-element-interpret-data scheduled)
+                          :range range)
+                    windows))))))
+    (nreverse windows)))
+
+(defun sem-planner--occupied-windows-context (windows)
+  "Format occupied WINDOWS for Pass 2 planning context."
+  (if (null windows)
+      "(none)"
+    (mapconcat
+     (lambda (window)
+       (format "- OCCUPIED: %s | SOURCE_ID:%s"
+               (plist-get window :scheduled)
+               (plist-get window :id)))
+     windows
+     "\n")))
+
+(defun sem-planner--high-priority-p (priority)
+  "Return non-nil when PRIORITY is treated as high priority."
+  (and priority (memq priority sem-planner-high-priority-values)))
+
+(defun sem-planner--overlapping-window (scheduled occupied-windows)
+  "Return first occupied window overlapping SCHEDULED from OCCUPIED-WINDOWS.
+Return nil when there is no overlap or SCHEDULED cannot be parsed."
+  (let ((scheduled-range (sem-planner--timestamp-to-epoch-range scheduled))
+        (match nil))
+    (when scheduled-range
+      (dolist (window occupied-windows)
+        (let* ((window-range (plist-get window :range))
+               (window-start (car window-range))
+               (window-end (cdr window-range))
+               (task-start (car scheduled-range))
+               (task-end (cdr scheduled-range)))
+          (when (and (< task-start window-end)
+                     (< window-start task-end)
+                     (not match))
+            (setq match window)))))
+    match))
+
+(defun sem-planner--temp-task-metadata (temp-tasks existing-index)
+  "Return metadata map for TEMP-TASKS keyed by task ID.
+EXISTING-INDEX is used to classify each task by pre-existing state."
+  (let ((metadata (make-hash-table :test #'equal)))
+    (with-temp-buffer
+      (insert temp-tasks)
+      (org-mode)
+      (let ((ast (org-element-parse-buffer)))
+        (org-element-map ast 'headline
+          (lambda (headline)
+            (let* ((id (org-element-property :ID headline))
+                   (scheduled (org-element-property :SCHEDULED headline))
+                   (priority (org-element-property :priority headline))
+                   (state (sem-planner--parse-task-state existing-index id scheduled)))
+              (when id
+                (puthash id
+                         (list :id id
+                               :state state
+                               :priority priority
+                               :scheduled (when scheduled
+                                            (org-element-interpret-data scheduled)))
+                         metadata)))))))
+    metadata))
+
+(defun sem-planner--anonymize-temp-tasks (temp-tasks existing-index)
   "Anonymize TEMP_TASKS for Pass 2 LLM.
-Strips task bodies, returns only ID + TAG + existing SCHEDULED (or unscheduled).
+Strips task bodies and returns ID, TAG, STATE, PRIORITY, and schedule metadata.
 Sensitive content is NEVER sent to LLM."
   (when (string-empty-p temp-tasks)
     (cl-return-from sem-planner--anonymize-temp-tasks ""))
@@ -124,21 +214,21 @@ Sensitive content is NEVER sent to LLM."
       (org-element-map ast 'headline
         (lambda (headline)
           (let* ((id (org-element-property :ID headline))
-                 (title (org-element-property :raw-value headline))
                  (tags (org-element-property :tags headline))
+                 (priority (org-element-property :priority headline))
                  (tag-str (if tags (car tags) "routine"))
                  (scheduled (org-element-property :SCHEDULED headline))
+                 (state (sem-planner--parse-task-state existing-index id scheduled))
                  (sched-str (if scheduled
                                 (format "SCHEDULED: %s"
-                                         (org-element-interpret-data scheduled))
+                                        (org-element-interpret-data scheduled))
                               "(unscheduled)"))
-                 (fixed-exception
-                  (if (string= title sem-planner-fixed-schedule-exception-title)
-                      " | FIXED_SCHEDULE_EXCEPTION:true"
-                    "")))
+                 (priority-str (if priority
+                                   (format "%c" priority)
+                                 "none")))
             (when id
-              (push (format "- ID: %s | TAG:%s | %s%s"
-                            id tag-str sched-str fixed-exception)
+              (push (format "- ID: %s | TAG:%s | PRIORITY:%s | STATE:%s | %s"
+                            id tag-str priority-str state sched-str)
                     result)))))
       (if result
           (concat "Tasks to schedule:\n"
@@ -166,33 +256,84 @@ Response format expected:
           (push (cons id scheduled) decisions))))
     (nreverse decisions)))
 
-(defun sem-planner--merge-scheduling-into-tasks (temp-tasks decisions)
+(defun sem-planner--merge-scheduling-into-tasks
+    (temp-tasks decisions task-metadata occupied-windows runtime-min-start)
   "Merge scheduling DECISIONS into TEMP_TASKS.
 DECISIONS is alist of (id . scheduled-timestamp).
 For each decision, find matching task by ID and inject SCHEDULED line.
 Returns modified temp-tasks string with scheduling injected."
   (when (string-empty-p temp-tasks)
     (cl-return-from sem-planner--merge-scheduling-into-tasks temp-tasks))
-  (let ((fixed-schedules (sem-planner--fixed-schedule-task-ids temp-tasks)))
+  (let ((runtime-min-start-epoch
+         (float-time (date-to-time runtime-min-start))))
     (with-temp-buffer
       (insert temp-tasks)
       (goto-char (point-min))
       (dolist (decision decisions)
-        (let ((id (car decision))
-              (scheduled (cdr decision)))
-          (when (and scheduled (not (assoc id fixed-schedules)))
-            (when (re-search-forward (format "ID:[ \t]*%s[ \t]*\n[ \t]*:END:"
+        (let* ((id (car decision))
+               (scheduled (cdr decision))
+               (meta (and id (gethash id task-metadata)))
+               (state (plist-get meta :state))
+               (priority (plist-get meta :priority))
+               (scheduled-range (and scheduled
+                                     (sem-planner--timestamp-to-epoch-range scheduled)))
+               (overlapping-window (and scheduled
+                                        (eq state 'newly-generated)
+                                        (sem-planner--overlapping-window scheduled occupied-windows))))
+          (when (and scheduled
+                     (eq state 'newly-generated)
+                     scheduled-range
+                     (> (car scheduled-range) runtime-min-start-epoch)
+                     (or (null overlapping-window)
+                         (sem-planner--high-priority-p priority)))
+            (when (re-search-forward (format "^[ \t]*:ID:[ \t]*%s[ \t]*$"
                                             (regexp-quote id))
                                     nil t)
-              (goto-char (match-end 0))
-              (insert "\nSCHEDULED: " scheduled)))))
+              (let* ((id-pos (match-beginning 0))
+                     (section-start
+                      (save-excursion
+                        (goto-char id-pos)
+                        (if (re-search-backward "^\\*+\\s-+TODO\\s-+" nil t)
+                            (match-beginning 0)
+                          (point-min))))
+                     (section-end
+                      (save-excursion
+                        (goto-char id-pos)
+                        (if (re-search-forward "^\\*+\\s-+TODO\\s-+" nil t)
+                            (match-beginning 0)
+                          (point-max)))))
+                (save-restriction
+                  (narrow-to-region section-start section-end)
+                  (goto-char (point-min))
+                  (while (re-search-forward "^[ \t]*SCHEDULED:[ \t]*<[^>]+>[ \t]*\\n?" nil t)
+                    (replace-match ""))
+                  (goto-char (point-min))
+                  (if (re-search-forward "^[ \t]*:END:[ \t]*$" nil t)
+                      (progn
+                        (end-of-line)
+                        (insert "\nSCHEDULED: " scheduled))
+                    (goto-char (point-max))
+                    (insert "\nSCHEDULED: " scheduled))))))))
       (buffer-string))))
 
 (defun sem-planner--append-merged-to-tasks-org (merged-tasks)
   "Atomically append MERGED-TASKS to tasks.org.
 Appends \\n + merged-tasks to existing tasks.org content."
   (condition-case err
-      (let* ((tasks-file sem-planner-tasks-file)
+      (let* ((clean-merged
+              (with-temp-buffer
+                (insert merged-tasks)
+                (goto-char (point-min))
+                (skip-chars-forward " \t\n")
+                (when (looking-at-p "^\\* Tasks[ \t]*$")
+                  (delete-region (point-min)
+                                 (min (point-max) (1+ (line-end-position))))
+                  (goto-char (point-min))
+                  (while (looking-at-p "^[ \t]*$")
+                    (delete-region (line-beginning-position)
+                                   (min (point-max) (1+ (line-end-position))))))
+                (buffer-string)))
+             (tasks-file sem-planner-tasks-file)
              (tmp-file (concat tasks-file ".tmp"))
              (existing ""))
         (when (file-exists-p tasks-file)
@@ -202,7 +343,7 @@ Appends \\n + merged-tasks to existing tasks.org content."
         (with-temp-file tmp-file
           (when (and existing (not (string-empty-p existing)))
             (insert existing "\n"))
-          (insert "\n" merged-tasks "\n"))
+          (insert "\n" clean-merged "\n"))
         (rename-file tmp-file tasks-file t)
         t)
     (error
@@ -270,10 +411,11 @@ Strips titles and IDs, preserves time+priority+tag."
       "")))
 
 (defun sem-planner--build-pass2-prompt
-    (anonymized-temp anonymized-schedule rules-text runtime-now runtime-min-start)
+    (anonymized-temp anonymized-schedule occupied-windows rules-text runtime-now runtime-min-start)
   "Build the Pass 2 prompt for task planning.
-ANONYMIZED_TEMP is the anonymized temp tasks (ID + TAG + SCHEDULED only).
+ANONYMIZED_TEMP is the anonymized temp tasks metadata.
 ANONYMIZED_SCHEDULE is the existing schedule context.
+OCCUPIED-WINDOWS is pre-existing occupied ranges.
 RULES_TEXT is the user scheduling rules.
 RUNTIME-NOW is the current run datetime and RUNTIME-MIN-START is RUNTIME-NOW + 1h."
   (let ((output-language (or (getenv "OUTPUT_LANGUAGE") "English")))
@@ -284,19 +426,26 @@ RUNTIME-NOW is the current run datetime and RUNTIME-MIN-START is RUNTIME-NOW + 1
      (format "runtime_now: %s\n" runtime-now)
      (format "runtime_min_start: %s\n" runtime-min-start)
      "Rules:\n"
-     "- For every task except the fixed-schedule exception, SCHEDULED MUST be strictly greater than runtime_min_start.\n"
-     "- Strictly greater means SCHEDULED equal to runtime_min_start is NOT allowed.\n"
-     (format "- For task '%s', preserve the exact existing SCHEDULED timestamp unchanged.\n\n"
-             sem-planner-fixed-schedule-exception-title)
-     "=== USER SCHEDULING RULES ===\n"
+      "- For every newly-generated task, SCHEDULED MUST be strictly greater than runtime_min_start.\n"
+      "- Strictly greater means SCHEDULED equal to runtime_min_start is NOT allowed.\n"
+      "- Keep pre-existing-scheduled tasks at exact original timestamps.\n"
+      "- Keep pre-existing-unscheduled tasks unscheduled.\n"
+      "- Avoid overlap with pre-existing occupied windows by default.\n"
+      "- Overlap is allowed only for high-priority newly-generated tasks when needed.\n"
+      "- Never mutate preserved pre-existing schedules while applying overlap exceptions.\n\n"
+      "=== USER SCHEDULING RULES ===\n"
      (if (string-empty-p rules-text)
          "(No rules specified)\n"
        (concat rules-text "\n"))
      "\n=== EXISTING SCHEDULE ===\n"
-     (if (string-empty-p anonymized-schedule)
-         "(No existing tasks)\n"
-       (concat anonymized-schedule "\n"))
-     "\n=== TASKS TO SCHEDULE ===\n"
+      (if (string-empty-p anonymized-schedule)
+          "(No existing tasks)\n"
+        (concat anonymized-schedule "\n"))
+      "\n=== PRE-EXISTING OCCUPIED WINDOWS ===\n"
+      (if (string-empty-p occupied-windows)
+          "(none)\n"
+        (concat occupied-windows "\n"))
+      "\n=== TASKS TO SCHEDULE ===\n"
      anonymized-temp
      "\n\nIMPORTANT: Respond with ONE LINE per task in this exact format:\n"
      "  ID: <uuid> | SCHEDULED: <timestamp>\n"
@@ -375,25 +524,40 @@ Returns t if at least one valid ID line is found."
               (message "SEM: No tasks in temp file, skipping planning"))
           (sem-core-log "planner" "INBOX-ITEM" "OK" "Starting planning step" nil)
           (message "SEM: Starting planning step")
-          (let* ((anonymized-existing (sem-planner--anonymize-tasks))
-                 (anonymized-temp (sem-planner--anonymize-temp-tasks temp-tasks))
+          (let* ((existing-snapshot (sem-planner--existing-task-snapshot))
+                 (existing-index (sem-planner--existing-task-index existing-snapshot))
+                 (occupied-windows (sem-planner--occupied-windows existing-snapshot))
+                 (occupied-windows-context (sem-planner--occupied-windows-context occupied-windows))
+                 (task-metadata (sem-planner--temp-task-metadata temp-tasks existing-index))
+                 (anonymized-existing (sem-planner--anonymize-tasks))
+                 (anonymized-temp (sem-planner--anonymize-temp-tasks temp-tasks existing-index))
                  (rules-text (or (sem-rules-read) ""))
                  (runtime-now-time (current-time))
                  (runtime-min-start-time (time-add runtime-now-time (seconds-to-time 3600)))
                  (runtime-now (sem-planner--format-runtime-iso runtime-now-time))
                  (runtime-min-start (sem-planner--format-runtime-iso runtime-min-start-time)))
             (sem-planner--run-with-retry
-             rules-text anonymized-existing anonymized-temp runtime-now runtime-min-start
-               (lambda (success response)
-                (if success
-                    (progn
+              rules-text
+              anonymized-existing
+              occupied-windows-context
+              anonymized-temp
+              runtime-now
+              runtime-min-start
+                (lambda (success response)
+                 (if success
+                     (progn
                       (sem-core-log "planner" "INBOX-ITEM" "OK" "Planning successful" nil)
-                      (message "SEM: Planning successful")
-                      (when (sem-planner--validate-planned-tasks response)
-                        (let* ((decisions (sem-planner--parse-scheduling-decisions response))
-                               (merged (sem-planner--merge-scheduling-into-tasks temp-tasks decisions)))
-                          (sem-planner--append-merged-to-tasks-org merged)))
-                      (sem-planner--delete-temp-file))
+                       (message "SEM: Planning successful")
+                       (when (sem-planner--validate-planned-tasks response)
+                         (let* ((decisions (sem-planner--parse-scheduling-decisions response))
+                                (merged (sem-planner--merge-scheduling-into-tasks
+                                         temp-tasks
+                                         decisions
+                                         task-metadata
+                                         occupied-windows
+                                         runtime-min-start)))
+                           (sem-planner--append-merged-to-tasks-org merged)))
+                       (sem-planner--delete-temp-file))
                   (progn
                    (sem-core-log-error "planner" "INBOX-ITEM"
                                        "Planning failed after all retries, using fallback"
@@ -408,12 +572,17 @@ Returns t if at least one valid ID line is found."
      (sem-planner--fallback-to-pass1)))))
 
 (defun sem-planner--run-with-retry
-    (rules-text anonymized-schedule temp-tasks runtime-now runtime-min-start callback)
+    (rules-text anonymized-schedule occupied-windows temp-tasks runtime-now runtime-min-start callback)
   "Run the planning LLM call with exponential backoff retry."
   (let ((retry-count 0)
         (user-prompt
          (sem-planner--build-pass2-prompt
-          temp-tasks anonymized-schedule rules-text runtime-now runtime-min-start))
+           temp-tasks
+           anonymized-schedule
+           occupied-windows
+           rules-text
+           runtime-now
+           runtime-min-start))
         (system-prompt (sem-planner--system-prompt)))
     (cl-labels ((attempt ()
                 (message "SEM: Planning attempt %d/%d" (1+ retry-count) sem-planner--max-retries)

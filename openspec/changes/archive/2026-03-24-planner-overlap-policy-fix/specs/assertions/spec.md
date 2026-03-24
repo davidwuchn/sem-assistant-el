@@ -1,10 +1,4 @@
-# Specification: assertions
-
-## Purpose
-
-Define requirements for integration test assertions that validate outcomes.
-
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Assertions validate test outcomes
 The system SHALL run assertions after artifact collection to validate integration test results. All configured assertions MUST run even when some fail, and assertion coverage MUST include pre-existing TODO immutability and occupied-window overlap policy checks.
@@ -22,7 +16,7 @@ The system SHALL run assertions after artifact collection to validate integratio
 #### Scenario: Keyword presence assertion
 - **WHEN** running the keyword presence assertion
 - **THEN** the script MUST grep for each headline title keyword defined in the `keywords` array in `tasks.org`
-- **AND** each keyword MUST match
+- **AND** each configured keyword MUST match
 - **AND** if any keyword is missing, the failure message MUST name the missing keyword
 
 #### Scenario: Scheduled time lower-bound and overlap policy assertion
@@ -55,7 +49,7 @@ The system SHALL run assertions after artifact collection to validate integratio
 
 #### Scenario: Sensitive content restoration assertion
 - **WHEN** running the sensitive content restoration assertion
-- **THEN** the script MUST grep for each sensitive keyword defined in the `sensitive_keywords` array in tasks.org
+- **THEN** the script MUST grep for each sensitive keyword defined in the `sensitive_keywords` array in `tasks.org`
 - **AND** each keyword MUST be present in the output (proving sensitive content was unmasked)
 - **AND** if any keyword is missing, the failure message MUST name the missing keyword
 

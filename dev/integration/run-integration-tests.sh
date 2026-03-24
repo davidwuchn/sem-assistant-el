@@ -13,6 +13,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 COMPOSE_OVERRIDE="$SCRIPT_DIR/docker-compose.test.yml"
 TEST_INBOX="$SCRIPT_DIR/testing-resources/inbox-tasks.org"
+PREEXISTING_TASKS_FIXTURE="$SCRIPT_DIR/testing-resources/preexisting-tasks.org"
 TEST_DATA_DIR="$REPO_ROOT/test-data"
 TEST_RESULTS_DIR="$REPO_ROOT/test-results"
 LOGS_DIR="$REPO_ROOT/logs"
@@ -30,15 +31,14 @@ export OPENROUTER_MODEL="qwen/qwen3.5-35b-a3b"
 DAEMON_POLL_INTERVAL=3
 DAEMON_MAX_ATTEMPTS=30
 TASKS_POLL_INTERVAL=5
-TASKS_MAX_ATTEMPTS=24
+TASKS_MAX_ATTEMPTS=48
 
-# Derived: expected task count from test inbox (count :task: headlines)
-# IMPORTANT: When adding/removing task headlines in the test inbox,
-# this value is derived automatically and used for polling and assertions.
-EXPECTED_TASK_COUNT=$(grep -c '^\* TODO .*:task:' "$TEST_INBOX" 2>/dev/null || echo "0")
+# Derived counts for polling and assertions
+EXPECTED_NEW_TASK_COUNT=$(grep -c '^\* TODO .*:task:' "$TEST_INBOX" 2>/dev/null || echo "0")
+EXPECTED_PREEXISTING_TASK_COUNT=$(grep -c '^\* TODO ' "$PREEXISTING_TASKS_FIXTURE" 2>/dev/null || echo "0")
+EXPECTED_TASK_COUNT=$((EXPECTED_NEW_TASK_COUNT + EXPECTED_PREEXISTING_TASK_COUNT))
 
 # Assertion constants
-FIXED_SCHEDULE_EXCEPTION_TITLE="Process quarterly financial reports"
 RUNTIME_TIMEZONE="UTC"
 KEYWORDS=("quarterly financial reports" "#452" "team building activity")
 SENSITIVE_KEYWORDS=("supersecret123" "sk-live-abc123xyz789" "IBAN: DE89370400440532013000" "ACCOUNT NUMBER: 123456789")
@@ -112,7 +112,70 @@ setup_test_data() {
     mkdir -p "$TEST_DATA_DIR/elfeed"
     mkdir -p "$TEST_DATA_DIR/morning-read"
     mkdir -p "$TEST_DATA_DIR/prompts"
-    
+
+    if [[ ! -f "$PREEXISTING_TASKS_FIXTURE" ]]; then
+        echo "ERROR: pre-existing tasks fixture not found: $PREEXISTING_TASKS_FIXTURE" >&2
+        TEST_STATUS="FAIL"
+        return 1
+    fi
+
+    echo "Installing pre-existing tasks fixture into WebDAV data path..."
+    cp "$PREEXISTING_TASKS_FIXTURE" "$TEST_DATA_DIR/tasks.org"
+
+    echo "Validating pre-existing fixture shape..."
+    python3 - "$TEST_DATA_DIR/tasks.org" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
+
+todo_count = len(re.findall(r"^\*+\s+TODO\s+", text, flags=re.MULTILINE))
+scheduled_count = len(re.findall(r"^\s*SCHEDULED:\s*<", text, flags=re.MULTILINE))
+priority_count = len(re.findall(r"^\*+\s+TODO\s+.*\[#([A-C])\]", text, flags=re.MULTILINE))
+
+headings = re.split(r"(?=^\*+\s+TODO\s+)", text, flags=re.MULTILINE)
+unscheduled_count = 0
+tag_set = set()
+for block in headings:
+    if not block.strip().startswith("* TODO"):
+        continue
+    if "SCHEDULED:" not in block:
+        unscheduled_count += 1
+    m = re.search(r":([A-Za-z0-9_@#%:-]+):\s*$", block.splitlines()[0])
+    if m:
+        for tag in [t for t in m.group(1).split(":") if t]:
+            tag_set.add(tag)
+
+errors = []
+if todo_count < 5:
+    errors.append(f"expected >=5 TODOs, got {todo_count}")
+if scheduled_count < 3:
+    errors.append(f"expected >=3 scheduled TODOs, got {scheduled_count}")
+if unscheduled_count < 1:
+    errors.append("expected at least 1 unscheduled TODO")
+if priority_count < 1:
+    errors.append("expected at least 1 priority TODO")
+required_tags = {"work", "routine"}
+if not required_tags.issubset(tag_set):
+    errors.append(f"missing required tags: {sorted(required_tags - tag_set)}")
+if len(tag_set) < 3:
+    errors.append(f"expected mixed tags (>=3 distinct), got {sorted(tag_set)}")
+
+if errors:
+    print("FAIL: pre-existing fixture shape invalid")
+    for err in errors:
+        print(f" - {err}")
+    sys.exit(1)
+
+print(
+    "PASS: pre-existing fixture shape validated "
+    f"(todo={todo_count}, scheduled={scheduled_count}, unscheduled={unscheduled_count}, "
+    f"priority={priority_count}, tags={sorted(tag_set)})"
+)
+PY
+
     echo "Test data directory ready: $TEST_DATA_DIR"
 }
 
@@ -524,43 +587,6 @@ collect_artifacts() {
 # Assertions
 # =============================================================================
 
-extract_fixed_schedule_timestamp() {
-    local inbox_file="$1"
-    local title="$2"
-    python3 - "$inbox_file" "$title" <<'PY'
-import re
-import sys
-
-inbox_path = sys.argv[1]
-title = sys.argv[2]
-
-headline_re = re.compile(r"^\*+\s+TODO\s+(.*?)(?:\s+:[^:]+(?::[^:]+)*:)?\s*$")
-scheduled_re = re.compile(r"^\s*SCHEDULED:\s*(<[^>]+>)")
-
-with open(inbox_path, "r", encoding="utf-8") as f:
-    lines = f.readlines()
-
-for i, line in enumerate(lines):
-    m = headline_re.match(line.rstrip("\n"))
-    if not m:
-        continue
-    if m.group(1).strip() != title:
-        continue
-    j = i + 1
-    while j < len(lines):
-        current = lines[j].rstrip("\n")
-        if current.startswith("*"):
-            break
-        sm = scheduled_re.match(current)
-        if sm:
-            print(sm.group(1))
-            sys.exit(0)
-        j += 1
-
-sys.exit(1)
-PY
-}
-
 run_assertions() {
     echo ""
     echo "=== Running Assertions ==="
@@ -611,126 +637,171 @@ run_assertions() {
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
-    # Assertion 3: Scheduled time lower-bound and fixed exception equality
-    echo "Assertion 3: Scheduled time lower-bound validation..."
+    # Assertion 3: Pre-existing immutability + lower-bound + overlap policy
+    echo "Assertion 3: Pre-existing immutability and scheduling policy..."
     {
-        echo "=== Assertion 3: Scheduled Time Lower-Bound Validation ==="
+        echo "=== Assertion 3: Pre-existing Immutability and Scheduling Policy ==="
 
-        local runtime_now_epoch runtime_min_start_epoch runtime_now_iso runtime_min_start_iso
+        local runtime_now_epoch runtime_min_start_epoch runtime_min_start_iso
         runtime_now_epoch=$(date -u +%s)
         runtime_min_start_epoch=$((runtime_now_epoch + 3600))
-        runtime_now_iso=$(date -u -d "@$runtime_now_epoch" +%Y-%m-%dT%H:%M:%SZ)
         runtime_min_start_iso=$(date -u -d "@$runtime_min_start_epoch" +%Y-%m-%dT%H:%M:%SZ)
         echo "Timezone authority: $RUNTIME_TIMEZONE"
 
-        local expected_exception_ts
-        expected_exception_ts=$(extract_fixed_schedule_timestamp "$TEST_INBOX" "$FIXED_SCHEDULE_EXCEPTION_TITLE" || true)
-
-        if [[ -z "$expected_exception_ts" ]]; then
-            echo "FAIL: Could not extract fixed-schedule exception timestamp from inbox for '$FIXED_SCHEDULE_EXCEPTION_TITLE'"
-            echo "ASSERTION_3_RESULT:FAIL"
-        else
-            if python3 - "$RUN_DIR/tasks.org" "$FIXED_SCHEDULE_EXCEPTION_TITLE" "$expected_exception_ts" "$runtime_min_start_epoch" "$runtime_min_start_iso" <<'PY'
+        if python3 - "$RUN_DIR/tasks.org" "$PREEXISTING_TASKS_FIXTURE" "$runtime_min_start_epoch" "$runtime_min_start_iso" <<'PY'
 import datetime
 import re
 import sys
 
 tasks_path = sys.argv[1]
-exception_title = sys.argv[2]
-expected_exception_ts = sys.argv[3]
-runtime_min_start_epoch = int(sys.argv[4])
-runtime_min_start_iso = sys.argv[5]
+fixture_path = sys.argv[2]
+runtime_min_start_epoch = int(sys.argv[3])
+runtime_min_start_iso = sys.argv[4]
 
-headline_re = re.compile(r"^\*+\s+TODO\s+(.*?)(?:\s+:[^:]+(?::[^:]+)*:)?\s*$")
+headline_re = re.compile(r"^(\*+)\s+TODO\s+(.*?)(?:\s+:[^:]+(?::[^:]+)*:)?\s*$")
 scheduled_re = re.compile(r"^\s*SCHEDULED:\s*(<[^>]+>)")
+priority_re = re.compile(r"\[#([A-C])\]")
 org_ts_re = re.compile(r"<(\d{4})-(\d{2})-(\d{2})(?:\s+[A-Za-z]{3})?(?:\s+(\d{2}):(\d{2})(?:-(\d{2}):(\d{2}))?)?>")
 
-def parse_org_timestamp(ts: str) -> datetime.datetime:
+
+def parse_org_timestamp_range(ts: str):
     m = org_ts_re.fullmatch(ts.strip())
     if not m:
         raise ValueError(f"unsupported org timestamp format: {ts}")
     year, month, day = map(int, m.group(1, 2, 3))
-    hour = int(m.group(4) or 0)
-    minute = int(m.group(5) or 0)
-    return datetime.datetime(year, month, day, hour, minute, tzinfo=datetime.timezone.utc)
+    start_h = int(m.group(4) or 0)
+    start_m = int(m.group(5) or 0)
+    end_h = int(m.group(6) or 23)
+    end_m = int(m.group(7) or 59)
+    start = datetime.datetime(year, month, day, start_h, start_m, tzinfo=datetime.timezone.utc)
+    end = datetime.datetime(year, month, day, end_h, end_m, tzinfo=datetime.timezone.utc)
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def split_headline_blocks(text: str):
+    starts = [m.start() for m in re.finditer(r"(?m)^\*+\s+TODO\s+", text)]
+    blocks = []
+    for i, start in enumerate(starts):
+        end = starts[i + 1] if i + 1 < len(starts) else len(text)
+        blocks.append(text[start:end].rstrip("\n"))
+    return blocks
+
+
+def title_from_block(block: str):
+    first = block.splitlines()[0] if block.splitlines() else ""
+    m = headline_re.match(first)
+    return m.group(2).strip() if m else "<unknown>"
+
+
+def scheduled_from_block(block: str):
+    for line in block.splitlines()[1:]:
+        m = scheduled_re.match(line)
+        if m:
+            return m.group(1)
+    return None
+
 
 with open(tasks_path, "r", encoding="utf-8") as f:
-    lines = f.readlines()
+    final_text = f.read()
+with open(fixture_path, "r", encoding="utf-8") as f:
+    fixture_text = f.read()
 
-scheduled_tasks = []
-for i, line in enumerate(lines):
-    m = headline_re.match(line.rstrip("\n"))
-    if not m:
-        continue
-    title = m.group(1).strip()
-    scheduled = None
-    j = i + 1
-    while j < len(lines):
-        current = lines[j].rstrip("\n")
-        if current.startswith("*"):
-            break
-        sm = scheduled_re.match(current)
-        if sm:
-            scheduled = sm.group(1)
-            break
-        j += 1
-    if scheduled:
-        scheduled_tasks.append((title, scheduled))
+final_blocks = split_headline_blocks(final_text)
+fixture_blocks = split_headline_blocks(fixture_text)
 
 failed = False
-exception_found = False
 
-try:
-    expected_exception_dt = parse_org_timestamp(expected_exception_ts)
-except Exception as err:
-    print(f"FAIL: Exception timestamp from inbox is invalid: {expected_exception_ts} ({err})")
-    sys.exit(1)
+if len(final_blocks) < len(fixture_blocks):
+    print(
+        f"FAIL: tasks.org has fewer TODOs than pre-existing fixture "
+        f"(final={len(final_blocks)}, preexisting={len(fixture_blocks)})"
+    )
+    failed = True
+else:
+    for i, fixture_block in enumerate(fixture_blocks):
+        final_block = final_blocks[i]
+        title = title_from_block(fixture_block)
+        if final_block != fixture_block:
+            print(f"FAIL: pre-existing immutability violated at index={i} task='{title}'")
+            failed = True
+        else:
+            print(f"PASS: pre-existing task preserved index={i} task='{title}'")
 
-for title, scheduled_raw in scheduled_tasks:
+        fixture_sched = scheduled_from_block(fixture_block)
+        final_sched = scheduled_from_block(final_block)
+        if fixture_sched is None and final_sched is not None:
+            print(
+                f"FAIL: pre-existing unscheduled task gained schedule task='{title}' "
+                f"actual='{final_sched}'"
+            )
+            failed = True
+
+preexisting_windows = []
+for block in fixture_blocks:
+    title = title_from_block(block)
+    sched = scheduled_from_block(block)
+    if sched is None:
+        continue
     try:
-        scheduled_dt = parse_org_timestamp(scheduled_raw)
+        start, end = parse_org_timestamp_range(sched)
     except Exception as err:
-        print(f"FAIL: Task '{title}' has unparseable SCHEDULED '{scheduled_raw}' ({err})")
+        print(f"FAIL: pre-existing task has unparseable timestamp task='{title}' ts='{sched}' err='{err}'")
+        failed = True
+        continue
+    preexisting_windows.append((title, sched, start, end))
+
+new_blocks = final_blocks[len(fixture_blocks):]
+for block in new_blocks:
+    title = title_from_block(block)
+    sched = scheduled_from_block(block)
+    if sched is None:
+        continue
+    m = priority_re.search(block.splitlines()[0])
+    priority = m.group(1) if m else None
+    is_high_priority = priority in {"A", "B"}
+    try:
+        start, end = parse_org_timestamp_range(sched)
+    except Exception as err:
+        print(f"FAIL: new task has unparseable timestamp task='{title}' ts='{sched}' err='{err}'")
         failed = True
         continue
 
-    scheduled_epoch = int(scheduled_dt.timestamp())
-    if title == exception_title:
-        exception_found = True
-        if scheduled_dt != expected_exception_dt:
-            print(
-                f"FAIL: fixed exception mismatch task='{title}' actual='{scheduled_raw}' expected='{expected_exception_ts}'"
-            )
-            failed = True
-        else:
-            print(
-                f"PASS: fixed exception matches expected timestamp task='{title}' timestamp='{scheduled_raw}'"
-            )
-        continue
-
-    if scheduled_epoch <= runtime_min_start_epoch:
+    if start <= runtime_min_start_epoch:
         print(
-            f"FAIL: lower-bound violation task='{title}' actual='{scheduled_raw}' runtime_min_start='{runtime_min_start_iso}'"
+            f"FAIL: lower-bound violation task='{title}' actual='{sched}' "
+            f"runtime_min_start='{runtime_min_start_iso}'"
         )
         failed = True
     else:
         print(
-            f"PASS: lower-bound satisfied task='{title}' actual='{scheduled_raw}' runtime_min_start='{runtime_min_start_iso}'"
+            f"PASS: lower-bound satisfied task='{title}' actual='{sched}' "
+            f"runtime_min_start='{runtime_min_start_iso}'"
         )
 
-if not exception_found:
-    print(f"FAIL: fixed exception task '{exception_title}' was not found with a SCHEDULED timestamp")
-    failed = True
+    for existing_title, existing_sched, w_start, w_end in preexisting_windows:
+        overlap = start < w_end and w_start < end
+        if not overlap:
+            continue
+        if is_high_priority:
+            print(
+                f"PASS: approved overlap exception task='{title}' priority='{priority}' "
+                f"window_task='{existing_title}' window='{existing_sched}'"
+            )
+        else:
+            print(
+                f"FAIL: overlap-policy violation task='{title}' priority='{priority or 'none'}' "
+                f"task_scheduled='{sched}' occupied_by='{existing_title}' occupied_window='{existing_sched}'"
+            )
+            failed = True
 
 sys.exit(1 if failed else 0)
 PY
-            then
-                echo "PASS: Scheduled lower-bound and fixed exception checks passed"
-                echo "ASSERTION_3_RESULT:PASS"
-            else
-                echo "FAIL: Scheduled lower-bound and/or fixed exception checks failed"
-                echo "ASSERTION_3_RESULT:FAIL"
-            fi
+        then
+            echo "PASS: Immutability and scheduling policy checks passed"
+            echo "ASSERTION_3_RESULT:PASS"
+        else
+            echo "FAIL: Immutability and/or scheduling policy checks failed"
+            echo "ASSERTION_3_RESULT:FAIL"
         fi
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
@@ -807,10 +878,10 @@ PY
         
         # For "Update password manager" task: supersecret123 should appear before sk-live-abc123xyz789
         local pos1 pos2 pos3 pos4
-        pos1=$(echo "$tasks_content" | grep -n 'supersecret123' | head -1 | cut -d: -f1)
-        pos2=$(echo "$tasks_content" | grep -n 'sk-live-abc123xyz789' | head -1 | cut -d: -f1)
-        pos3=$(echo "$tasks_content" | grep -n 'IBAN: DE89370400440532013000' | head -1 | cut -d: -f1)
-        pos4=$(echo "$tasks_content" | grep -n 'ACCOUNT NUMBER: 123456789' | head -1 | cut -d: -f1)
+        pos1=$(echo "$tasks_content" | grep -n 'supersecret123' | head -1 | cut -d: -f1 || true)
+        pos2=$(echo "$tasks_content" | grep -n 'sk-live-abc123xyz789' | head -1 | cut -d: -f1 || true)
+        pos3=$(echo "$tasks_content" | grep -n 'IBAN: DE89370400440532013000' | head -1 | cut -d: -f1 || true)
+        pos4=$(echo "$tasks_content" | grep -n 'ACCOUNT NUMBER: 123456789' | head -1 | cut -d: -f1 || true)
         
         local order_failed=false
         
@@ -871,14 +942,16 @@ PY
                 local valid_scheduled_count=0
                 
                 # Count tasks with SCHEDULED that have time components (HH:MM or HH:MM-HH:MM)
-                scheduled_count=$(grep -c 'SCHEDULED:' "$RUN_DIR/tasks.org" 2>/dev/null || echo "0")
+                scheduled_count=$(grep -c 'SCHEDULED:' "$RUN_DIR/tasks.org" 2>/dev/null || true)
+                scheduled_count=${scheduled_count:-0}
                 
                 if [[ "$scheduled_count" -eq 0 ]]; then
                     echo "WARN: No tasks have SCHEDULED times"
                     echo "ASSERTION_6_RESULT:WARN"
                 else
                     # Count tasks with time ranges (HH:MM-HH:MM format) or specific times (HH:MM)
-                    valid_scheduled_count=$(grep 'SCHEDULED:' "$RUN_DIR/tasks.org" 2>/dev/null | grep -cE 'SCHEDULED: <[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}(-[0-9]{2}:[0-9]{2})?>' || echo "0")
+                    valid_scheduled_count=$(grep 'SCHEDULED:' "$RUN_DIR/tasks.org" 2>/dev/null | grep -cE 'SCHEDULED: <[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}(-[0-9]{2}:[0-9]{2})?>' || true)
+                    valid_scheduled_count=${valid_scheduled_count:-0}
                     
                     echo "Found $scheduled_count tasks with SCHEDULED, $valid_scheduled_count with time components"
                     
@@ -924,7 +997,7 @@ PY
     echo "SOME ASSERTIONS FAILED"
     echo "  Assertion 1 (TODO count): $final_assertion1"
     echo "  Assertion 2 (Keywords): $final_assertion2"
-    echo "  Assertion 3 (Scheduled lower bound): $final_assertion3"
+    echo "  Assertion 3 (Immutability + overlap + lower bound): $final_assertion3"
     echo "  Assertion 4 (Org validity): $final_assertion4"
     echo "  Assertion 5 (Sensitive content): $final_assertion5"
     echo "  Assertion 5a (No markers): $final_assertion5a"
@@ -1011,7 +1084,7 @@ main() {
     curl --silent --show-error \
         -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
         -o "$RUN_DIR/sem-proc-diag.txt" \
-        "${WEBDAV_BASE_URL}/sem-proc-diag.txt" 2>/dev/null || echo "Could not fetch sem-proc-diag.txt"
+        "${WEBDAV_BASE_URL}/data/sem-proc-diag.txt" 2>/dev/null || echo "Could not fetch sem-proc-diag.txt"
     echo "Post-processing diagnostic saved to: $RUN_DIR/sem-proc-diag.txt"
     
     # Wait for tasks

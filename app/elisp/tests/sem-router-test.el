@@ -414,6 +414,26 @@ Task description here."))
       (when (file-exists-p test-tasks-file)
         (sem-mock-cleanup-temp-file test-tasks-file)))))
 
+(ert-deftest sem-router-test-temp-write-does-not-add-tasks-heading ()
+  "Test that temp task files do not get a '* Tasks' heading."
+  (let* ((tmp-dir (make-temp-file "sem-router-test-" t))
+         (temp-file (expand-file-name "tasks-tmp-1.org" tmp-dir))
+         (response "* TODO Temp Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :routine:
+:END:
+Task description here."))
+    (unwind-protect
+        (progn
+          (should (sem-router--write-task-to-file response temp-file))
+          (with-temp-buffer
+            (insert-file-contents temp-file)
+            (let ((content (buffer-string)))
+              (should-not (string-match-p "^\\* Tasks$" content))
+              (should (string-match-p "\\* TODO Temp Task" content)))))
+      (delete-directory tmp-dir t))))
+
 ;;; Tests for security block round-trip (car/cdr destructuring)
 
 (ert-deftest sem-router-test-security-block-round-trip ()

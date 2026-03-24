@@ -442,7 +442,8 @@ Returns t on success, nil on failure."
         (unless (file-exists-p target-file)
           (make-directory (file-name-directory target-file) t)
           (with-temp-file target-file
-            (insert "* Tasks\n")))
+            (unless temp-file
+              (insert "* Tasks\n"))))
 
         ;; Append task to file
         (with-temp-buffer
