@@ -394,6 +394,140 @@ Task description here."))
     (let ((normalized (sem-router--validate-and-normalize-tag response)))
       (should (string-match-p ":FILETAGS: :opensource:" normalized)))))
 
+(ert-deftest sem-router-test-priority-normalization-missing-defaults-to-c ()
+  "Test missing priority defaults to [#C]."
+  (let ((response "* TODO Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Task description here."))
+    (let ((normalized (sem-router--validate-and-normalize-priority response)))
+      (should (string-match-p "^\\* TODO \\[#C\\] Test Task" normalized)))))
+
+(ert-deftest sem-router-test-priority-normalization-valid-preserved ()
+  "Test valid priority token is preserved."
+  (let ((response "* TODO [#A] Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Task description here."))
+    (let ((normalized (sem-router--validate-and-normalize-priority response)))
+      (should (string-match-p "^\\* TODO \\[#A\\] Test Task" normalized))
+      (should-not (string-match-p "^\\* TODO \\[#C\\]" normalized)))))
+
+(ert-deftest sem-router-test-priority-normalization-invalid-replaced-with-c ()
+  "Test invalid priority token is replaced with [#C]."
+  (let ((response "* TODO [#Z] Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Task description here."))
+    (let ((normalized (sem-router--validate-and-normalize-priority response)))
+      (should (string-match-p "^\\* TODO \\[#C\\] Test Task" normalized))
+      (should-not (string-match-p "^\\* TODO \\[#Z\\]" normalized)))))
+
+(ert-deftest sem-router-test-priority-normalization-trailing-token-preserved ()
+  "Test trailing valid priority token is moved and preserved once."
+  (let ((response "* TODO Ping ops about INC-7781 [#A]
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Task description here."))
+    (let ((normalized (sem-router--validate-and-normalize-priority response)))
+      (should (string-match-p "^\\* TODO \\[#A\\] Ping ops about INC-7781$" (car (split-string normalized "\n"))))
+      (should-not (string-match-p "\\[#A\\].*\\[#A\\]" (car (split-string normalized "\n")))))))
+
+(ert-deftest sem-router-test-priority-normalization-multiple-valid-keeps-strongest ()
+  "Test multiple valid priorities normalize to one strongest token."
+  (let ((response "* TODO [#C] Ping ops [#A]
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Task description here."))
+    (let ((normalized (sem-router--validate-and-normalize-priority response)))
+      (should (string-match-p "^\\* TODO \\[#A\\] Ping ops$" (car (split-string normalized "\n"))))
+      (should-not (string-match-p "\\[#C\\].*\\[#A\\]" (car (split-string normalized "\n")))))))
+
+(ert-deftest sem-router-test-headline-normalization-repairs-missing-todo-order ()
+  "Test headline normalization repairs misplaced TODO keyword and priority token."
+  (let ((response "* [#C] TODO Review pull request #452 for authentication module
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Body."))
+    (let ((normalized (sem-router--normalize-task-response response)))
+      (should (string-match-p "^\\* TODO \\[#C\\] Review pull request #452 for authentication module$"
+                              (car (split-string normalized "\n")))))))
+
+(ert-deftest sem-router-test-headline-normalization-repairs-priority-before-todo ()
+  "Test headline normalization repairs priority-before-TODO headline form."
+  (let ((response "* [#A] Ping ops about INC-7781
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Body."))
+    (let ((normalized (sem-router--normalize-task-response response)))
+      (should (string-match-p "^\\* TODO \\[#A\\] Ping ops about INC-7781$"
+                              (car (split-string normalized "\n")))))))
+
+(ert-deftest sem-router-test-scheduled-duration-defaults-to-30-minutes ()
+  "Test missing scheduled end time defaults to 30-minute block."
+  (let ((response "* TODO [#B] Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Task description here.
+SCHEDULED: <2026-03-20 09:15>"))
+    (let ((normalized (sem-router--normalize-scheduled-duration response)))
+      (should (string-match-p "SCHEDULED: <2026-03-20 09:15-09:45>" normalized)))))
+
+(ert-deftest sem-router-test-scheduled-duration-preserves-explicit-range ()
+  "Test explicit scheduled range is preserved."
+  (let ((response "* TODO [#B] Test Task
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Task description here.
+SCHEDULED: <2026-03-20 09:15-10:15>"))
+    (let ((normalized (sem-router--normalize-scheduled-duration response)))
+      (should (string-match-p "SCHEDULED: <2026-03-20 09:15-10:15>" normalized))
+      (should-not (string-match-p "SCHEDULED: <2026-03-20 09:15-09:45>" normalized)))))
+
+(ert-deftest sem-router-test-normalization-allows-unscheduled-task ()
+  "Test normalization preserves valid unscheduled task output."
+  (let ((response "* TODO Task with ambiguous weekday
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Could be next week or later."))
+    (let ((normalized (sem-router--normalize-task-response response)))
+      (should-not (string-match-p "^SCHEDULED:" normalized))
+      (should (string-match-p "^\\* TODO \\[#C\\] Task with ambiguous weekday" normalized)))))
+
+(ert-deftest sem-router-test-build-task-prompt-includes-runtime-datetime-context ()
+  "Test Pass 1 prompt builder includes runtime datetime and shorthand examples."
+  (let* ((prompt-pair
+          (sem-router--build-task-llm-prompts
+           "Call vendor tomorrow"
+           '("task")
+           "Body text"
+           "550e8400-e29b-41d4-a716-446655440000"))
+         (captured-user-prompt (plist-get prompt-pair :user-prompt))
+         (captured-system-prompt (plist-get prompt-pair :system-prompt)))
+    (should (string-match-p "CURRENT DATETIME (UTC):" captured-user-prompt))
+    (should (string-match-p "transform a raw capture note" captured-system-prompt))
+    (should (string-match-p "wendsday" captured-system-prompt))))
+
 (ert-deftest sem-router-test-task-write-creates-file ()
   "Test that tasks.org is created if absent.
 Success path: tasks.org auto-created on first write."
@@ -431,7 +565,7 @@ Task description here."))
             (insert-file-contents temp-file)
             (let ((content (buffer-string)))
               (should-not (string-match-p "^\\* Tasks$" content))
-              (should (string-match-p "\\* TODO Temp Task" content)))))
+              (should (string-match-p "\\* TODO \\[#C\\] Temp Task" content)))))
       (delete-directory tmp-dir t))))
 
 ;;; Tests for security block round-trip (car/cdr destructuring)

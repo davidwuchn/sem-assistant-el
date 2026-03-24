@@ -107,7 +107,7 @@ Always specify both start and end times for the time block."
 Used in Pass 1 prompts to instruct the LLM to output time ranges.")
 
 (defconst sem-prompts-pass1-system-template
-  "You are a Task Management assistant. Your ONLY task is to output a valid Org-mode TODO entry based on the provided task description.
+  "You are a Task Management assistant. Your ONLY task is to transform a raw capture note into a valid Org-mode TODO entry.
 
 %%CHEAT_SHEET%%
 
@@ -119,19 +119,36 @@ Your output MUST follow this exact structure:
 :ID: <injected-id-value>
 :FILETAGS: :<one-of:work:family:routine:opensource>:
 :END:
-<Brief one-line description or notes>
-SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
+<Normalized task notes; may be multi-line when input has meaningful multi-line context>
+<Optional: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>>
 <Optional: DEADLINE: <YYYY-MM-DD Day>>
-<Optional: PRIORITY: [A/B/C]>
 
 === RULES ===
 1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:
 2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it
 3. Output ONLY the Org entry - no explanations, no markdown wrappers
-4. Clean up the task title to be concise and actionable
+4. Normalize the note into a concise, actionable TODO title and useful body text
 5. CRITICAL: Preserve ALL <<SENSITIVE_N>> tokens VERBATIM in your output. These tokens represent masked sensitive content and must appear unchanged.
 6. CRITICAL: Tokens must appear at the SAME semantic position as the original sensitive content appeared in the input.
-7. SCHEDULED must use time range format: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
+7. If you include SCHEDULED, it must use time range format: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
+8. If timing intent is ambiguous or low-confidence, it is valid to omit SCHEDULED
+9. Prefer adding priority in headline token format [#A]/[#B]/[#C], but priority may be omitted when uncertain
+10. Priority strength mapping: urgent/asap/critical/important!! -> [#A], soon/high -> [#B], routine/normal -> [#C]
+
+=== RELATIVE TIME ANCHOR ===
+Treat relative phrases against runtime context provided in user prompt as CURRENT DATETIME.
+
+=== EXAMPLES (NORMALIZATION TARGETS) ===
+- Input: \"2morrow send draft to team important!!\"
+  Output intent: cleaned title, [#A], schedule anchored to CURRENT DATETIME for tomorrow
+- Input: \"next week sync with ops\"
+  Output intent: best-effort schedule only if confident; otherwise unscheduled TODO is valid
+- Input: \"wendsday call vendor about invoice\"
+  Output intent: treat common misspelling as Wednesday when confidence is high; otherwise unscheduled
+- Input: \"ASAP fix login bug but low urgency follow-up\"
+  Output intent: conflicting urgency resolves to strongest signal ([#A] > [#B] > [#C])
+- Input: \"Call +1-800-555-0199 re INC-7781\"
+  Output intent: preserve identifiers and phone numbers verbatim in title/body
 
 %%RULES%%
 %%LANGUAGE%%"

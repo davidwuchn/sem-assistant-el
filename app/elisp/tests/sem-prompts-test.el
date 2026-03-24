@@ -115,5 +115,19 @@
   (should (string-match-p "markdown code fence" sem-prompts-org-mode-cheat-sheet))
   (should (string-match-p "NEVER wrap" sem-prompts-org-mode-cheat-sheet)))
 
+(ert-deftest sem-prompts-test-pass1-template-transform-contract ()
+  "Test Pass 1 template enforces note-to-TODO transformation contract." 
+  (should (string-match-p "transform a raw capture note" sem-prompts-pass1-system-template))
+  (should (string-match-p "timing intent is ambiguous" sem-prompts-pass1-system-template))
+  (should (string-match-p "may be multi-line" sem-prompts-pass1-system-template)))
+
+(ert-deftest sem-prompts-test-pass1-template-shorthand-examples ()
+  "Test Pass 1 template includes shorthand and edge-case examples."
+  (should (string-match-p "2morrow" sem-prompts-pass1-system-template))
+  (should (string-match-p "next week" sem-prompts-pass1-system-template))
+  (should (string-match-p "wendsday" sem-prompts-pass1-system-template))
+  (should (string-match-p "important!!" sem-prompts-pass1-system-template))
+  (should (string-match-p "INC-7781" sem-prompts-pass1-system-template)))
+
 (provide 'sem-prompts-test)
 ;;; sem-prompts-test.el ends here

@@ -12,11 +12,15 @@ The system SHALL execute scheduling in two passes: Pass 1 generates provisional 
 - **THEN** Pass 1 completes for all items before Pass 2 begins
 
 ### Requirement: Pass 1 generates SCHEDULED time range
-Pass 1 SHALL generate provisional task entries with `SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>` format indicating a time range hint.
+Pass 1 SHALL generate provisional task entries with `SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>` format when schedule intent can be inferred with sufficient confidence. Pass 1 SHALL permit unscheduled task output when confidence is low or timing intent is ambiguous.
 
 #### Scenario: Pass 1 output includes time range
 - **WHEN** Pass 1 generates a task entry
 - **THEN** the SCHEDULED field uses format `SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>`
+
+#### Scenario: Pass 1 leaves ambiguous task unscheduled
+- **WHEN** Pass 1 receives input with ambiguous or conflicting timing cues
+- **THEN** it may return a valid task entry without `SCHEDULED`
 
 ### Requirement: Pass 2 outputs scheduling decisions in simple format
 Pass 2 SHALL output scheduling decisions in a simple line-based format, one line per task:
@@ -68,7 +72,7 @@ Pass 2 prompt instructions MUST state that overlap with pre-existing occupied wi
 - **AND** it MUST allow overlap only for approved exception policy cases
 
 ### Requirement: Pass 2 may override Pass 1 timing
-The provisional SCHEDULED from Pass 1 SHALL be treated as a hint only for newly generated tasks. Pass 2 MAY override provisional timing with different timing based on rules and existing schedule, and Pass 2 MUST enforce the runtime minimum start bound provided in planning context (`runtime_min_start = runtime_now + 1 hour`) for newly scheduled tasks. Pass 2 MUST preserve all pre-existing scheduled TODO timestamps exactly as authored and MUST keep pre-existing unscheduled TODOs unscheduled.
+The provisional SCHEDULED from Pass 1 SHALL be treated as a hint only for newly generated tasks. Pass 2 MAY override provisional timing with different timing based on rules and existing schedule, and Pass 2 MUST enforce the runtime minimum start bound provided in planning context (`runtime_min_start = runtime_now + 1 hour`) for newly scheduled tasks. Pass 2 MUST preserve all pre-existing scheduled TODO timestamps exactly as authored and MUST keep pre-existing unscheduled TODOs unscheduled. Tasks arriving from Pass 1 without SCHEDULED MUST remain valid planner inputs and MAY be scheduled or left unscheduled by Pass 2 according to planning rules.
 
 #### Scenario: Pass 2 overrides Pass 1 timing for newly generated tasks
 - **WHEN** Pass 2 determines a better schedule based on rules
@@ -87,6 +91,10 @@ The provisional SCHEDULED from Pass 1 SHALL be treated as a hint only for newly 
 #### Scenario: Pass 2 keeps pre-existing unscheduled TODOs unscheduled
 - **WHEN** Pass 2 processes any pre-existing TODO without a SCHEDULED timestamp
 - **THEN** Pass 2 MUST NOT add a new SCHEDULED timestamp to that TODO
+
+#### Scenario: Pass 2 handles unscheduled Pass 1 tasks
+- **WHEN** Pass 2 receives newly generated tasks with no provisional SCHEDULED
+- **THEN** those tasks are still considered valid inputs for planning decisions
 
 ### Requirement: Pass 2 retry with exponential backoff
 Pass 2 SHALL retry up to 3 times with exponential backoff on LLM failure. Default delay base is 1 second.

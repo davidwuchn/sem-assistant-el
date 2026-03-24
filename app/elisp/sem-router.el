@@ -210,6 +210,50 @@ Returns the saved filepath on success, nil on failure."
                          nil)
      nil)))
 
+(defun sem-router--build-task-llm-prompts (title tags sanitized-body injected-id)
+  "Build Pass 1 USER and SYSTEM prompts for task normalization.
+
+TITLE is the headline title string.
+TAGS is the headline tag list.
+SANITIZED-BODY is optional task body text after security masking.
+INJECTED-ID is the pre-generated UUID string to embed verbatim.
+
+Returns a plist with keys :user-prompt and :system-prompt."
+  (let* ((output-language (or (getenv "OUTPUT_LANGUAGE") "English"))
+         (current-datetime (format-time-string "%Y-%m-%dT%H:%M:%SZ" (current-time) t))
+         (language-instruction (format "\n\nOUTPUT LANGUAGE: Write your entire response in %s. Do not use any other language."
+                                       output-language))
+         (rules-text (if (fboundp 'sem-rules-read)
+                         (or (sem-rules-read) "")
+                       ""))
+         (rules-section (if (string-empty-p rules-text)
+                            ""
+                          (format "\n\n=== USER SCHEDULING RULES ===\n%s\n" rules-text)))
+         (system-prompt
+          (replace-regexp-in-string
+           "%%CHEAT_SHEET%%" sem-prompts-org-mode-cheat-sheet
+           (replace-regexp-in-string
+            "%%RULES%%" rules-section
+            (replace-regexp-in-string
+             "%%LANGUAGE%%" language-instruction
+             sem-prompts-pass1-system-template t t) t t)))
+         (user-prompt
+          (concat
+           (format "Convert this task headline into a structured Org TODO entry:
+
+HEADLINE: * %s %s"
+                   title
+                   (if tags
+                       (format ":%s:" (string-join tags ":"))
+                     ""))
+           (format "\nCURRENT DATETIME (UTC): %s" current-datetime)
+           (when sanitized-body
+             (format "\n\nBODY:\n%s" sanitized-body))
+           (format "\n\nUse this EXACT :ID: value in your output: %s
+\nGenerate the complete Org TODO entry following the required format above."
+                   injected-id))))
+    (list :user-prompt user-prompt :system-prompt system-prompt)))
+
 (defun sem-router--route-to-task-llm (headline callback)
   "Route a task headline to LLM for task generation.
 
@@ -255,35 +299,10 @@ Returns immediately (async). The CALLBACK is invoked when complete."
             (setq sanitized-body (car sanitize-result))
             (setq security-blocks (cadr sanitize-result))))
 
-        ;; Build the LLM prompt for task processing
-        ;; Read OUTPUT_LANGUAGE at call time (not load time) with default "English"
-        (let* ((output-language (or (getenv "OUTPUT_LANGUAGE") "English"))
-               (language-instruction (format "\n\nOUTPUT LANGUAGE: Write your entire response in %s. Do not use any other language." output-language))
-               (rules-text (when (fboundp 'sem-rules-read)
-                             (or (sem-rules-read) "")))
-               (rules-section (if (string-empty-p rules-text)
-                                  ""
-                                (format "\n\n=== USER SCHEDULING RULES ===\n%s\n" rules-text)))
-               (system-prompt (replace-regexp-in-string
-                              "%%CHEAT_SHEET%%" sem-prompts-org-mode-cheat-sheet
-                              (replace-regexp-in-string
-                               "%%RULES%%" rules-section
-                               (replace-regexp-in-string
-                                "%%LANGUAGE%%" language-instruction
-                                sem-prompts-pass1-system-template t t) t t)))
-               (user-prompt (concat
-                             (format "Convert this task headline into a structured Org TODO entry:
-
-HEADLINE: * %s %s"
-                                     title
-                                     (if tags
-                                         (format ":%s:" (string-join tags ":"))
-                                       ""))
-                             (when sanitized-body
-                               (format "\n\nBODY:\n%s" sanitized-body))
-                             (format "\n\nUse this EXACT :ID: value in your output: %s
-\nGenerate the complete Org TODO entry following the required format above."
-                                     injected-id))))
+        ;; Build prompts for task processing
+        (let* ((prompt-pair (sem-router--build-task-llm-prompts title tags sanitized-body injected-id))
+               (user-prompt (plist-get prompt-pair :user-prompt))
+               (system-prompt (plist-get prompt-pair :system-prompt)))
 
           ;; Call sem-llm-request with callback
           (require 'sem-llm)
@@ -418,6 +437,130 @@ Returns the normalized response string."
           (insert ":FILETAGS: :routine:\n")))
       (buffer-string))))
 
+(defun sem-router--normalize-todo-headline (response)
+  "Normalize first Org headline in RESPONSE to use canonical TODO form.
+
+Ensures the first headline uses `* TODO <title>` ordering, removing misplaced
+`TODO` tokens and priority tokens from the title area. If no headline is found,
+returns RESPONSE unchanged."
+  (with-temp-buffer
+    (insert response)
+    (goto-char (point-min))
+    (when (re-search-forward "^\\(\\*+\\)[ \t]*\\(.*\\)$" nil t)
+      (let* ((line-start (match-beginning 0))
+             (line-end (match-end 0))
+             (stars (match-string 1))
+             (rest (match-string 2))
+             (cleaned-title
+              (string-trim
+               (replace-regexp-in-string
+                "[ \t]+" " "
+                (replace-regexp-in-string "\\_<TODO\\_>" " " rest))))
+             (title (if (string-empty-p cleaned-title)
+                        "Task"
+                      cleaned-title)))
+        (delete-region line-start line-end)
+        (goto-char line-start)
+        (insert (format "%s TODO %s" stars title))))
+    (buffer-string)))
+
+(defun sem-router--validate-and-normalize-priority (response)
+  "Validate and normalize headline priority token in RESPONSE.
+
+If priority is absent, inserts fallback `[#C]`. If priority is invalid,
+replaces it with `[#C]`. Returns normalized response string."
+  (with-temp-buffer
+    (insert response)
+    (goto-char (point-min))
+    (when (re-search-forward "^\\(\\*+[ \t]+TODO\\)\\(.*\\)$" nil t)
+      (let* ((line-start (match-beginning 0))
+             (line-end (match-end 0))
+             (todo-prefix (match-string 1))
+             (headline-rest (match-string 2))
+             (scan-start 0)
+             (has-a nil)
+             (has-b nil)
+             (has-c nil)
+             normalized-priority
+             cleaned-rest)
+        (while (string-match "\\[#\\([A-Za-z]\\)\\]" headline-rest scan-start)
+          (let ((priority (upcase (match-string 1 headline-rest))))
+            (cond
+             ((string= priority "A") (setq has-a t))
+             ((string= priority "B") (setq has-b t))
+             ((string= priority "C") (setq has-c t))))
+          (setq scan-start (match-end 0)))
+
+        (setq normalized-priority
+              (cond
+               (has-a "[#A]")
+               (has-b "[#B]")
+               (has-c "[#C]")
+               (t "[#C]")))
+
+        (setq cleaned-rest
+              (string-trim
+               (replace-regexp-in-string
+                "[ \t]+" " "
+                (replace-regexp-in-string "[ \t]*\\[#\\([A-Za-z]\\)\\][ \t]*" " " headline-rest))))
+
+        (delete-region line-start line-end)
+        (goto-char line-start)
+        (insert
+         (if (string-empty-p cleaned-rest)
+             (format "%s %s" todo-prefix normalized-priority)
+           (format "%s %s %s" todo-prefix normalized-priority cleaned-rest)))))
+    (buffer-string)))
+
+(defun sem-router--normalize-scheduled-duration (response)
+  "Normalize SCHEDULED duration in RESPONSE when end time is absent.
+
+When SCHEDULED has a start time but no end time, inject a 30-minute end time.
+Unsupported or already-ranged SCHEDULED lines are preserved unchanged."
+  (with-temp-buffer
+    (insert response)
+    (goto-char (point-min))
+    (when (re-search-forward "^SCHEDULED:[ \t]*<\\([^>]+\\)>" nil t)
+      (let ((timestamp-content (match-string 1))
+            (line-start (match-beginning 0))
+            (line-end (match-end 0)))
+        (when (and (not (string-match-p "[0-9]\\{2\\}:[0-9]\\{2\\}-[0-9]\\{2\\}:[0-9]\\{2\\}" timestamp-content))
+                   (string-match
+                    "^\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)\\(?:[ \t]+\\([A-Za-z]\\{3\\}\\)\\)?[ \t]+\\([0-9]\\{2\\}\\):\\([0-9]\\{2\\}\\)$"
+                    timestamp-content))
+          (let* ((date-part (match-string 1 timestamp-content))
+                 (day-part (match-string 2 timestamp-content))
+                 (start-hour (string-to-number (match-string 3 timestamp-content)))
+                 (start-minute (string-to-number (match-string 4 timestamp-content)))
+                 (year (string-to-number (substring date-part 0 4)))
+                 (month (string-to-number (substring date-part 5 7)))
+                 (day (string-to-number (substring date-part 8 10)))
+                 (start-time (encode-time 0 start-minute start-hour day month year t))
+                 (end-time (time-add start-time (seconds-to-time (* 30 60))))
+                 (end-hour (format-time-string "%H" end-time t))
+                 (end-minute (format-time-string "%M" end-time t))
+                 (normalized-content
+                  (if day-part
+                      (format "%s %s %02d:%02d-%s:%s"
+                              date-part day-part start-hour start-minute end-hour end-minute)
+                    (format "%s %02d:%02d-%s:%s"
+                            date-part start-hour start-minute end-hour end-minute))))
+            (delete-region line-start line-end)
+            (goto-char line-start)
+            (insert (format "SCHEDULED: <%s>" normalized-content))))))
+    (buffer-string)))
+
+(defun sem-router--normalize-task-response (response)
+  "Apply all task-response normalization rules to RESPONSE.
+
+Normalizes tag, priority, and scheduled duration fallbacks before planner input.
+Returns normalized response string."
+  (let* ((headline-normalized (sem-router--normalize-todo-headline response))
+         (tag-normalized (sem-router--validate-and-normalize-tag headline-normalized))
+         (priority-normalized (sem-router--validate-and-normalize-priority tag-normalized))
+         (schedule-normalized (sem-router--normalize-scheduled-duration priority-normalized)))
+    schedule-normalized))
+
 (defun sem-router--temp-file-path (&optional batch-id)
   "Compute the temp file path for a batch.
 BATCH-ID is the batch identifier. Defaults to sem-core--batch-id.
@@ -429,13 +572,13 @@ Returns /tmp/data/tasks-tmp-{batch-id}.org"
   "Validate and write task RESPONSE to tasks.org or TEMP-FILE.
 
 If TEMP-FILE is provided, writes to that file instead of tasks.org.
-Normalizes the tag (substitutes :routine: if absent/invalid).
+Normalizes tag, priority fallback, and schedule duration fallback.
 Creates the target file if it doesn't exist.
 Appends the task entry to the file.
 
 Returns t on success, nil on failure."
   (condition-case err
-      (let* ((normalized (sem-router--validate-and-normalize-tag response))
+      (let* ((normalized (sem-router--normalize-task-response response))
              (target-file (or temp-file sem-router-tasks-file)))
 
         ;; Create file if it doesn't exist

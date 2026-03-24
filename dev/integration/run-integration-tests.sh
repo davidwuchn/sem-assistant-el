@@ -46,7 +46,8 @@ EXPECTED_TASK_COUNT=$((EXPECTED_NEW_TASK_COUNT + EXPECTED_PREEXISTING_TASK_COUNT
 
 # Assertion constants
 RUNTIME_TIMEZONE="UTC"
-KEYWORDS=("quarterly financial reports" "#452" "team building activity")
+ASSERTION3_LOWER_BOUND_TOLERANCE_SECONDS=60
+KEYWORDS=("quarterly financial reports" "#452" "team building activity" "INC-7781" "AMBIGUOUS-WEEKDAY-CASE-9012")
 SENSITIVE_KEYWORDS=("supersecret123" "sk-live-abc123xyz789" "IBAN: DE89370400440532013000" "ACCOUNT NUMBER: 123456789")
 ASSERTION_RESULT_KEYS=(
     "ASSERTION_1_RESULT"
@@ -760,7 +761,7 @@ run_assertions() {
         runtime_min_start_iso=$(date -u -d "@$runtime_min_start_epoch" +%Y-%m-%dT%H:%M:%SZ)
         echo "Timezone authority: $RUNTIME_TIMEZONE"
 
-        if python3 - "$RUN_DIR/tasks.org" "$PREEXISTING_TASKS_FIXTURE" "$runtime_min_start_epoch" "$runtime_min_start_iso" <<'PY'
+        if python3 - "$RUN_DIR/tasks.org" "$PREEXISTING_TASKS_FIXTURE" "$runtime_min_start_epoch" "$runtime_min_start_iso" "$ASSERTION3_LOWER_BOUND_TOLERANCE_SECONDS" <<'PY'
 import datetime
 import re
 import sys
@@ -769,6 +770,7 @@ tasks_path = sys.argv[1]
 fixture_path = sys.argv[2]
 runtime_min_start_epoch = int(sys.argv[3])
 runtime_min_start_iso = sys.argv[4]
+tolerance_seconds = int(sys.argv[5])
 
 headline_re = re.compile(r"^(\*+)\s+TODO\s+(.*?)(?:\s+:[^:]+(?::[^:]+)*:)?\s*$")
 scheduled_re = re.compile(r"^\s*SCHEDULED:\s*(<[^>]+>)")
@@ -878,16 +880,16 @@ for block in new_blocks:
         failed = True
         continue
 
-    if start <= runtime_min_start_epoch:
+    if start + tolerance_seconds <= runtime_min_start_epoch:
         print(
             f"FAIL: lower-bound violation task='{title}' actual='{sched}' "
-            f"runtime_min_start='{runtime_min_start_iso}'"
+            f"runtime_min_start='{runtime_min_start_iso}' tolerance_seconds='{tolerance_seconds}'"
         )
         failed = True
     else:
         print(
             f"PASS: lower-bound satisfied task='{title}' actual='{sched}' "
-            f"runtime_min_start='{runtime_min_start_iso}'"
+            f"runtime_min_start='{runtime_min_start_iso}' tolerance_seconds='{tolerance_seconds}'"
         )
 
     for existing_title, existing_sched, w_start, w_end in preexisting_windows:

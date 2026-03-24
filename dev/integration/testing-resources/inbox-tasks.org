@@ -30,6 +30,14 @@
   #+end_sensitive
   and sent the pdf to the vendor portal.
 
+* TODO ping ops about INC-7781 maybe wendsday?? important!! :task:
+  Keep identifier INC-7781 and callback number +1-800-555-0199 in the normalized output.
+  This fixture is intentionally date-agnostic; unscheduled output is acceptable.
+
+* TODO ASAP but maybe low-priority follow-up for AMBIGUOUS-WEEKDAY-CASE-9012 next week :task:
+  Conflicting urgency markers are intentional for priority precedence checks.
+  Keep identifier AMBIGUOUS-WEEKDAY-CASE-9012 verbatim.
+
 * TODO https://semyonsinchenko.github.io/ssinchenko/post/aider_2026_and_other_topics/ :link:
   Trusted URL fixture for aider-2026 integration assertions.
   Keep this URL headline deterministic for URL-capture assertion checks.
