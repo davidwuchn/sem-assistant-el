@@ -1,10 +1,4 @@
-# Specification: assertions
-
-## Purpose
-
-Define requirements for integration test assertions that validate outcomes.
-
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Assertions validate test outcomes
 The system SHALL run assertions after artifact collection to validate the integration test results.

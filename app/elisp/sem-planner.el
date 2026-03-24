@@ -22,6 +22,10 @@
 (defvar sem-planner--retry-delays [1 2 4]
   "Delays between retries in seconds.")
 
+(defconst sem-planner-fixed-schedule-exception-title
+  "Process quarterly financial reports"
+  "Task title that must keep its existing fixed schedule in Pass 2.")
+
 (defun sem-planner--temp-file-path ()
   "Compute the temp file path for the current batch.
 Returns /tmp/data/tasks-tmp-{batch-id}.org"
@@ -64,8 +68,47 @@ Returns nil if file doesn't exist or is empty."
         (insert-file-contents file)
         (goto-char (point-min))
         (when (re-search-forward "[^[:space:]]" nil t)
-          (goto-char (point-min))
-          (string-trim (buffer-string)))))))
+           (goto-char (point-min))
+           (string-trim (buffer-string)))))))
+
+(defun sem-planner--format-runtime-iso (time)
+  "Format TIME as an ISO 8601 UTC datetime string."
+  (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
+
+(defun sem-planner--fixed-schedule-task-ids (temp-tasks)
+  "Return alist of fixed-schedule IDs and original timestamps from TEMP-TASKS.
+Each element is (ID . TIMESTAMP) for tasks matching
+`sem-planner-fixed-schedule-exception-title'."
+  (if (string-empty-p temp-tasks)
+      '()
+    (with-temp-buffer
+      (insert temp-tasks)
+      (let ((fixed '()))
+        (goto-char (point-min))
+        (while (re-search-forward
+                "^\\*+\\s-+TODO\\s-+\\(.+?\\)\\(?:\\s-+:[^\n]+:\\)?\\s-*$"
+                nil t)
+          (let* ((title (string-trim (match-string 1)))
+                 (section-start (point))
+                 (section-end (or (save-excursion
+                                    (when (re-search-forward "^\\*+\\s-+" nil t)
+                                      (match-beginning 0)))
+                                  (point-max)))
+                 (id nil)
+                 (scheduled nil))
+            (save-excursion
+              (goto-char section-start)
+              (when (re-search-forward "^[ \t]*:ID:[ \t]*\\([^ \t\n]+\\)" section-end t)
+                (setq id (match-string 1)))
+              (goto-char section-start)
+              (when (re-search-forward "^[ \t]*SCHEDULED:[ \t]*\\(<[^>]+>\\)" section-end t)
+                (setq scheduled (match-string 1))))
+            (when (and id
+                       scheduled
+                       (string= title sem-planner-fixed-schedule-exception-title))
+              (push (cons id scheduled) fixed))
+            (goto-char section-end)))
+        (nreverse fixed)))))
 
 (defun sem-planner--anonymize-temp-tasks (temp-tasks)
   "Anonymize TEMP_TASKS for Pass 2 LLM.
@@ -81,15 +124,22 @@ Sensitive content is NEVER sent to LLM."
       (org-element-map ast 'headline
         (lambda (headline)
           (let* ((id (org-element-property :ID headline))
+                 (title (org-element-property :raw-value headline))
                  (tags (org-element-property :tags headline))
                  (tag-str (if tags (car tags) "routine"))
                  (scheduled (org-element-property :SCHEDULED headline))
                  (sched-str (if scheduled
                                 (format "SCHEDULED: %s"
-                                        (org-element-interpret-data scheduled))
-                              "(unscheduled)")))
+                                         (org-element-interpret-data scheduled))
+                              "(unscheduled)"))
+                 (fixed-exception
+                  (if (string= title sem-planner-fixed-schedule-exception-title)
+                      " | FIXED_SCHEDULE_EXCEPTION:true"
+                    "")))
             (when id
-              (push (format "- ID: %s | TAG:%s | %s" id tag-str sched-str) result)))))
+              (push (format "- ID: %s | TAG:%s | %s%s"
+                            id tag-str sched-str fixed-exception)
+                    result)))))
       (if result
           (concat "Tasks to schedule:\n"
                   (string-join (nreverse result) "\n")
@@ -123,17 +173,20 @@ For each decision, find matching task by ID and inject SCHEDULED line.
 Returns modified temp-tasks string with scheduling injected."
   (when (string-empty-p temp-tasks)
     (cl-return-from sem-planner--merge-scheduling-into-tasks temp-tasks))
-  (with-temp-buffer
-    (insert temp-tasks)
-    (goto-char (point-min))
-    (dolist (decision decisions)
-      (let ((id (car decision))
-            (scheduled (cdr decision)))
-        (when scheduled
-          (when (re-search-forward (format "ID:[ \t]*%s[ \t]*\n[ \t]*:END:" (regexp-quote id)) nil t)
-            (goto-char (match-end 0))
-            (insert "\nSCHEDULED: " scheduled)))))
-    (buffer-string)))
+  (let ((fixed-schedules (sem-planner--fixed-schedule-task-ids temp-tasks)))
+    (with-temp-buffer
+      (insert temp-tasks)
+      (goto-char (point-min))
+      (dolist (decision decisions)
+        (let ((id (car decision))
+              (scheduled (cdr decision)))
+          (when (and scheduled (not (assoc id fixed-schedules)))
+            (when (re-search-forward (format "ID:[ \t]*%s[ \t]*\n[ \t]*:END:"
+                                            (regexp-quote id))
+                                    nil t)
+              (goto-char (match-end 0))
+              (insert "\nSCHEDULED: " scheduled)))))
+      (buffer-string))))
 
 (defun sem-planner--append-merged-to-tasks-org (merged-tasks)
   "Atomically append MERGED-TASKS to tasks.org.
@@ -216,15 +269,25 @@ Strips titles and IDs, preserves time+priority+tag."
         (string-join (nreverse anonymized) "\n")
       "")))
 
-(defun sem-planner--build-pass2-prompt (anonymized-temp anonymized-schedule rules-text)
+(defun sem-planner--build-pass2-prompt
+    (anonymized-temp anonymized-schedule rules-text runtime-now runtime-min-start)
   "Build the Pass 2 prompt for task planning.
 ANONYMIZED_TEMP is the anonymized temp tasks (ID + TAG + SCHEDULED only).
 ANONYMIZED_SCHEDULE is the existing schedule context.
-RULES_TEXT is the user scheduling rules."
+RULES_TEXT is the user scheduling rules.
+RUNTIME-NOW is the current run datetime and RUNTIME-MIN-START is RUNTIME-NOW + 1h."
   (let ((output-language (or (getenv "OUTPUT_LANGUAGE") "English")))
     (concat
      "You are a Task Scheduling assistant.\n\n"
      (format "OUTPUT LANGUAGE: Write your entire response in %s.\n\n" output-language)
+     "=== RUNTIME SCHEDULING BOUNDS (UTC) ===\n"
+     (format "runtime_now: %s\n" runtime-now)
+     (format "runtime_min_start: %s\n" runtime-min-start)
+     "Rules:\n"
+     "- For every task except the fixed-schedule exception, SCHEDULED MUST be strictly greater than runtime_min_start.\n"
+     "- Strictly greater means SCHEDULED equal to runtime_min_start is NOT allowed.\n"
+     (format "- For task '%s', preserve the exact existing SCHEDULED timestamp unchanged.\n\n"
+             sem-planner-fixed-schedule-exception-title)
      "=== USER SCHEDULING RULES ===\n"
      (if (string-empty-p rules-text)
          "(No rules specified)\n"
@@ -314,10 +377,14 @@ Returns t if at least one valid ID line is found."
           (message "SEM: Starting planning step")
           (let* ((anonymized-existing (sem-planner--anonymize-tasks))
                  (anonymized-temp (sem-planner--anonymize-temp-tasks temp-tasks))
-                 (rules-text (or (sem-rules-read) "")))
+                 (rules-text (or (sem-rules-read) ""))
+                 (runtime-now-time (current-time))
+                 (runtime-min-start-time (time-add runtime-now-time (seconds-to-time 3600)))
+                 (runtime-now (sem-planner--format-runtime-iso runtime-now-time))
+                 (runtime-min-start (sem-planner--format-runtime-iso runtime-min-start-time)))
             (sem-planner--run-with-retry
-             rules-text anonymized-existing anonymized-temp
-              (lambda (success response)
+             rules-text anonymized-existing anonymized-temp runtime-now runtime-min-start
+               (lambda (success response)
                 (if success
                     (progn
                       (sem-core-log "planner" "INBOX-ITEM" "OK" "Planning successful" nil)
@@ -340,10 +407,13 @@ Returns t if at least one valid ID line is found."
      (message "SEM: Planning step error: %s" (error-message-string err))
      (sem-planner--fallback-to-pass1)))))
 
-(defun sem-planner--run-with-retry (rules-text anonymized-schedule temp-tasks callback)
+(defun sem-planner--run-with-retry
+    (rules-text anonymized-schedule temp-tasks runtime-now runtime-min-start callback)
   "Run the planning LLM call with exponential backoff retry."
   (let ((retry-count 0)
-        (user-prompt (sem-planner--build-pass2-prompt temp-tasks anonymized-schedule rules-text))
+        (user-prompt
+         (sem-planner--build-pass2-prompt
+          temp-tasks anonymized-schedule rules-text runtime-now runtime-min-start))
         (system-prompt (sem-planner--system-prompt)))
     (cl-labels ((attempt ()
                 (message "SEM: Planning attempt %d/%d" (1+ retry-count) sem-planner--max-retries)

@@ -62,6 +62,58 @@ Some description here")
           (should (string-match-p "TAG:routine" result)))
       (sem-mock-cleanup-temp-file tmp))))
 
+(ert-deftest sem-planner-test-anonymize-temp-tasks-flags-fixed-schedule-exception ()
+  "Test that Pass 2 anonymized task lines flag the fixed-schedule exception."
+  (let ((temp-tasks (concat "* TODO Process quarterly financial reports :routine:\n"
+                            ":PROPERTIES:\n"
+                            ":ID: fixed-123\n"
+                            ":END:\n"
+                            "SCHEDULED: <2026-03-20 Fri>\n"
+                            "\n"
+                            "* TODO Another task :work:\n"
+                            ":PROPERTIES:\n"
+                            ":ID: nonfixed-123\n"
+                            ":END:\n"
+                            "SCHEDULED: <2026-03-21 Sat 10:00-11:00>\n")))
+    (let ((result (sem-planner--anonymize-temp-tasks temp-tasks)))
+      (should (string-match-p "ID: fixed-123" result))
+      (should (string-match-p "FIXED_SCHEDULE_EXCEPTION:true" result))
+      (should-not
+       (string-match-p "ID: nonfixed-123 | TAG:work | .*FIXED_SCHEDULE_EXCEPTION:true" result)))))
+
+(ert-deftest sem-planner-test-merge-scheduling-keeps-fixed-schedule-unchanged ()
+  "Test that merge does not alter the fixed-schedule exception task."
+  (let* ((temp-tasks (concat "* TODO Process quarterly financial reports :routine:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: fixed-456\n"
+                             ":END:\n"
+                             "SCHEDULED: <2026-03-20 Fri>\n"
+                             "\n"
+                             "* TODO Review pull request #452 :work:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: work-456\n"
+                             ":END:\n"))
+         (decisions '(("fixed-456" . "<2099-01-01 Thu 10:00-11:00>")
+                      ("work-456" . "<2099-01-02 Fri 12:00-13:00>")))
+         (merged (sem-planner--merge-scheduling-into-tasks temp-tasks decisions)))
+    (should (string-match-p "SCHEDULED: <2026-03-20 Fri>" merged))
+    (should-not (string-match-p "SCHEDULED: <2099-01-01 Thu 10:00-11:00>" merged))
+    (should (string-match-p "SCHEDULED: <2099-01-02 Fri 12:00-13:00>" merged))))
+
+(ert-deftest sem-planner-test-build-pass2-prompt-includes-runtime-bounds-and-strict-rule ()
+  "Test that Pass 2 prompt includes runtime bounds and strict greater-than semantics."
+  (let ((prompt (sem-planner--build-pass2-prompt
+                 "Tasks to schedule:\n- ID: abc | TAG:work | (unscheduled)\n"
+                 "(No existing tasks)"
+                 ""
+                 "2026-03-24T12:00:00Z"
+                 "2026-03-24T13:00:00Z")))
+    (should (string-match-p "runtime_now: 2026-03-24T12:00:00Z" prompt))
+    (should (string-match-p "runtime_min_start: 2026-03-24T13:00:00Z" prompt))
+    (should (string-match-p "strictly greater than runtime_min_start" prompt))
+    (should (string-match-p "SCHEDULED equal to runtime_min_start is NOT allowed" prompt))
+    (should (string-match-p "Process quarterly financial reports" prompt))))
+
 ;;; Temp File Path Tests
 
 (ert-deftest sem-planner-test-temp-file-path-format ()

@@ -37,6 +37,12 @@ TASKS_MAX_ATTEMPTS=24
 # this value is derived automatically and used for polling and assertions.
 EXPECTED_TASK_COUNT=$(grep -c '^\* TODO .*:task:' "$TEST_INBOX" 2>/dev/null || echo "0")
 
+# Assertion constants
+FIXED_SCHEDULE_EXCEPTION_TITLE="Process quarterly financial reports"
+RUNTIME_TIMEZONE="UTC"
+KEYWORDS=("quarterly financial reports" "#452" "team building activity")
+SENSITIVE_KEYWORDS=("supersecret123" "sk-live-abc123xyz789" "IBAN: DE89370400440532013000" "ACCOUNT NUMBER: 123456789")
+
 # Test status
 TEST_STATUS="PASS"
 RUN_DIR=""
@@ -518,6 +524,43 @@ collect_artifacts() {
 # Assertions
 # =============================================================================
 
+extract_fixed_schedule_timestamp() {
+    local inbox_file="$1"
+    local title="$2"
+    python3 - "$inbox_file" "$title" <<'PY'
+import re
+import sys
+
+inbox_path = sys.argv[1]
+title = sys.argv[2]
+
+headline_re = re.compile(r"^\*+\s+TODO\s+(.*?)(?:\s+:[^:]+(?::[^:]+)*:)?\s*$")
+scheduled_re = re.compile(r"^\s*SCHEDULED:\s*(<[^>]+>)")
+
+with open(inbox_path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+for i, line in enumerate(lines):
+    m = headline_re.match(line.rstrip("\n"))
+    if not m:
+        continue
+    if m.group(1).strip() != title:
+        continue
+    j = i + 1
+    while j < len(lines):
+        current = lines[j].rstrip("\n")
+        if current.startswith("*"):
+            break
+        sm = scheduled_re.match(current)
+        if sm:
+            print(sm.group(1))
+            sys.exit(0)
+        j += 1
+
+sys.exit(1)
+PY
+}
+
 run_assertions() {
     echo ""
     echo "=== Running Assertions ==="
@@ -547,10 +590,9 @@ run_assertions() {
     echo "Assertion 2: Keyword presence..."
     {
         echo "=== Assertion 2: Keyword Presence ==="
-        local keywords=("quarterly financial reports" "#452" "team building activity")
         local keyword_failed=false
         
-        for keyword in "${keywords[@]}"; do
+        for keyword in "${KEYWORDS[@]}"; do
             if grep -q "$keyword" "$RUN_DIR/tasks.org" 2>/dev/null; then
                 echo "PASS: Found '$keyword'"
             else
@@ -569,10 +611,134 @@ run_assertions() {
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
-    # Assertion 3: Org validity
-    echo "Assertion 3: Org validity..."
+    # Assertion 3: Scheduled time lower-bound and fixed exception equality
+    echo "Assertion 3: Scheduled time lower-bound validation..."
     {
-        echo "=== Assertion 3: Org Validity ==="
+        echo "=== Assertion 3: Scheduled Time Lower-Bound Validation ==="
+
+        local runtime_now_epoch runtime_min_start_epoch runtime_now_iso runtime_min_start_iso
+        runtime_now_epoch=$(date -u +%s)
+        runtime_min_start_epoch=$((runtime_now_epoch + 3600))
+        runtime_now_iso=$(date -u -d "@$runtime_now_epoch" +%Y-%m-%dT%H:%M:%SZ)
+        runtime_min_start_iso=$(date -u -d "@$runtime_min_start_epoch" +%Y-%m-%dT%H:%M:%SZ)
+        echo "Timezone authority: $RUNTIME_TIMEZONE"
+
+        local expected_exception_ts
+        expected_exception_ts=$(extract_fixed_schedule_timestamp "$TEST_INBOX" "$FIXED_SCHEDULE_EXCEPTION_TITLE" || true)
+
+        if [[ -z "$expected_exception_ts" ]]; then
+            echo "FAIL: Could not extract fixed-schedule exception timestamp from inbox for '$FIXED_SCHEDULE_EXCEPTION_TITLE'"
+            echo "ASSERTION_3_RESULT:FAIL"
+        else
+            if python3 - "$RUN_DIR/tasks.org" "$FIXED_SCHEDULE_EXCEPTION_TITLE" "$expected_exception_ts" "$runtime_min_start_epoch" "$runtime_min_start_iso" <<'PY'
+import datetime
+import re
+import sys
+
+tasks_path = sys.argv[1]
+exception_title = sys.argv[2]
+expected_exception_ts = sys.argv[3]
+runtime_min_start_epoch = int(sys.argv[4])
+runtime_min_start_iso = sys.argv[5]
+
+headline_re = re.compile(r"^\*+\s+TODO\s+(.*?)(?:\s+:[^:]+(?::[^:]+)*:)?\s*$")
+scheduled_re = re.compile(r"^\s*SCHEDULED:\s*(<[^>]+>)")
+org_ts_re = re.compile(r"<(\d{4})-(\d{2})-(\d{2})(?:\s+[A-Za-z]{3})?(?:\s+(\d{2}):(\d{2})(?:-(\d{2}):(\d{2}))?)?>")
+
+def parse_org_timestamp(ts: str) -> datetime.datetime:
+    m = org_ts_re.fullmatch(ts.strip())
+    if not m:
+        raise ValueError(f"unsupported org timestamp format: {ts}")
+    year, month, day = map(int, m.group(1, 2, 3))
+    hour = int(m.group(4) or 0)
+    minute = int(m.group(5) or 0)
+    return datetime.datetime(year, month, day, hour, minute, tzinfo=datetime.timezone.utc)
+
+with open(tasks_path, "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+scheduled_tasks = []
+for i, line in enumerate(lines):
+    m = headline_re.match(line.rstrip("\n"))
+    if not m:
+        continue
+    title = m.group(1).strip()
+    scheduled = None
+    j = i + 1
+    while j < len(lines):
+        current = lines[j].rstrip("\n")
+        if current.startswith("*"):
+            break
+        sm = scheduled_re.match(current)
+        if sm:
+            scheduled = sm.group(1)
+            break
+        j += 1
+    if scheduled:
+        scheduled_tasks.append((title, scheduled))
+
+failed = False
+exception_found = False
+
+try:
+    expected_exception_dt = parse_org_timestamp(expected_exception_ts)
+except Exception as err:
+    print(f"FAIL: Exception timestamp from inbox is invalid: {expected_exception_ts} ({err})")
+    sys.exit(1)
+
+for title, scheduled_raw in scheduled_tasks:
+    try:
+        scheduled_dt = parse_org_timestamp(scheduled_raw)
+    except Exception as err:
+        print(f"FAIL: Task '{title}' has unparseable SCHEDULED '{scheduled_raw}' ({err})")
+        failed = True
+        continue
+
+    scheduled_epoch = int(scheduled_dt.timestamp())
+    if title == exception_title:
+        exception_found = True
+        if scheduled_dt != expected_exception_dt:
+            print(
+                f"FAIL: fixed exception mismatch task='{title}' actual='{scheduled_raw}' expected='{expected_exception_ts}'"
+            )
+            failed = True
+        else:
+            print(
+                f"PASS: fixed exception matches expected timestamp task='{title}' timestamp='{scheduled_raw}'"
+            )
+        continue
+
+    if scheduled_epoch <= runtime_min_start_epoch:
+        print(
+            f"FAIL: lower-bound violation task='{title}' actual='{scheduled_raw}' runtime_min_start='{runtime_min_start_iso}'"
+        )
+        failed = True
+    else:
+        print(
+            f"PASS: lower-bound satisfied task='{title}' actual='{scheduled_raw}' runtime_min_start='{runtime_min_start_iso}'"
+        )
+
+if not exception_found:
+    print(f"FAIL: fixed exception task '{exception_title}' was not found with a SCHEDULED timestamp")
+    failed = True
+
+sys.exit(1 if failed else 0)
+PY
+            then
+                echo "PASS: Scheduled lower-bound and fixed exception checks passed"
+                echo "ASSERTION_3_RESULT:PASS"
+            else
+                echo "FAIL: Scheduled lower-bound and/or fixed exception checks failed"
+                echo "ASSERTION_3_RESULT:FAIL"
+            fi
+        fi
+        echo ""
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
+
+    # Assertion 4: Org validity
+    echo "Assertion 4: Org validity..."
+    {
+        echo "=== Assertion 4: Org Validity ==="
         
         if emacs --batch \
             --eval "(condition-case err \
@@ -582,23 +748,22 @@ run_assertions() {
                              (message \"ORG-VALID\")) \
                     (error (error \"ORG-INVALID: %s\" err)))" 2>&1 | grep -q "ORG-VALID"; then
             echo "PASS: tasks.org is valid Org"
-            echo "ASSERTION_3_RESULT:PASS"
+            echo "ASSERTION_4_RESULT:PASS"
         else
             echo "FAIL: tasks.org is not valid Org"
-            echo "ASSERTION_3_RESULT:FAIL"
+            echo "ASSERTION_4_RESULT:FAIL"
         fi
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
-    # Assertion 4: Sensitive content restoration
-    echo "Assertion 4: Sensitive content restoration..."
+    # Assertion 5: Sensitive content restoration
+    echo "Assertion 5: Sensitive content restoration..."
     {
-        echo "=== Assertion 4: Sensitive Content Restoration ==="
-        
-        local sensitive_keywords=("supersecret123" "sk-live-abc123xyz789" "IBAN: DE89370400440532013000" "ACCOUNT NUMBER: 123456789")
+        echo "=== Assertion 5: Sensitive Content Restoration ==="
+
         local sensitive_failed=false
         
-        for keyword in "${sensitive_keywords[@]}"; do
+        for keyword in "${SENSITIVE_KEYWORDS[@]}"; do
             if grep -q "$keyword" "$RUN_DIR/tasks.org" 2>/dev/null; then
                 echo "PASS: Sensitive content restored: '$keyword'"
             else
@@ -609,33 +774,33 @@ run_assertions() {
         
         if [[ "$sensitive_failed" == "true" ]]; then
             echo "FAIL: Some sensitive content not restored"
-            echo "ASSERTION_4_RESULT:FAIL"
+            echo "ASSERTION_5_RESULT:FAIL"
         else
             echo "PASS: All sensitive content properly restored"
-            echo "ASSERTION_4_RESULT:PASS"
+            echo "ASSERTION_5_RESULT:PASS"
         fi
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
-    # Assertion 4a: Negative marker check - no #+begin_sensitive markers in output
-    echo "Assertion 4a: Negative marker check..."
+    # Assertion 5a: Negative marker check - no #+begin_sensitive markers in output
+    echo "Assertion 5a: Negative marker check..."
     {
-        echo "=== Assertion 4a: Negative Marker Check ==="
+        echo "=== Assertion 5a: Negative Marker Check ==="
         
         if grep -q '#+begin_sensitive' "$RUN_DIR/tasks.org" 2>/dev/null; then
             echo "FAIL: Found '#+begin_sensitive' markers in output - markers should not be present"
-            echo "ASSERTION_4A_RESULT:FAIL"
+            echo "ASSERTION_5A_RESULT:FAIL"
         else
             echo "PASS: No '#+begin_sensitive' markers found in output"
-            echo "ASSERTION_4A_RESULT:PASS"
+            echo "ASSERTION_5A_RESULT:PASS"
         fi
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
-    # Assertion 4b: Order verification - within each task, sensitive content appears in same order as original
-    echo "Assertion 4b: Sensitive content within-task order verification..."
+    # Assertion 5b: Order verification - within each task, sensitive content appears in same order as original
+    echo "Assertion 5b: Sensitive content within-task order verification..."
     {
-        echo "=== Assertion 4b: Sensitive Content Within-Task Order Verification ==="
+        echo "=== Assertion 5b: Sensitive Content Within-Task Order Verification ==="
         
         local tasks_content
         tasks_content=$(cat "$RUN_DIR/tasks.org" 2>/dev/null || echo "")
@@ -676,30 +841,30 @@ run_assertions() {
         fi
         
         if [[ "$order_failed" == "true" ]]; then
-            echo "ASSERTION_4B_RESULT:FAIL"
+            echo "ASSERTION_5B_RESULT:FAIL"
         else
             echo "PASS: All sensitive content within-task order correct"
-            echo "ASSERTION_4B_RESULT:PASS"
+            echo "ASSERTION_5B_RESULT:PASS"
         fi
         
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
     
-    # Assertion 5: SCHEDULED times fall within preferred windows from rules.org
-    echo "Assertion 5: SCHEDULED time preference validation..."
+    # Assertion 6: SCHEDULED times fall within preferred windows from rules.org
+    echo "Assertion 6: SCHEDULED time preference validation..."
     {
-        echo "=== Assertion 5: SCHEDULED Time Preference Validation ==="
+        echo "=== Assertion 6: SCHEDULED Time Preference Validation ==="
         
         # Check if tasks.org exists and has scheduled times
         if [[ ! -f "$RUN_DIR/tasks.org" ]] || [[ ! -s "$RUN_DIR/tasks.org" ]]; then
             echo "SKIP: tasks.org does not exist or is empty - cannot validate SCHEDULED times"
-            echo "ASSERTION_5_RESULT:SKIP"
+            echo "ASSERTION_6_RESULT:SKIP"
         else
             # Read rules to understand preferences
             local rules_file="$SCRIPT_DIR/testing-resources/rules.org"
             if [[ ! -f "$rules_file" ]]; then
                 echo "SKIP: rules.org not found - cannot validate preferences"
-                echo "ASSERTION_5_RESULT:SKIP"
+                echo "ASSERTION_6_RESULT:SKIP"
             else
                 # Soft check: validate that SCHEDULED times exist and have time components
                 local scheduled_count=0
@@ -710,7 +875,7 @@ run_assertions() {
                 
                 if [[ "$scheduled_count" -eq 0 ]]; then
                     echo "WARN: No tasks have SCHEDULED times"
-                    echo "ASSERTION_5_RESULT:WARN"
+                    echo "ASSERTION_6_RESULT:WARN"
                 else
                     # Count tasks with time ranges (HH:MM-HH:MM format) or specific times (HH:MM)
                     valid_scheduled_count=$(grep 'SCHEDULED:' "$RUN_DIR/tasks.org" 2>/dev/null | grep -cE 'SCHEDULED: <[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}(-[0-9]{2}:[0-9]{2})?>' || echo "0")
@@ -720,10 +885,10 @@ run_assertions() {
                     # Soft assertion: at least some tasks should have time components
                     if [[ "$valid_scheduled_count" -gt 0 ]]; then
                         echo "PASS: Some tasks have time components in SCHEDULED (preference: afternoon for routine, after 4PM for free time)"
-                        echo "ASSERTION_5_RESULT:PASS"
+                        echo "ASSERTION_6_RESULT:PASS"
                     else
                         echo "WARN: No tasks have time components in SCHEDULED - LLM did not add times"
-                        echo "ASSERTION_5_RESULT:WARN"
+                        echo "ASSERTION_6_RESULT:WARN"
                     fi
                 fi
             fi
@@ -733,29 +898,39 @@ run_assertions() {
     
     # Final result - read from temp file (avoids subshell variable loss issue)
     echo "=== Final Result ==="
-    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion4a final_assertion4b final_assertion5
+    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion5 final_assertion5a final_assertion5b final_assertion6
     final_assertion1=$(grep "ASSERTION_1_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion2=$(grep "ASSERTION_2_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion3=$(grep "ASSERTION_3_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion4=$(grep "ASSERTION_4_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
-    final_assertion4a=$(grep "ASSERTION_4A_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
-    final_assertion4b=$(grep "ASSERTION_4B_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion5=$(grep "ASSERTION_5_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
-    
-    if [[ "$final_assertion1" == "PASS" && "$final_assertion2" == "PASS" && "$final_assertion3" == "PASS" && "$final_assertion4" == "PASS" && "$final_assertion4a" == "PASS" && "$final_assertion4b" == "PASS" && "$TEST_STATUS" == "PASS" ]]; then
+    final_assertion5a=$(grep "ASSERTION_5A_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion5b=$(grep "ASSERTION_5B_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion6=$(grep "ASSERTION_6_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+
+    if [[ "$final_assertion1" == "PASS" &&
+          "$final_assertion2" == "PASS" &&
+          "$final_assertion3" == "PASS" &&
+          "$final_assertion4" == "PASS" &&
+          "$final_assertion5" == "PASS" &&
+          "$final_assertion5a" == "PASS" &&
+          "$final_assertion5b" == "PASS" &&
+          "$TEST_STATUS" == "PASS" &&
+          ( "$final_assertion6" == "PASS" || "$final_assertion6" == "WARN" || "$final_assertion6" == "SKIP" ) ]]; then
         echo "ALL ASSERTIONS PASSED"
         exit 0
-    else
-        echo "SOME ASSERTIONS FAILED"
-        echo "  Assertion 1 (TODO count): $final_assertion1"
-        echo "  Assertion 2 (Keywords): $final_assertion2"
-        echo "  Assertion 3 (Org validity): $final_assertion3"
-        echo "  Assertion 4 (Sensitive content): $final_assertion4"
-        echo "  Assertion 4a (No markers): $final_assertion4a"
-        echo "  Assertion 4b (Order verification): $final_assertion4b"
-        echo "  Assertion 5 (SCHEDULED preferences): $final_assertion5"
-        exit 1
     fi
+
+    echo "SOME ASSERTIONS FAILED"
+    echo "  Assertion 1 (TODO count): $final_assertion1"
+    echo "  Assertion 2 (Keywords): $final_assertion2"
+    echo "  Assertion 3 (Scheduled lower bound): $final_assertion3"
+    echo "  Assertion 4 (Org validity): $final_assertion4"
+    echo "  Assertion 5 (Sensitive content): $final_assertion5"
+    echo "  Assertion 5a (No markers): $final_assertion5a"
+    echo "  Assertion 5b (Order verification): $final_assertion5b"
+    echo "  Assertion 6 (SCHEDULED preferences): $final_assertion6"
+    exit 1
 }
 
 # =============================================================================
