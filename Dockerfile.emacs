@@ -1,4 +1,4 @@
-FROM silex/emacs:master-alpine-ci
+FROM silex/emacs:master-alpine-ci-eask
 
 # Cron stuff
 RUN mkfifo -m 0666 /var/log/cron.log
@@ -15,6 +15,10 @@ WORKDIR /app
 # Copy elisp source files
 COPY app/elisp/ /app/elisp/
 
+# Copy Eask manifest
+COPY Eask /app/Eask
+COPY sem-assistant.el /app/sem-assistant.el
+
 # Copy crontab
 COPY crontab /etc/cron.d/sem-cron
 
@@ -28,8 +32,7 @@ RUN chmod +x /usr/local/bin/start-cron \
     && mkdir -p /data/org-roam /data/elfeed /data/morning-read
 
 # Install packages at build time - build fails if any package fails
-RUN emacs --batch --no-site-file \
-    --load /app/elisp/bootstrap-packages.el
+RUN eask install
 
 # Set entrypoint to start cron and emacs in daemon mode
 CMD ["/usr/local/bin/start-cron"]

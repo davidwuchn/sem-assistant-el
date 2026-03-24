@@ -28,6 +28,7 @@ Shared volume: `/data` contains all Org files, databases, and logs.
 ### Prerequisites
 
 - Docker and Docker Compose installed on VPS
+- Eask installed for local development/testing (https://emacs-eask.github.io/)
 - OpenRouter API key (https://openrouter.ai/keys)
 - Orgzly configured on mobile device
 
@@ -170,9 +171,9 @@ Headlines that start with `http://` or `https://` are automatically treated as l
 
 ```
 sem-assistant-el/
+├── Eask                    # Eask dependency manifest
 ├── app/elisp/              # Elisp modules
 │   ├── init.el             # Daemon initialization
-│   ├── bootstrap-packages.el  # Package bootstrapping
 │   ├── sem-core.el         # Core logging and utilities
 │   ├── sem-security.el     # Security masking and URL sanitization
 │   ├── sem-llm.el          # LLM integration wrapper
@@ -342,6 +343,32 @@ Configure Orgzly to sync via HTTPS:
 
 **Environment Variable:**
 - `SEM_PROMPTS_DIR` - Override prompt files location (default: `/data/prompts/`)
+
+## Unit Tests
+
+Run all unit tests (default path):
+
+```bash
+eask test ert app/elisp/tests/sem-test-runner.el
+```
+
+Run a single test file:
+
+```bash
+eask emacs --batch \
+  --load app/elisp/tests/sem-mock.el \
+  --load app/elisp/tests/sem-core-test.el \
+  --eval "(ert-run-tests-batch-and-exit)"
+```
+
+Run a single named test:
+
+```bash
+eask emacs --batch \
+  --load app/elisp/tests/sem-mock.el \
+  --load app/elisp/tests/sem-core-test.el \
+  --eval "(ert-run-tests-batch-and-exit 'sem-core-test-cursor-roundtrip)"
+```
 
 ## Integration Tests
 

@@ -6,10 +6,15 @@
 chmod -R go-w /etc/cron.d
 
 # Start cron daemon in background
-service cron start
+if command -v service >/dev/null 2>&1; then
+  service cron start
+else
+  crond
+fi
 
-# Start emacs daemon in background with explicit socket name
-emacs --bg-daemon=sem-server --load=/app/elisp/init.el
+# Start emacs daemon in background with explicit socket name.
+# Use Eask so package dependencies are available on load-path.
+eask emacs --bg-daemon=sem-server --load=/app/elisp/init.el
 
 # Keep container alive by tailing the log file
 # This runs in foreground and keeps PID 1 alive

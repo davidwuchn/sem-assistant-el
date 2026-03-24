@@ -8,7 +8,7 @@
 ;;
 ;; Startup sequence (must execute in strict order):
 ;; 1. Validate required env vars
-;; 2. Bootstrap straight.el (makes build-time packages available)
+;; 2. Load package dependencies installed at build time
 ;; 3. Configure gptel with OpenRouter backend
 ;; 4. Set hardcoded paths as globals
 ;; 5. Set security globals
@@ -33,33 +33,15 @@ Signal an error if OPENROUTER_KEY or OPENROUTER_MODEL is unset or empty."
       (error "SEM: OPENROUTER_MODEL environment variable is not set or empty"))
     (message "SEM: Environment variables validated successfully")))
 
-;;; 2. Bootstrap straight.el (packages installed at build time)
+;;; 2. Load Package Dependencies (installed at build time)
 
-(defun sem-init--bootstrap-straight ()
-  "Bootstrap straight.el and activate build-time-installed packages."
-  (setq straight-repository-branch "develop")
-  (setq straight-check-for-modifications nil)
-  (setq straight-vc-use-snapshot-installation t)
-  (defvar bootstrap-version)
-  (let ((bootstrap-file
-         (expand-file-name
-          "straight/repos/straight.el/bootstrap.el"
-          (or (bound-and-true-p straight-base-dir)
-              user-emacs-directory)))
-        (bootstrap-version 7))
-    (unless (file-exists-p bootstrap-file)
-      (with-current-buffer
-          (url-retrieve-synchronously "https://raw.githubusercontent.com/radian-software/straight.el/develop/install.el"
-                                      'silent 'inhibit-cookies)
-        (goto-char (point-max))
-        (eval-print-last-sexp)))
-    (load bootstrap-file nil 'nomessage))
-  (message "SEM: straight.el bootstrapped")
+(defun sem-init--load-package-dependencies ()
+  "Load build-time-installed package dependencies with `require'."
   (dolist (pkg '(gptel elfeed elfeed-org org-roam websocket))
     (condition-case err
-        (straight-use-package pkg)
+        (require pkg)
       (error
-       (message "SEM: Failed to activate package %s: %s"
+       (message "SEM: Failed to load package %s: %s"
                 pkg (error-message-string err))))))
 
 ;;; 3. Configure gptel with OpenRouter Backend
@@ -80,7 +62,7 @@ Model is read from OPENROUTER_MODEL at call time."
   (setq gptel-model (intern (getenv "OPENROUTER_MODEL")))
   (message "SEM: gptel configured with OpenRouter backend"))
 
-;;; 3. Set Hardcoded Paths as Globals
+;;; 4. Set Hardcoded Paths as Globals
 
 (defun sem-init--set-paths ()
   "Set all hardcoded paths as global variables."
@@ -89,7 +71,7 @@ Model is read from OPENROUTER_MODEL at call time."
   (setq rmh-elfeed-org-files '("/data/feeds.org"))
   (message "SEM: Paths configured"))
 
-;;; 4. Set Security Globals
+;;; 5. Set Security Globals
 
 (defun sem-init--set-security-globals ()
   "Set security-related global variables.
@@ -101,7 +83,7 @@ Disables lock files, local variables, and configures org-babel safety."
   (setq org-display-remote-inline-images nil)
   (message "SEM: Security globals set"))
 
-;;; 5. Initialize Git Repo for org-roam (GitHub Sync Readiness)
+;;; 6. Initialize Git Repo for org-roam (GitHub Sync Readiness)
 
 (defun sem-init--init-git-repo ()
   "Initialize git repo for org-roam if not already present.
@@ -121,7 +103,7 @@ This is pre-wiring for future github-integration."
           (insert "*.db-wal\n"))))
     (message "SEM: Git repo ready")))
 
-;;; 6. Database Initialization
+;;; 7. Database Initialization
 
 (defun sem-init--init-elfeed-db ()
   "Load Elfeed database with corruption recovery.
@@ -173,7 +155,7 @@ Handles missing /data/org-roam/ gracefully."
   (sem-init--init-elfeed-db)
   (sem-init--init-org-roam-db))
 
-;;; 7. Load All Modules
+;;; 8. Load All Modules
 
 (defun sem-init--load-modules ()
   "Load all SEM modules in dependency order.
@@ -192,14 +174,14 @@ sem-prompts must load before sem-router and sem-url-capture."
     (require 'sem-planner)
     (message "SEM: All modules loaded")))
 
-;;; 8. Install *Messages* Redirection Hook
+;;; 9. Install *Messages* Redirection Hook
 
 (defun sem-init--install-messages-hook ()
   "Install the *Messages* persistence hook with daily rotation."
   (add-hook 'post-command-hook #'sem-core--flush-messages-daily)
   (message "SEM: *Messages* daily rotation installed"))
 
-;;; 9. Daemon Startup Sequence
+;;; 10. Daemon Startup Sequence
 
 (defun sem-init--startup ()
   "Execute the complete daemon startup sequence.
@@ -208,13 +190,13 @@ written to errors.org to aid debugging."
   (condition-case err
       (progn
         ;; Step 1: Validate env vars
-        (message "SEM: Starting init step 1/9 - validate env vars")
+        (message "SEM: Starting init step 1/10 - validate env vars")
         (sem-init--validate-env)
-        (message "SEM: Step 1/9 complete - env vars validated")
-        ;; Step 2: Bootstrap straight.el
-        (message "SEM: Starting init step 2/10 - bootstrap straight")
-        (sem-init--bootstrap-straight)
-        (message "SEM: Step 2/10 complete - straight bootstrapped")
+        (message "SEM: Step 1/10 complete - env vars validated")
+        ;; Step 2: Load package dependencies
+        (message "SEM: Starting init step 2/10 - load package dependencies")
+        (sem-init--load-package-dependencies)
+        (message "SEM: Step 2/10 complete - package dependencies loaded")
         ;; Step 3: Configure gptel
         (message "SEM: Starting init step 3/10 - configure gptel")
         (sem-init--configure-gptel)

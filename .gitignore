@@ -9,6 +9,9 @@
 app/elisp/straight/repos/
 app/elisp/eln-cache/
 
+# Eask project-local package directory
+.eask/
+
 # Data directory
 /data/
 

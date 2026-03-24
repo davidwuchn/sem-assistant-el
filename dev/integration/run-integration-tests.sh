@@ -547,7 +547,7 @@ run_assertions() {
     echo "Assertion 2: Keyword presence..."
     {
         echo "=== Assertion 2: Keyword Presence ==="
-        local keywords=("quarterly financial reports" "pull request" "team building activity")
+        local keywords=("quarterly financial reports" "#452" "team building activity")
         local keyword_failed=false
         
         for keyword in "${keywords[@]}"; do

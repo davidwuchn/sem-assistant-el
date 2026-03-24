@@ -17,30 +17,25 @@ Source lives in `app/elisp/`. Tests live in `app/elisp/tests/`.
 ### Run all tests
 
 ```sh
-emacs --batch --load app/elisp/tests/sem-test-runner.el
+eask test ert app/elisp/tests/sem-test-runner.el
 ```
 
 ### Run a single test file
 
 ```sh
-emacs --batch \
-  --eval "(add-to-list 'load-path \"app/elisp/tests\")" \
-  --eval "(add-to-list 'load-path \"app/elisp\")" \
+eask emacs --batch \
   --load app/elisp/tests/sem-mock.el \
   --load app/elisp/tests/sem-core-test.el \
   --eval "(ert-run-tests-batch-and-exit)"
 ```
 
-Replace `sem-core-test.el` with the file under test. Always load `sem-mock.el`
-first — it stubs external packages (`elfeed`, `org-roam`, `gptel`, etc.) that
-are unavailable in batch mode.
+Replace `sem-core-test.el` with the file under test. Always load
+`sem-mock.el` first so behavioral mocks are available.
 
 ### Run a single named test
 
 ```sh
-emacs --batch \
-  --eval "(add-to-list 'load-path \"app/elisp/tests\")" \
-  --eval "(add-to-list 'load-path \"app/elisp\")" \
+eask emacs --batch \
   --load app/elisp/tests/sem-mock.el \
   --load app/elisp/tests/sem-core-test.el \
   --eval "(ert-run-tests-batch-and-exit 'sem-core-test-cursor-roundtrip)"
@@ -73,9 +68,9 @@ docker-compose logs -f emacs
 ## Repository Layout
 
 ```
+Eask                    Dependency manifest for Emacs packages
 app/elisp/              Source modules (load order matters — see init.el)
   init.el               Daemon startup sequence
-  bootstrap-packages.el straight.el package bootstrap
   sem-core.el           Logging, cursor tracking, retry, inbox purge
   sem-security.el       Sensitive-block masking, URL sanitization
   sem-llm.el            gptel wrapper (all LLM calls go here)
@@ -323,8 +318,10 @@ Use `sem-mock-temp-file` to create temp files with content, and always clean up:
 
 ### Registering new test files
 
-Add a `load-file` line to `app/elisp/tests/sem-test-runner.el` in dependency
-order (after `sem-mock.el`, before any modules that depend on yours).
+No manual registration is required for full-suite runs via
+`eask test ert app/elisp/tests/sem-test-runner.el`.
+If you use `app/elisp/tests/sem-test-runner.el`, test files ending in
+`-test.el` are auto-discovered.
 
 ---
 

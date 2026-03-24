@@ -22,6 +22,7 @@ The system SHALL run assertions after artifact collection to validate the integr
 #### Scenario: Keyword presence assertion
 - **WHEN** running the keyword presence assertion
 - **THEN** the script MUST grep for each headline title keyword defined in the `keywords` array in tasks.org
+- **AND** the `keywords` array MUST include `quarterly financial reports`, `#452`, and `team building activity`
 - **AND** each keyword MUST match
 - **AND** if any keyword is missing, the failure message MUST name the missing keyword
 

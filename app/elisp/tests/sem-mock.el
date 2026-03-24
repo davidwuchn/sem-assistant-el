@@ -8,25 +8,8 @@
 ;;; Code:
 
 (require 'ert)
-
-;;; Stub external packages unavailable in batch test mode
-;; These stubs must be registered before any source module is loaded,
-;; so that (require 'elfeed) etc. become silent no-ops.
-
-(dolist (pkg '(elfeed elfeed-org org-roam org-id gptel))
-  (unless (featurep pkg)
-    (provide pkg)))
-
-;;; Stub gptel-request function so advice can be added
-(defun gptel-request (prompt &rest args)
-  "Stub gptel-request function.
-This is a placeholder that will be overridden by sem-mock-gptel-request-success/error.
-PROMPT is the request prompt.
-ARGS is a plist containing :callback, :system, :stream, etc."
-  (let ((callback (plist-get args :callback)))
-    (when callback
-      (funcall callback nil (list :error "gptel-request not mocked")))
-    nil))
+(require 'gptel)
+(require 'org-roam)
 
 ;;; Mock Data
 
