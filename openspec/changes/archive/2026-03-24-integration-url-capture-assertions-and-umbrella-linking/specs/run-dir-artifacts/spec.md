@@ -1,10 +1,6 @@
 # Specification: run-dir-artifacts
 
-## Purpose
-
-Define requirements for test run directory creation and artifact collection.
-
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Run directory is created with timestamp
 The system SHALL create a timestamped directory `test-results/YYYY-MM-DD:HH:MM:SS-run/` at the start of each test run and SHALL collect both task-flow artifacts and URL-capture org-roam artifacts with baseline-versus-new visibility.

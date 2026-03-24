@@ -135,7 +135,7 @@ Reads OUTPUT_LANGUAGE at call time with default \"English\" and appends as final
             "   `#+ROAM_REFS: <Original URL>`\n"
             "   `#+filetags: :article:`\n"
             "4. Write a brief summary and bullet points extracting the core value of the article.\n"
-            "5. Link to the provided Umbrella Nodes IF AND ONLY IF highly relevant. Use exact IDs provided: `[[id:GIVEN-ID][Title]]`.\n"
+            "5. When Umbrella Nodes are provided, include at least one explicit link to a provided node ID using: `[[id:GIVEN-ID][Title]]`.\n"
             "6. Structure the note with `* Summary` and `* Key Takeaways` sections.\n"
             "7. The first line of the `* Summary` section MUST be: `Source: [[ARTICLE_URL][ARTICLE_URL]]`"
             language-instruction)))
@@ -184,6 +184,9 @@ Generates a new org-roam ID and includes it in the expected format section."
                     "\n\n")))
 
     (concat umbrella-section
+            (if (and umbrella-nodes-alist (not (null umbrella-nodes-alist)))
+                "MANDATORY LINK REQUIREMENT: Include at least one explicit `[[id:<umbrella-id>][...]]` link to a provided umbrella node in the generated output.\n\n"
+              "")
             "ARTICLE URL: " url "\n\n"
             "ARTICLE CONTENT:\n" sanitized-text "\n\n"
             "EXPECTED OUTPUT FORMAT:\n"

@@ -14,12 +14,18 @@ COMPOSE_FILE="$REPO_ROOT/docker-compose.yml"
 COMPOSE_OVERRIDE="$SCRIPT_DIR/docker-compose.test.yml"
 TEST_INBOX="$SCRIPT_DIR/testing-resources/inbox-tasks.org"
 PREEXISTING_TASKS_FIXTURE="$SCRIPT_DIR/testing-resources/preexisting-tasks.org"
+PREEXISTING_UMBRELLA_FIXTURE="$SCRIPT_DIR/testing-resources/20260313152244-llm.org"
 TEST_DATA_DIR="$REPO_ROOT/test-data"
 TEST_RESULTS_DIR="$REPO_ROOT/test-results"
 LOGS_DIR="$REPO_ROOT/logs"
 WEBDAV_BASE_URL="http://localhost:16065"
 WEBDAV_USERNAME="${WEBDAV_USERNAME:-orgzly}"
 WEBDAV_PASSWORD="${WEBDAV_PASSWORD:-changeme}"
+TRUSTED_URL="https://semyonsinchenko.github.io/ssinchenko/post/aider_2026_and_other_topics/"
+TRUSTED_UMBRELLA_ID="96a58b04-1f58-47c9-993f-551994939252"
+TRUSTED_UMBRELLA_TITLE="LLM"
+TRUSTED_UMBRELLA_TAG=":umbrella:"
+ORG_ROAM_BASELINE_MANIFEST="$TEST_DATA_DIR/org-roam-baseline-files.txt"
 
 # Test-specific port mapping (avoids privileged port 443)
 export WEBDAV_PORT=16065
@@ -42,6 +48,17 @@ EXPECTED_TASK_COUNT=$((EXPECTED_NEW_TASK_COUNT + EXPECTED_PREEXISTING_TASK_COUNT
 RUNTIME_TIMEZONE="UTC"
 KEYWORDS=("quarterly financial reports" "#452" "team building activity")
 SENSITIVE_KEYWORDS=("supersecret123" "sk-live-abc123xyz789" "IBAN: DE89370400440532013000" "ACCOUNT NUMBER: 123456789")
+ASSERTION_RESULT_KEYS=(
+    "ASSERTION_1_RESULT"
+    "ASSERTION_2_RESULT"
+    "ASSERTION_3_RESULT"
+    "ASSERTION_4_RESULT"
+    "ASSERTION_5_RESULT"
+    "ASSERTION_5A_RESULT"
+    "ASSERTION_5B_RESULT"
+    "ASSERTION_6_RESULT"
+    "ASSERTION_7_RESULT"
+)
 
 # Test status
 TEST_STATUS="PASS"
@@ -119,8 +136,17 @@ setup_test_data() {
         return 1
     fi
 
+    if [[ ! -f "$PREEXISTING_UMBRELLA_FIXTURE" ]]; then
+        echo "ERROR: pre-existing umbrella fixture not found: $PREEXISTING_UMBRELLA_FIXTURE" >&2
+        TEST_STATUS="FAIL"
+        return 1
+    fi
+
     echo "Installing pre-existing tasks fixture into WebDAV data path..."
     cp "$PREEXISTING_TASKS_FIXTURE" "$TEST_DATA_DIR/tasks.org"
+
+    echo "Seeding pre-existing umbrella fixture into runtime org-roam directory..."
+    cp "$PREEXISTING_UMBRELLA_FIXTURE" "$TEST_DATA_DIR/org-roam/"
 
     echo "Validating pre-existing fixture shape..."
     python3 - "$TEST_DATA_DIR/tasks.org" <<'PY'
@@ -175,6 +201,56 @@ print(
     f"priority={priority_count}, tags={sorted(tag_set)})"
 )
 PY
+
+    echo "Validating seeded umbrella fixture contract..."
+    python3 - "$TEST_DATA_DIR/org-roam/$(basename "$PREEXISTING_UMBRELLA_FIXTURE")" "$TRUSTED_UMBRELLA_ID" "$TRUSTED_UMBRELLA_TITLE" "$TRUSTED_UMBRELLA_TAG" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+expected_id = sys.argv[2]
+expected_title = sys.argv[3]
+expected_tag = sys.argv[4]
+
+with open(path, "r", encoding="utf-8") as f:
+    text = f.read()
+
+id_match = re.search(r"^:ID:\s*(.+)$", text, flags=re.MULTILINE)
+title_match = re.search(r"^#\+title:\s*(.+)$", text, flags=re.MULTILINE)
+tags_match = re.search(r"^#\+filetags:\s*(.+)$", text, flags=re.MULTILINE)
+
+errors = []
+if not id_match:
+    errors.append("missing :ID: line")
+elif id_match.group(1).strip() != expected_id:
+    errors.append(f"expected ID {expected_id}, got {id_match.group(1).strip()}")
+
+if not title_match:
+    errors.append("missing #+title line")
+elif title_match.group(1).strip() != expected_title:
+    errors.append(f"expected title {expected_title}, got {title_match.group(1).strip()}")
+
+if not tags_match:
+    errors.append("missing #+filetags line")
+else:
+    filetags = tags_match.group(1)
+    if expected_tag not in filetags:
+        errors.append(f"missing canonical umbrella tag {expected_tag} in filetags {filetags!r}")
+    if ":umbrealla:" in filetags:
+        errors.append(f"found typo umbrella tag :umbrealla: in filetags {filetags!r}")
+
+if errors:
+    print("FAIL: seeded umbrella fixture contract invalid")
+    for err in errors:
+        print(f" - {err}")
+    sys.exit(1)
+
+print("PASS: seeded umbrella fixture contract validated")
+PY
+
+    echo "Recording org-roam baseline snapshot..."
+    find "$TEST_DATA_DIR/org-roam" -maxdepth 1 -type f -name '*.org' -printf '%f\n' | sort > "$ORG_ROAM_BASELINE_MANIFEST"
+    echo "Baseline manifest saved to: $ORG_ROAM_BASELINE_MANIFEST"
 
     echo "Test data directory ready: $TEST_DATA_DIR"
 }
@@ -565,7 +641,43 @@ collect_artifacts() {
     [[ -f "$RUN_DIR/sem-diag.txt" ]] && echo "  sem-diag.txt already present" || echo "  sem-diag.txt not found"
     [[ -f "$RUN_DIR/sem-proc-diag.txt" ]] && echo "  sem-proc-diag.txt already present" || echo "  sem-proc-diag.txt not found"
     [[ -f "$RUN_DIR/container-inbox-mobile.org" ]] && echo "  container-inbox-mobile.org already present" || echo "  container-inbox-mobile.org not found"
-    
+
+    # Collect URL-capture org-roam artifacts with baseline/new visibility
+    echo "Collecting URL-capture org-roam artifacts..."
+    local org_roam_artifacts_dir="$RUN_DIR/url-capture-org-roam"
+    local org_roam_meta_dir="$RUN_DIR/url-capture-meta"
+    local baseline_dir="$org_roam_artifacts_dir/baseline"
+    local new_dir="$org_roam_artifacts_dir/new"
+    local all_dir="$org_roam_artifacts_dir/all"
+    local post_manifest="$org_roam_meta_dir/post-run-manifest.txt"
+    local new_manifest="$org_roam_meta_dir/new-manifest.txt"
+
+    mkdir -p "$baseline_dir" "$new_dir" "$all_dir" "$org_roam_meta_dir"
+
+    if [[ -d "$TEST_DATA_DIR/org-roam" ]]; then
+        find "$TEST_DATA_DIR/org-roam" -maxdepth 1 -type f -name '*.org' -printf '%f\n' | sort > "$post_manifest"
+        cp "$TEST_DATA_DIR/org-roam"/*.org "$all_dir/" 2>/dev/null || true
+
+        if [[ -f "$ORG_ROAM_BASELINE_MANIFEST" ]]; then
+            cp "$ORG_ROAM_BASELINE_MANIFEST" "$org_roam_meta_dir/baseline-manifest.txt"
+            comm -13 "$ORG_ROAM_BASELINE_MANIFEST" "$post_manifest" > "$new_manifest"
+
+            while IFS= read -r filename; do
+                [[ -z "$filename" ]] && continue
+                cp "$TEST_DATA_DIR/org-roam/$filename" "$baseline_dir/" 2>/dev/null || true
+            done < "$ORG_ROAM_BASELINE_MANIFEST"
+
+            while IFS= read -r filename; do
+                [[ -z "$filename" ]] && continue
+                cp "$TEST_DATA_DIR/org-roam/$filename" "$new_dir/" 2>/dev/null || true
+            done < "$new_manifest"
+        else
+            echo "WARNING: Missing baseline manifest: $ORG_ROAM_BASELINE_MANIFEST" | tee -a "$RUN_DIR/validation.txt"
+        fi
+    else
+        echo "WARNING: Runtime org-roam directory missing: $TEST_DATA_DIR/org-roam" | tee -a "$RUN_DIR/validation.txt"
+    fi
+
     # Copy log files from ./logs/
     echo "Copying message logs..."
     if compgen -G "$LOGS_DIR/messages-*.log" > /dev/null; then
@@ -968,10 +1080,119 @@ PY
         fi
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
-    
+
+    # Assertion 7: Trusted URL-capture output integrity
+    echo "Assertion 7: Trusted URL-capture output integrity..."
+    {
+        echo "=== Assertion 7: Trusted URL-Capture Output Integrity ==="
+
+        local org_roam_dir="$TEST_DATA_DIR/org-roam"
+        local post_manifest="$RUN_DIR/url-capture-meta/post-run-manifest.txt"
+        local new_manifest="$RUN_DIR/url-capture-meta/new-manifest.txt"
+        local trusted_source_line="Source: [[${TRUSTED_URL}][${TRUSTED_URL}]]"
+        local trusted_file=""
+        local trusted_candidates=()
+        local candidate_failures=()
+
+        if [[ ! -d "$org_roam_dir" ]]; then
+            echo "FAIL: Runtime org-roam directory missing: $org_roam_dir"
+            echo "ASSERTION_7_RESULT:FAIL"
+        elif [[ ! -f "$ORG_ROAM_BASELINE_MANIFEST" ]]; then
+            echo "FAIL: Baseline manifest missing: $ORG_ROAM_BASELINE_MANIFEST"
+            echo "ASSERTION_7_RESULT:FAIL"
+        else
+            mkdir -p "$RUN_DIR/url-capture-meta"
+            find "$org_roam_dir" -maxdepth 1 -type f -name '*.org' -printf '%f\n' | sort > "$post_manifest"
+            comm -13 "$ORG_ROAM_BASELINE_MANIFEST" "$post_manifest" > "$new_manifest"
+
+            local new_count
+            new_count=$(awk 'NF { c++ } END { print c + 0 }' "$new_manifest")
+            echo "New org-roam files beyond baseline: $new_count"
+
+            if [[ "$new_count" -le 0 ]]; then
+                echo "FAIL: no newly generated org-roam files detected beyond baseline fixtures"
+                echo "ASSERTION_7_RESULT:FAIL"
+            else
+                while IFS= read -r filename; do
+                    [[ -z "$filename" ]] && continue
+                    local filepath="$org_roam_dir/$filename"
+                    if [[ -f "$filepath" ]] && grep -Fq "$TRUSTED_URL" "$filepath" 2>/dev/null; then
+                        trusted_candidates+=("$filepath")
+                    fi
+                done < "$new_manifest"
+
+                echo "Trusted URL candidate files: ${#trusted_candidates[@]}"
+                if [[ ${#trusted_candidates[@]} -eq 0 ]]; then
+                    echo "FAIL: no new org-roam files reference trusted URL: $TRUSTED_URL"
+                    echo "ASSERTION_7_RESULT:FAIL"
+                else
+                    for filepath in "${trusted_candidates[@]}"; do
+                        local failure_reasons=()
+                        local basename_path
+                        basename_path=$(basename "$filepath")
+
+                        if ! grep -q '^:PROPERTIES:' "$filepath"; then
+                            failure_reasons+=("missing :PROPERTIES:")
+                        fi
+                        if ! grep -q '^:ID:' "$filepath"; then
+                            failure_reasons+=("missing :ID:")
+                        fi
+                        if ! grep -Eq '^#\+title:' "$filepath"; then
+                            failure_reasons+=("missing #+title:")
+                        fi
+
+                        local roam_refs_line
+                        roam_refs_line=$(grep -E '^#\+ROAM_REFS:' "$filepath" 2>/dev/null || true)
+                        if [[ -z "$roam_refs_line" ]]; then
+                            failure_reasons+=("missing #+ROAM_REFS:")
+                        elif [[ "$roam_refs_line" != *"$TRUSTED_URL"* ]]; then
+                            failure_reasons+=("#+ROAM_REFS does not contain trusted URL")
+                        fi
+
+                        if ! awk '/^\* Summary/{in_summary=1; next} /^\* /{in_summary=0} in_summary && index($0, source) {found=1} END {exit found ? 0 : 1}' source="$trusted_source_line" "$filepath"; then
+                            failure_reasons+=("missing exact trusted Source link inside * Summary")
+                        fi
+
+                        if ! grep -Eq "\[\[id:${TRUSTED_UMBRELLA_ID}\]\[[^]]+\]\]" "$filepath"; then
+                            failure_reasons+=("missing mandatory umbrella link to ${TRUSTED_UMBRELLA_ID}")
+                        fi
+
+                        if grep -Eq 'hxxp://|hxxps://' "$filepath"; then
+                            failure_reasons+=("contains defanged URL forms (hxxp/hxxps)")
+                        fi
+
+                        if [[ ${#failure_reasons[@]} -eq 0 ]]; then
+                            trusted_file="$filepath"
+                            echo "PASS: trusted URL candidate validated: $basename_path"
+                            break
+                        fi
+
+                        local reasons_joined
+                        reasons_joined=$(IFS='; '; echo "${failure_reasons[*]}")
+                        candidate_failures+=("$basename_path => $reasons_joined")
+                    done
+
+                    if [[ -n "$trusted_file" ]]; then
+                        echo "PASS: trusted URL capture assertions satisfied"
+                        echo "ASSERTION_7_RESULT:PASS"
+                    else
+                        echo "FAIL: no trusted URL candidate satisfied all required structure/ref/link checks"
+                        if [[ ${#candidate_failures[@]} -gt 0 ]]; then
+                            for detail in "${candidate_failures[@]}"; do
+                                echo " - $detail"
+                            done
+                        fi
+                        echo "ASSERTION_7_RESULT:FAIL"
+                    fi
+                fi
+            fi
+        fi
+        echo ""
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
+
     # Final result - read from temp file (avoids subshell variable loss issue)
     echo "=== Final Result ==="
-    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion5 final_assertion5a final_assertion5b final_assertion6
+    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion5 final_assertion5a final_assertion5b final_assertion6 final_assertion7
     final_assertion1=$(grep "ASSERTION_1_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion2=$(grep "ASSERTION_2_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion3=$(grep "ASSERTION_3_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
@@ -980,6 +1201,13 @@ PY
     final_assertion5a=$(grep "ASSERTION_5A_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion5b=$(grep "ASSERTION_5B_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion6=$(grep "ASSERTION_6_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion7=$(grep "ASSERTION_7_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+
+    for assertion_key in "${ASSERTION_RESULT_KEYS[@]}"; do
+        if ! grep -q "${assertion_key}:" "$RUN_DIR/assertion-results.txt"; then
+            echo "WARN: missing assertion marker ${assertion_key} in assertion-results.txt"
+        fi
+    done
 
     if [[ "$final_assertion1" == "PASS" &&
           "$final_assertion2" == "PASS" &&
@@ -988,6 +1216,7 @@ PY
           "$final_assertion5" == "PASS" &&
           "$final_assertion5a" == "PASS" &&
           "$final_assertion5b" == "PASS" &&
+          "$final_assertion7" == "PASS" &&
           "$TEST_STATUS" == "PASS" &&
           ( "$final_assertion6" == "PASS" || "$final_assertion6" == "WARN" || "$final_assertion6" == "SKIP" ) ]]; then
         echo "ALL ASSERTIONS PASSED"
@@ -1003,6 +1232,7 @@ PY
     echo "  Assertion 5a (No markers): $final_assertion5a"
     echo "  Assertion 5b (Order verification): $final_assertion5b"
     echo "  Assertion 6 (SCHEDULED preferences): $final_assertion6"
+    echo "  Assertion 7 (URL-capture trusted output): $final_assertion7"
     exit 1
 }
 

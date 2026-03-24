@@ -1,10 +1,6 @@
 # Specification: test-inbox-resource
 
-## Purpose
-
-Define requirements for test inbox org file.
-
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Test inbox resource file exists
 The system SHALL provide a test inbox org file at `dev/integration/testing-resources/inbox-tasks.org` that exercises both the task-processing pipeline and URL-capture inputs for trusted integration coverage.

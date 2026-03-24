@@ -1,10 +1,6 @@
 # Specification: assertions
 
-## Purpose
-
-Define requirements for integration test assertions that validate outcomes.
-
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Assertions validate test outcomes
 The system SHALL run assertions after artifact collection to validate integration test results. All configured assertions MUST run even when some fail, and assertion coverage MUST include pre-existing TODO immutability checks, occupied-window overlap policy checks, and trusted URL-capture output checks.

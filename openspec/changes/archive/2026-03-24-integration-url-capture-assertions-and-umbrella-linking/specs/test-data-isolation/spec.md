@@ -1,10 +1,6 @@
 # Specification: test-data-isolation
 
-## Purpose
-
-Define requirements for test data directory isolation.
-
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Test data directory is isolated from production
 The system SHALL use a separate `./test-data/` directory for ephemeral test data and SHALL seed deterministic baseline org-roam fixtures into runtime test directories before each integration run.

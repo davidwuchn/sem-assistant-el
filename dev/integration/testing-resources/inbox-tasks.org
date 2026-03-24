@@ -29,3 +29,7 @@
   ACCOUNT NUMBER: 123456789
   #+end_sensitive
   and sent the pdf to the vendor portal.
+
+* TODO https://semyonsinchenko.github.io/ssinchenko/post/aider_2026_and_other_topics/ :link:
+  Trusted URL fixture for aider-2026 integration assertions.
+  Keep this URL headline deterministic for URL-capture assertion checks.
