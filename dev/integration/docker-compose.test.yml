@@ -21,7 +21,13 @@ services:
       - ./dev/integration/webdav-config.test.yml:/config.yml:ro,z
       - ./dev/integration:/certs:ro,z
     environment:
+      - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-example.com}
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-changeme}
     command: ["--config", "/config.yml"]
+    restart: "no"
+
+  certbot:
+    profiles:
+      - never
     restart: "no"

@@ -317,29 +317,68 @@ docker exec sem-emacs emacsclient -e "(sem-git-sync-org-roam)"
 
 ## WebDAV TLS Setup
 
-The WebDAV service uses HTTPS on port 443. TLS certificates must be provided by the host:
+The WebDAV service uses HTTPS on port 443 and reads certificates from host-mounted
+Let's Encrypt paths.
 
 ### Prerequisites
 
-1. **TLS Certificates**: Obtain certificates (e.g., via Let's Encrypt):
-   ```bash
-   sudo certbot certonly --standalone -d your-domain.com
-   ```
+1. **DNS and networking for HTTP-01**:
+   - `WEBDAV_DOMAIN` must resolve publicly to this host.
+   - Inbound TCP port `80` must be reachable for ACME challenge validation.
 
-2. **Certificate Paths**: The docker-compose.yml expects certificates at:
-   - Certificate: `/etc/letsencrypt/live/your-domain.com/fullchain.pem`
-   - Private key: `/etc/letsencrypt/live/your-domain.com/privkey.pem`
+2. **Set required environment values** in `.env`:
+   ```bash
+   WEBDAV_DOMAIN=your-domain.com
+   CERTBOT_EMAIL=you@example.com
+   CERTBOT_STAGING=true
+   ```
 
 ### Configuration
 
-The `webdav-config.yml` is pre-configured to use certificates from `/certs/` inside the container:
+The `webdav-config.yml` is pre-configured to use Let's Encrypt live-path files:
 
 ```yaml
 server:
   tls: true
-  cert: /certs/fullchain.pem
-  key: /certs/privkey.pem
+  cert: /certs/live/{env}WEBDAV_DOMAIN/fullchain.pem
+  key: /certs/live/{env}WEBDAV_DOMAIN/privkey.pem
 ```
+
+### Certificate Issuance and Renewal (Certbot)
+
+1. **Validate issuance safely against staging CA first**:
+   ```bash
+   docker compose --profile certbot up -d certbot
+   docker compose logs -f certbot
+   ```
+
+2. **Switch to production CA** after staging succeeds:
+   ```bash
+   sed -i 's/^CERTBOT_STAGING=true/CERTBOT_STAGING=false/' .env
+   docker compose --profile certbot up -d certbot
+   docker compose logs -f certbot
+   ```
+
+3. **Start or restart WebDAV after certificates are present/renewed**:
+   ```bash
+   docker compose up -d webdav
+   ```
+
+4. **Check certificate expiry visibility**:
+   ```bash
+   sudo openssl x509 -in /etc/letsencrypt/live/$WEBDAV_DOMAIN/fullchain.pem -noout -dates
+   ```
+
+Certbot renewal runs continuously in the `certbot` service and keeps the same
+live-path contract used by WebDAV.
+
+### Troubleshooting
+
+- **Port 80 conflict**: stop other services binding `:80` before starting `certbot`.
+- **DNS issues**: confirm `WEBDAV_DOMAIN` A/AAAA records point to this host.
+- **Permission issues**: ensure `/etc/letsencrypt` files are readable in the
+  `webdav` container and SELinux labels allow mounted access.
+- **Issuance/renew failures**: inspect `docker compose logs certbot` for ACME error details.
 
 ### Orgzly HTTPS Configuration
 

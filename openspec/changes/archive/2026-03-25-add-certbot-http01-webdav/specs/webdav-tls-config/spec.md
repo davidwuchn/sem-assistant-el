@@ -1,8 +1,10 @@
+# Specification: webdav-tls-config
+
 ## Purpose
 
-TBD
+Define updated WebDAV TLS configuration behavior for Certbot-managed certificate lifecycle.
 
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Let's Encrypt certificate paths
 The `webdav-config.yml` SHALL use Let's Encrypt standard certificate filenames: `fullchain.pem` for the certificate and `privkey.pem` for the private key. The paths SHALL reference `/certs/live/<domain>/` directory structure, and this path contract SHALL remain compatible with Certbot-managed certificate issuance and renewal.
@@ -17,14 +19,6 @@ The `webdav-config.yml` SHALL use Let's Encrypt standard certificate filenames: 
 - **WHEN** inspecting the certificate paths in `webdav-config.yml`
 - **THEN** the domain SHALL be specified as `{env}WEBDAV_DOMAIN`
 - **AND** the WebDAV server SHALL expand this to the actual domain at runtime
-
-### Requirement: Docker compose mount unchanged
-The `docker-compose.yml` WebDAV service mount for certificates SHALL remain as `/etc/letsencrypt:/certs:ro` and SHALL NOT be modified.
-
-#### Scenario: Certificate mount verification
-- **WHEN** inspecting `docker-compose.yml`
-- **THEN** the webdav service volumes SHALL include `/etc/letsencrypt:/certs:ro`
-- **AND** no changes SHALL be made to this mount configuration
 
 ### Requirement: WEBDAV_DOMAIN environment variable
 The `.env.example` file SHALL include `WEBDAV_DOMAIN` with documentation explaining it must match the Let's Encrypt certificate domain. Production startup behavior SHALL fail fast when TLS is enabled but certificate files for `WEBDAV_DOMAIN` are missing, unreadable, or invalid.

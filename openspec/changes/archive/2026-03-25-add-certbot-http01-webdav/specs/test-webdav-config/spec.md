@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Define requirements for test WebDAV configuration file.
+Define integration test WebDAV configuration behavior that remains deterministic and non-TLS.
 
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Test WebDAV configuration file exists
 The system SHALL provide a WebDAV configuration file at `dev/integration/webdav-config.test.yml` for the test environment. The test configuration MUST remain independent from Certbot-managed certificate lifecycle and production TLS certificate material.

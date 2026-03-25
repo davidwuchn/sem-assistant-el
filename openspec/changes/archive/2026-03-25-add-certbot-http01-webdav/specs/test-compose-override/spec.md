@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Define requirements for Docker Compose test override file.
+Define integration test compose override behavior that remains isolated from production Certbot and TLS issuance constraints.
 
-## ADDED Requirements
+## MODIFIED Requirements
 
 ### Requirement: Test compose override file exists
 The system SHALL provide a Compose override file at `dev/integration/docker-compose.test.yml` that modifies the production compose configuration for testing. The override MUST preserve test isolation by excluding any dependency on Certbot issuance, ACME challenge port 80 reachability, and host-level `/etc/letsencrypt` state.
@@ -39,10 +39,3 @@ The system SHALL provide a Compose override file at `dev/integration/docker-comp
 - **THEN** test startup MUST NOT require a Certbot service
 - **AND** test startup MUST NOT require ACME challenge traffic on port 80
 - **AND** test startup MUST NOT require existing host `/etc/letsencrypt` certificate state
-
-### Requirement: Test runner controls WebDAV port through environment
-The integration workflow SHALL use `WEBDAV_PORT` environment override to expose WebDAV on test port `16065`.
-
-#### Scenario: Test WebDAV port set by environment
-- **WHEN** `run-integration-tests.sh` starts
-- **THEN** `WEBDAV_PORT=16065` is exported before compose startup
