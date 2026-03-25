@@ -11,7 +11,7 @@ A self-hosted Emacs daemon that autonomously processes mobile-captured Org notes
 - **Atomic Purge**: Daily cleanup of processed headlines at 4:00 AM
 - **Structured Logging**: All operations logged to `/data/sem-log.org` (readable in Orgzly)
 - **Error Handling**: Dead Letter Queue for malformed LLM output in `/data/errors.org`
-- **Bounded Retry**: Failed LLM requests retry up to 3 times before moving to DLQ
+- **Bounded Retry**: URL capture failures retry up to 3 times before moving to DLQ
 - **GitHub Sync**: Automated sync of org-roam to GitHub every 6 hours
 - **Daemon Watchdog**: Operational liveness probe every 15 minutes with startup grace and restart trigger
 - **WebDAV TLS**: HTTPS-enabled WebDAV for secure Orgzly sync
@@ -91,7 +91,7 @@ Shared volume: `/data` contains all Org files, databases, and logs.
 ### Orgzly Configuration
 
 Configure Orgzly to sync via WebDAV:
-- **URL**: `http://<your-vps-ip>/`
+- **URL**: `https://<your-domain.com>/`
 - **Username**: `orgzly` (or custom from `.env`)
 - **Password**: `<your-password>` (from `.env`)
 
@@ -105,9 +105,9 @@ Files to sync:
 
 The SEM Assistant processes headlines from `inbox-mobile.org` based on tags:
 
-### `@task` - Task Generation
+### `:task:` - Task Generation
 
-Headlines tagged with `@task` are sent to the LLM for structured task generation:
+Headlines tagged with `:task:` are sent to the LLM for structured task generation:
 
 ```org
 * Buy groceries :task:
@@ -127,13 +127,13 @@ The LLM generates a structured Org TODO entry with:
 - `:FILETAGS:` set to one of the allowed tags
 - Optional deadline/scheduled dates (if specified in original)
 
-### `@link` - URL Capture
+### `:link:` - URL Capture
 
-Headlines tagged with `@link` trigger article capture:
+Headlines tagged with `:link:` trigger article capture:
 
 ```org
-* https://example.com/article :@link:
-* Interesting article title :@link:
+* https://example.com/article :link:
+* Interesting article title :link:
 ```
 
 The system fetches the article content via trafilatura and creates an org-roam node with AI-generated summary.
@@ -176,10 +176,10 @@ Headlines that start with `http://` or `https://` are automatically treated as l
 
 | Window | Time | Reason |
 |--------|------|--------|
-| Processing | `XX:28–XX:32` and `XX:58–XX:02` (every hour) | Inbox processing performs non-atomic read-modify-write on `tasks.org` |
-| Purge | `04:00–04:05` (daily) | Inbox purge performs non-atomic file replacement on `inbox-mobile.org` |
+| Processing | `XX:28–XX:32` and `XX:58–XX:02` (every hour) | Batch output is merged into `tasks.org`; concurrent edits can still create last-writer-wins conflicts |
+| Purge | `04:00–04:05` (daily) | Purge rewrites `inbox-mobile.org`; concurrent client edits can still be superseded |
 
-**Why this matters:** The server performs non-atomic read-modify-write operations on `tasks.org` and non-atomic file replacement on `inbox-mobile.org` during these windows. If Orgzly syncs concurrently, the server's write may overwrite Orgzly's changes (or vice versa) with **no error logged** and **no warning shown**.
+**Why this matters:** The server now uses atomic file replacement, but concurrent client/server edits in these windows can still produce **last-writer-wins** outcomes with no automatic merge.
 
 **Recommendation:** Configure Orgzly to sync at safe times like `XX:15` or `XX:45` (midway between cron triggers), or sync manually when needed.
 
@@ -214,7 +214,7 @@ sem-assistant-el/
 
 ## Log Rotation
 
-Configure logrotate on the host for `./logs/messages.log`:
+Configure logrotate on the host for daily message logs in `./logs/messages-*.log`:
 
 ```bash
 sudo cp deploy/logrotate.conf /etc/logrotate.d/sem
@@ -222,7 +222,7 @@ sudo cp deploy/logrotate.conf /etc/logrotate.d/sem
 
 Example logrotate config:
 ```
-/var/home/sem/github/sem-assistant-el/logs/messages.log {
+/var/home/sem/github/sem-assistant-el/logs/messages-*.log {
     daily
     rotate 30
     compress
@@ -425,7 +425,7 @@ Results are saved to timestamped directories:
 
 ```
 test-results/
-└── YYYY-MM-DD:HH:MM:SS-run/
+└── YYYY-MM-DD-HH-MM-SS-run/
     ├── inbox-sent.org        # Copy of test inbox
     ├── tasks.org             # Processed output
     ├── sem-log.org           # Structured logs

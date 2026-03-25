@@ -32,19 +32,19 @@ The function `sem-core--batch-barrier-check` SHALL be called by each callback on
 - **WHEN** a callback completes
 - **THEN** `sem-core--batch-barrier-check` is called to evaluate if barrier should fire
 
-### Requirement: Counter starts at zero fires barrier synchronously
-When `sem-core--pending-callbacks` starts at 0 (no @task items in batch), `sem-core--batch-barrier-check` is called synchronously and the planning step is skipped.
+### Requirement: Counter starts at zero triggers immediate planner invocation
+When `sem-core--pending-callbacks` starts at 0 (no routed async items in batch), `sem-core-process-inbox` SHALL invoke the planning step immediately.
 
-#### Scenario: Counter starts at zero fires synchronously
+#### Scenario: Counter starts at zero invokes planner immediately
 - **WHEN** `sem-core--pending-callbacks` is 0 at the start of batch processing
-- **THEN** `sem-core--batch-barrier-check` is called synchronously
-- **AND** the planning step is skipped
+- **THEN** `sem-planner-run-planning-step` is called immediately
+- **AND** planner exits quickly when temp file has no tasks
 
-### Requirement: Only @link items fires barrier when captures complete
-When the batch contains only @link items (no @task items), URL capture callbacks still count toward pending. The barrier fires when all captures complete. Planning step receives 0 tasks and is skipped.
+### Requirement: Only :link: items fire barrier when captures complete
+When the batch contains only `:link:` items (no `:task:` items), URL capture callbacks still count toward pending. The barrier fires when all captures complete. Planning step receives 0 tasks and exits.
 
-#### Scenario: Only @link items completes after captures
-- **WHEN** the batch contains only @link items
+#### Scenario: Only :link: items complete after captures
+- **WHEN** the batch contains only `:link:` items
 - **THEN** URL capture callbacks decrement `sem-core--pending-callbacks`
 - **AND** when the last capture completes, `sem-core--batch-barrier-check` is called
-- **AND** the planning step receives 0 tasks and is skipped
+- **AND** the planning step receives 0 tasks and exits

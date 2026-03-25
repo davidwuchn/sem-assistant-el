@@ -13,7 +13,7 @@ The system SHALL provide a Compose override file at `dev/integration/docker-comp
 - **WHEN** the test compose file is applied
 - **THEN** the `webdav` service MUST override the volume mount of `webdav-config.yml` to use `dev/integration/webdav-config.test.yml`
 - **AND** the `/etc/letsencrypt:/certs:ro` volume MUST be removed
-- **AND** the port mapping MUST be changed to `16065:6065`
+- **AND** test certificates from `./dev/integration:/certs:ro,z` MUST be mounted
 - **AND** `restart` MUST be set to `"no"`
 
 #### Scenario: Emacs service is overridden
@@ -31,4 +31,12 @@ The system SHALL provide a Compose override file at `dev/integration/docker-comp
 
 #### Scenario: Override inherits from base compose
 - **WHEN** the test compose file is loaded
-- **THEN** it MUST NOT redefine image, build context, environment variables, or depends_on — those MUST be inherited from `docker-compose.yml`
+- **THEN** it MAY override service-level fields needed for test isolation (for example `image`, `environment`, `volumes`, and `restart`)
+- **AND** it SHALL still rely on base compose for unspecified fields
+
+### Requirement: Test runner controls WebDAV port through environment
+The integration workflow SHALL use `WEBDAV_PORT` environment override to expose WebDAV on test port `16065`.
+
+#### Scenario: Test WebDAV port set by environment
+- **WHEN** `run-integration-tests.sh` starts
+- **THEN** `WEBDAV_PORT=16065` is exported before compose startup

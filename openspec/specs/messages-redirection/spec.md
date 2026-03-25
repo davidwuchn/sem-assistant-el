@@ -45,7 +45,7 @@ The system SHALL add `sem-core--flush-messages-daily` to `post-command-hook`. Th
 - **WHEN** `sem-core--flush-messages-daily` writes to the log file
 - **THEN** it appends (does not overwrite) using `write-region` with `t` argument
 
-### Requirement: messages.log not rotated by daemon
+### Requirement: daily message logs not rotated by daemon
 The system SHALL NOT rotate individual daily log files. Each day's file grows until the next day begins, at which point a new file is created. Log rotation on the host SHALL remain the operator's responsibility (e.g., `logrotate` on the host).
 
 #### Scenario: No automatic rotation within a day

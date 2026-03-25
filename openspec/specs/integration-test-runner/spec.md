@@ -33,14 +33,13 @@ The system SHALL provide a single Bash script at `dev/integration/run-integratio
 - **WHEN** executing `podman`, `curl`, or `emacs --batch` commands
 - **THEN** the script MUST check exit codes and MUST NOT silently swallow errors with `|| true` unless the specific silent-failure is documented inline with a comment
 
-### Requirement: Integration test compose override uses Eask-enabled Emacs image
-The integration test compose override SHALL use an Emacs image that includes Eask tooling
-so integration environments match the Eask-based package management workflow.
+### Requirement: Integration test compose override stays compatible with base Emacs service
+The integration test compose override SHALL remain compatible with the base compose Emacs service and apply only test-specific overrides required for integration execution.
 
-#### Scenario: Test compose override references Eask image
+#### Scenario: Test compose override does not require fixed Emacs image name
 - **WHEN** `docker-compose.test.yml` is inspected
-- **THEN** the Emacs service image is `silex/emacs:master-alpine-ci-eask`
+- **THEN** the Emacs service is not required to use a hardcoded image tag
 
-#### Scenario: Integration test environment provides eask command
+#### Scenario: Integration test runner relies on emacsclient execution
 - **WHEN** integration test containers are started with the test compose override
-- **THEN** the Emacs container environment has the `eask` command available
+- **THEN** the runner verifies Emacs readiness and executes workflow through `emacsclient`

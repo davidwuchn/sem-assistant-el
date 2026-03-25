@@ -21,7 +21,7 @@ The system SHALL NOT apply URL sanitization (defanging) to url-capture org-roam 
 The system SHALL provide `sem-url-capture-process` as a non-interactive function callable from `sem-router.el`. The function SHALL accept a URL and headline metadata, run the full capture pipeline, and return the saved filepath on success or `nil` on failure.
 
 #### Scenario: url-capture called with valid URL
-- **WHEN** `sem-router.el` calls `sem-url-capture-process` with a URL from an `@link` headline
+- **WHEN** `sem-router.el` calls `sem-url-capture-process` with a URL from a `:link:` headline
 - **THEN** the full pipeline executes: fetch, sanitize, query umbrella nodes, LLM, validate, save
 
 #### Scenario: Success returns filepath
@@ -204,7 +204,7 @@ The system SHALL implement bounded retry for URL capture failures. When `sem-url
 - **AND** the headline is moved to `/data/errors.org`
 
 ### Requirement: Retry counter uses headline content hash
-The system SHALL use the headline content hash as the retry counter key. The key format SHALL match the existing `@task` retry key format.
+The system SHALL use the headline content hash as the retry counter key. The key format SHALL match the existing `:task:` retry key format.
 
 #### Scenario: Same headline content same key
 - **WHEN** two headlines have identical content

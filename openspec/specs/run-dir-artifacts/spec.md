@@ -7,7 +7,7 @@ Define requirements for test run directory creation and artifact collection.
 ## ADDED Requirements
 
 ### Requirement: Run directory is created with timestamp
-The system SHALL create a timestamped directory `test-results/YYYY-MM-DD:HH:MM:SS-run/` at the start of each test run and SHALL collect both task-flow artifacts and URL-capture org-roam artifacts with baseline-versus-new visibility.
+The system SHALL create a timestamped directory `test-results/YYYY-MM-DD-HH-MM-SS-run/` at the start of each test run and SHALL collect both task-flow artifacts and URL-capture org-roam artifacts with baseline-versus-new visibility.
 
 #### Scenario: Test results directory is created if absent
 - **WHEN** the test script starts and `test-results/` does not exist
@@ -15,7 +15,7 @@ The system SHALL create a timestamped directory `test-results/YYYY-MM-DD:HH:MM:S
 
 #### Scenario: Run directory uses correct timestamp format
 - **WHEN** a test run starts
-- **THEN** the run directory MUST be named using the format produced by `date +%Y-%m-%d:%H:%M:%S`
+- **THEN** the run directory MUST be named using the format produced by `date +%Y-%m-%d-%H-%M-%S`
 
 #### Scenario: Test results directory is git-ignored
 - **WHEN** the test script runs
@@ -27,15 +27,15 @@ The system SHALL create a timestamped directory `test-results/YYYY-MM-DD:HH:MM:S
 
 #### Scenario: Tasks org is fetched from WebDAV
 - **WHEN** artifact collection runs
-- **THEN** the script MUST GET `http://localhost:16065/tasks.org` and save it as `tasks.org`
+- **THEN** the script MUST GET `http://localhost:16065/data/tasks.org` and save it as `tasks.org`
 
 #### Scenario: Sem log is fetched from WebDAV
 - **WHEN** artifact collection runs
-- **THEN** the script MUST GET `http://localhost:16065/sem-log.org` and save it as `sem-log.org`
+- **THEN** the script MUST GET `http://localhost:16065/data/sem-log.org` and save it as `sem-log.org`
 
 #### Scenario: Errors org is fetched from WebDAV
 - **WHEN** artifact collection runs
-- **THEN** the script MUST attempt to GET `http://localhost:16065/errors.org` and save it as `errors.org`
+- **THEN** the script MUST attempt to GET `http://localhost:16065/data/errors.org` and save it as `errors.org`
 - **AND** if the file returns HTTP 404, the script MUST skip silently
 
 #### Scenario: URL-capture org-roam artifacts are collected

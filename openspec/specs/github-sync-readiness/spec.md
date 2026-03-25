@@ -1,6 +1,6 @@
 ## Purpose
 
-This capability defines the git repository initialization for the org-roam directory, preparing for future GitHub synchronization.
+This capability defines git repository initialization and SSH wiring for active org-roam GitHub synchronization.
 
 ## Requirements
 
@@ -27,7 +27,7 @@ The system SHALL write `/data/org-roam/.gitignore` with entries: `org-roam.db`, 
 - **THEN** `org-roam.db` and related files are ignored
 
 ### Requirement: SSH credentials volume declared
-A read-only SSH credentials volume SHALL be declared in docker-compose for the Emacs container: `~/.ssh/vps-org-roam:/root/.ssh:ro`. This volume is currently empty/unused but pre-wired for future github-integration.
+A read-only SSH credentials volume SHALL be declared in docker-compose for the Emacs container: `~/.ssh/vps-org-roam:/root/.ssh:ro`. This volume is used by the git-sync module for repository authentication.
 
 #### Scenario: SSH volume declared
 - **WHEN** inspecting `docker-compose.yml`

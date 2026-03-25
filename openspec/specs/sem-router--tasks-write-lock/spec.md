@@ -1,11 +1,11 @@
 ## Purpose
 
-This capability defines a mutex/lock mechanism to serialize concurrent writes to `tasks.org` from multiple async LLM callbacks.
+This capability defines a mutex/lock helper mechanism in `sem-router.el` that can serialize concurrent write callbacks when direct shared-file writes are needed.
 
 ## Requirements
 
 ### Requirement: Boolean flag for write serialization
-The system SHALL provide a `defvar` boolean flag `sem-router--tasks-write-lock` with default value `nil`. This flag SHALL act as a mutex to prevent concurrent writes to `/data/tasks.org`.
+The system SHALL provide a `defvar` boolean flag `sem-router--tasks-write-lock` with default value `nil`. This flag SHALL act as a mutex for guarded callback sections.
 
 #### Scenario: Flag defaults to nil
 - **WHEN** Emacs starts
@@ -23,7 +23,7 @@ The system SHALL acquire the lock atomically by checking if `sem-router--tasks-w
 - **THEN** the lock is set to `t` and the callback proceeds
 
 #### Scenario: Lock released after write
-- **WHEN** a callback completes writing to tasks.org
+- **WHEN** a callback completes its guarded section
 - **THEN** the lock is set back to `nil`
 
 #### Scenario: Lock released on error
@@ -46,12 +46,12 @@ The system SHALL allow a maximum of 10 retry attempts. After 10 failed retries, 
 
 #### Scenario: Item succeeds within 10 retries
 - **WHEN** a callback acquires the lock on or before the 10th retry
-- **THEN** it writes to tasks.org and releases the lock
+- **THEN** it executes the guarded callback and releases the lock
 
 #### Scenario: Item routed to DLQ after 10 retries
 - **WHEN** a callback fails to acquire the lock after 10 retries
 - **THEN** `sem-core-log-error` is called with the item details
-- **AND** the item is not written to tasks.org
+- **AND** the guarded callback is not executed
 
 #### Scenario: Lock not held after DLQ
 - **WHEN** an item is routed to DLQ after exhausting retries

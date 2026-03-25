@@ -6,16 +6,16 @@ Define requirements for uploading test inbox to WebDAV via HTTP PUT.
 
 ## ADDED Requirements
 
-### Requirement: WebDAV URL path uses /data/ prefix
-The system SHALL construct WebDAV upload URLs with a `/data/` prefix in the path. The full URL SHALL be `${WEBDAV_BASE_URL}/data/inbox-mobile.org` (not `${WEBDAV_BASE_URL}/inbox-mobile.org`).
+### Requirement: WebDAV upload path uses root-scoped inbox file
+The system SHALL construct WebDAV upload URLs for inbox upload as `${WEBDAV_BASE_URL}/inbox-mobile.org`.
 
-#### Scenario: WebDAV URL includes data prefix
+#### Scenario: WebDAV URL uses root-scoped inbox path
 - **WHEN** uploading the inbox file
-- **THEN** the URL path is `${WEBDAV_BASE_URL}/data/inbox-mobile.org`
+- **THEN** the URL path is `${WEBDAV_BASE_URL}/inbox-mobile.org`
 
 #### Scenario: WebDAV URL path structure
 - **WHEN** the WebDAV base URL is `https://dav.example.com/webdav`
-- **THEN** the upload URL is `https://dav.example.com/webdav/data/inbox-mobile.org`
+- **THEN** the upload URL is `https://dav.example.com/webdav/inbox-mobile.org`
 
 
 

@@ -20,15 +20,15 @@ The system SHALL expose the `/data` directory over WebDAV protocol with HTTP Bas
 - **THEN** all clients receive consistent file content without errors
 
 ### Requirement: WebDAV credentials configured via environment variables
-The system SHALL read WebDAV username and password hash from environment variables (`WEBDAV_USER`, `WEBDAV_HASH`). Credentials SHALL NOT be hardcoded in configuration files or container images.
+The system SHALL read WebDAV username and password from environment variables (`WEBDAV_USERNAME`, `WEBDAV_PASSWORD`). Credentials SHALL NOT be hardcoded in configuration files or container images.
 
 #### Scenario: Credentials loaded from environment
-- **WHEN** the container starts with `WEBDAV_USER` and `WEBDAV_HASH` set in the environment
+- **WHEN** the container starts with `WEBDAV_USERNAME` and `WEBDAV_PASSWORD` set in the environment
 - **THEN** the WebDAV server authenticates users against these credentials
 
-#### Scenario: Missing credentials cause startup failure
-- **WHEN** `WEBDAV_USER` or `WEBDAV_HASH` is not set in the environment
-- **THEN** the WebDAV container fails to start and logs an error
+#### Scenario: Credentials have compose defaults
+- **WHEN** `WEBDAV_USERNAME` or `WEBDAV_PASSWORD` is not set in the environment
+- **THEN** the compose defaults are used for startup
 
 ### Requirement: Emacs lock files disabled to prevent WebDAV sync failures
 The system SHALL disable Emacs lock file creation (`create-lockfiles nil`) to prevent `.#lock` files from syncing to Orgzly and causing sync conflicts.

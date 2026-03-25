@@ -10,7 +10,7 @@ Define the Pass 1 normalization contract so noisy mobile captures are transforme
 The Pass 1 task prompt SHALL define an explicit normalization contract that transforms raw mobile capture text into a structured Org TODO output with cleaned title, useful body content, mandatory priority, and best-effort scheduling hints.
 
 #### Scenario: Prompt states transform objective
-- **WHEN** the Pass 1 prompt is assembled for an `@task` headline
+- **WHEN** the Pass 1 prompt is assembled for a `:task:` headline
 - **THEN** it explicitly instructs the model to transform raw capture text into a complete structured TODO entry
 - **AND** it requires normalized title and body content rather than format-only rewriting
 

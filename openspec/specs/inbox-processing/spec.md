@@ -1,11 +1,11 @@
 ## Purpose
 
-This capability defines the inbox processing pipeline that reads headlines from inbox-mobile.org, routes them through the LLM or URL capture, and writes structured output to tasks.org or org-roam nodes.
+This capability defines the inbox processing pipeline that reads headlines from inbox-mobile.org, routes them through the LLM or URL capture, writes Pass 1 task output to a batch temp file, and then merges final output into tasks.org via planner.
 
 ## Requirements
 
 ### Requirement: Inbox processing runs every 30 minutes
-The system SHALL execute inbox processing every 30 minutes via cron. Each run SHALL read unprocessed headlines from `/data/inbox-mobile.org`, pass them through the LLM, and write structured output to `/data/tasks.org`.
+The system SHALL execute inbox processing every 30 minutes via cron. Each run SHALL read unprocessed headlines from `/data/inbox-mobile.org`, route task headlines through Pass 1 LLM processing into `/tmp/data/tasks-tmp-{batch-id}.org`, and trigger planner to append merged output into `/data/tasks.org`.
 
 #### Scenario: Scheduled inbox processing executes
 - **WHEN** the cron schedule triggers at 30-minute intervals
@@ -15,9 +15,9 @@ The system SHALL execute inbox processing every 30 minutes via cron. Each run SH
 - **WHEN** `/data/inbox-mobile.org` contains headlines not yet in the cursor file
 - **THEN** each unprocessed headline is sent through the LLM pipeline
 
-#### Scenario: Processed output is written to tasks.org
-- **WHEN** the LLM returns valid structured Org output
-- **THEN** the output is appended to `/data/tasks.org`
+#### Scenario: Pass 1 output is written to batch temp file
+- **WHEN** the LLM returns valid structured Org output for a task headline
+- **THEN** the output is appended to `/tmp/data/tasks-tmp-{batch-id}.org`
 
 ### Requirement: inbox-mobile.org is read-only except during 4AM purge window
 The system SHALL NOT write to `/data/inbox-mobile.org` at any time except during the 4:00 AM daily purge window. LLM output SHALL NEVER be written back to `inbox-mobile.org`.
@@ -26,9 +26,9 @@ The system SHALL NOT write to `/data/inbox-mobile.org` at any time except during
 - **WHEN** inbox processing runs at any time other than 4:00 AM
 - **THEN** `/data/inbox-mobile.org` is opened read-only and not modified
 
-#### Scenario: LLM output goes to tasks.org only
+#### Scenario: LLM output never goes back to inbox-mobile.org
 - **WHEN** the LLM pipeline produces structured task output
-- **THEN** output is written to `/data/tasks.org`, not to `inbox-mobile.org`
+- **THEN** output is written to the batch temp file and later merged into `/data/tasks.org`, never to `inbox-mobile.org`
 
 ### Requirement: Processed node identity tracked via content hashes
 The system SHALL track processed headlines using `/data/.sem-cursor.el` containing content hashes. A headline SHALL be marked as processed only after successful output is written.
@@ -63,15 +63,15 @@ The system SHALL detect malformed LLM output (non-valid Org structure). Malforme
 - **WHEN** malformed output is sent to the Dead Letter Queue
 - **THEN** the node hash is added to `.sem-cursor.el` to prevent infinite retry
 
-### Requirement: @link tagged headlines routed to url-capture
-The system SHALL detect headlines tagged with `@link`. These headlines SHALL be routed to `sem-url-capture-process` instead of the task LLM pipeline. The URL SHALL be extracted from the bare headline title text.
+### Requirement: :link: tagged headlines routed to url-capture
+The system SHALL detect headlines tagged with `:link:`. These headlines SHALL be routed to `sem-url-capture-process` instead of the task LLM pipeline. The URL SHALL be extracted from the bare headline title text.
 
-#### Scenario: @link headline routed to url-capture
-- **WHEN** a headline has the tag `@link` (e.g. `* https://example.com :@link:`)
+#### Scenario: :link: headline routed to url-capture
+- **WHEN** a headline has the tag `:link:` (e.g. `* https://example.com :link:`)
 - **THEN** `sem-router.el` calls `sem-url-capture-process` with the URL
 
 #### Scenario: URL extracted from headline title
-- **WHEN** processing an `@link` headline
+- **WHEN** processing a `:link:` headline
 - **THEN** the URL is extracted directly from the headline title string
 
 ### Requirement: inbox-mobile.org non-existence handled gracefully
@@ -89,15 +89,15 @@ The system SHALL handle the case where `/data/inbox-mobile.org` does not exist w
 - **WHEN** `sem-router--parse-headlines` executes with `cl-return-from` statements
 - **THEN** no crash occurs due to missing `cl-block` wrapper
 
-### Requirement: @task tagged headlines routed to task LLM pipeline
-The system SHALL detect headlines tagged with `@task`. These headlines SHALL be routed to `sem-router--route-to-task-llm` for LLM processing instead of being silently discarded. The routing SHALL occur in `sem-router--route-headline` after checking for `@link` tags.
+### Requirement: :task: tagged headlines routed to task LLM pipeline
+The system SHALL detect headlines tagged with `:task:`. These headlines SHALL be routed to `sem-router--route-to-task-llm` for LLM processing instead of being silently discarded. The routing SHALL occur after checking for `:link:` tags and URL-title routing.
 
-#### Scenario: @task headline routed to task LLM
-- **WHEN** a headline has the tag `@task` (e.g. `* Task description :@task:`)
+#### Scenario: :task: headline routed to task LLM
+- **WHEN** a headline has the tag `:task:` (e.g. `* Task description :task:`)
 - **THEN** `sem-router.el` calls `sem-router--route-to-task-llm` with the headline content
 
-#### Scenario: @task headline not silently discarded
-- **WHEN** an `@task` headline is processed
+#### Scenario: :task: headline not silently discarded
+- **WHEN** a `:task:` headline is processed
 - **THEN** the headline is sent to the LLM, not marked processed without LLM call
 
 ### Requirement: tasks.org created on first write if absent
@@ -141,7 +141,7 @@ The README SHALL contain a **WARNING** section immediately after the "Scheduled 
 
 #### Scenario: Warning explains reason
 - **WHEN** reading the Orgzly Sync Timing warning
-- **THEN** it explains that concurrent writes cause silent data loss due to non-atomic read-modify-write operations
+- **THEN** it explains that concurrent client/server edits can still conflict despite atomic file replacement
 
 ## ADDED Requirements
 

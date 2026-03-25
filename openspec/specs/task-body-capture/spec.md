@@ -20,11 +20,11 @@ The system SHALL parse Org headlines using `org-element-parse-buffer` and `org-e
 - **THEN** the parent's `:body` contains only `"Parent body"` and excludes the child headline and its content
 
 #### Scenario: Body includes paragraphs and lists
-- **WHEN** parsing an Org file containing `* Task :@task:\n- Item 1\n- Item 2\n\nParagraph text`
+- **WHEN** parsing an Org file containing `* Task :task:\n- Item 1\n- Item 2\n\nParagraph text`
 - **THEN** the returned plist contains `:body` with the combined list and paragraph text
 
 #### Scenario: Body excludes property drawers and planning lines
-- **WHEN** parsing an Org file containing `* Task :@task:\n:PROPERTIES:\n:ID: abc\n:END:\nBody text`
+- **WHEN** parsing an Org file containing `* Task :task:\n:PROPERTIES:\n:ID: abc\n:END:\nBody text`
 - **THEN** the property drawer content is handled correctly and `:body` contains `"Body text"`
 
 ### Requirement: Hash computation includes body content

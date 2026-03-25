@@ -22,18 +22,20 @@ The `sem-llm` module SHALL wrap all LLM callbacks in `condition-case`. Errors in
 - **WHEN** an LLM callback raises an error
 - **THEN** the error is caught and logged, not propagated
 
-### Requirement: Retry vs DLQ decision enforced
-The `sem-llm` module SHALL enforce the retry-vs-DLQ decision:
-- API error (429, timeout): do NOT mark processed, retry on next run
-- Malformed output (invalid Org): mark processed and send to DLQ
+### Requirement: Retry vs DLQ decision delegated to caller modules
+The `sem-llm` module SHALL return success/failure to callers, and caller modules SHALL enforce retry-vs-DLQ policy:
+- API error (429, timeout): caller decides retry behavior
+- Malformed output (invalid Org): caller decides DLQ behavior
 
 #### Scenario: API error triggers retry
 - **WHEN** the LLM API returns an error (429, timeout)
-- **THEN** the node hash is NOT added to the cursor; it will retry
+- **THEN** `sem-llm` invokes callback with error context
+- **AND** caller modules decide whether to retry and whether to mark processed
 
 #### Scenario: Malformed output triggers DLQ
 - **WHEN** the LLM returns malformed output (not valid Org)
-- **THEN** the node hash IS added to the cursor and output goes to DLQ
+- **THEN** `sem-llm` passes response back to caller callback
+- **AND** caller modules perform validation and DLQ handling
 
 ### Requirement: sem-llm calls sem-core-log on success/failure
 The `sem-llm` module SHALL call `sem-core-log` on both success and failure of LLM requests.

@@ -115,9 +115,10 @@ When all 3 Pass 2 retries are exhausted, tasks SHALL be written to tasks.org wit
 - **THEN** tasks are written with Pass 1 provisional SCHEDULED times
 - **AND** an error is logged with `sem-core-log-error` module `planner`
 
-### Requirement: Default planning prompt
-Pass 2 SHALL use the default planning prompt "schedule tasks" unless overridden.
+### Requirement: Pass 2 uses structured planning prompt
+Pass 2 SHALL build a structured planning prompt that includes runtime bounds, user rules, existing schedule context, occupied windows, and anonymized task metadata.
 
-#### Scenario: Default prompt used
-- **WHEN** Pass 2 runs without a custom prompt
-- **THEN** the prompt "schedule tasks" is used
+#### Scenario: Structured prompt used
+- **WHEN** Pass 2 runs
+- **THEN** the prompt includes runtime bounds and scheduling rules
+- **AND** the prompt requests one-line scheduling decisions per task ID
