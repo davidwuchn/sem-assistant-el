@@ -24,6 +24,7 @@
 (require 'sem-core)
 (require 'sem-llm)
 (require 'sem-prompts)
+(require 'sem-security)
 
 ;;; Constants
 
@@ -33,14 +34,19 @@
 (defconst sem-url-capture-umbrella-tag "umbrella"
   "Tag used to identify umbrella (semantic hub) nodes in org-roam.")
 
+(defconst sem-url-capture-timeout-seconds 300
+  "Maximum wall-clock timeout in seconds for one URL capture attempt.")
+
 ;;; URL Fetching
 
-(defun sem-url-capture--fetch-url (url)
+(defun sem-url-capture--fetch-url (url &optional timeout-seconds)
   "Fetch content from URL using trafilatura CLI.
 
 Uses `trafilatura -u URL --markdown --no-comments --fast` to extract
-readable content. Returns the raw markdown string on success, or nil
-on failure.
+readable content. Returns a plist with:
+- :content string on success
+- :kind symbol (`timeout' or `error') on failure
+- :message string describing the failure
 
 Signals an error if trafilatura binary is not found."
   (unless (executable-find "trafilatura")
@@ -48,19 +54,46 @@ Signals an error if trafilatura binary is not found."
 
   (let ((temp-buffer (generate-new-buffer " *trafilatura-temp*")))
     (unwind-protect
-        (let ((exit-code
-               (with-current-buffer temp-buffer
-                 (call-process "trafilatura" nil temp-buffer nil
-                               "-u" url "--markdown" "--no-comments" "--fast"))))
-          (if (and (numberp exit-code) (= exit-code 0))
-              (with-current-buffer temp-buffer
-                (buffer-substring-no-properties (point-min) (point-max)))
-            (sem-core-log "url-capture" "URL-CAPTURE" "RETRY"
-                          (format "trafilatura failed exit=%d" exit-code)
-                          nil)
-            nil))
+        (let* ((timeout-enabled (and timeout-seconds (> timeout-seconds 0) (executable-find "timeout")))
+               (command (if timeout-enabled "timeout" "trafilatura"))
+               (args (if timeout-enabled
+                         (list (number-to-string (ceiling timeout-seconds))
+                               "trafilatura" "-u" url "--markdown" "--no-comments" "--fast")
+                       (list "-u" url "--markdown" "--no-comments" "--fast")))
+               (exit-code
+                (with-current-buffer temp-buffer
+                  (apply #'call-process command nil temp-buffer nil args))))
+          (cond
+           ((and (numberp exit-code) (= exit-code 0))
+            (list :content
+                  (with-current-buffer temp-buffer
+                    (buffer-substring-no-properties (point-min) (point-max)))))
+           ((and timeout-enabled (= exit-code 124))
+            (list :kind 'timeout
+                  :message (format "trafilatura timed out after %ds"
+                                   (ceiling timeout-seconds))))
+           (t
+            (list :kind 'error
+                  :message (format "trafilatura failed exit=%d" exit-code)))))
       (when (buffer-live-p temp-buffer)
         (kill-buffer temp-buffer)))))
+
+(defun sem-url-capture--remaining-seconds (deadline)
+  "Return remaining seconds until DEADLINE, or 0 when expired."
+  (max 0.0 (float-time (time-subtract deadline (current-time)))))
+
+(defun sem-url-capture--timeout-error-p (error-value)
+  "Return non-nil when ERROR-VALUE describes a timeout condition."
+  (let ((error-string (if error-value (downcase (format "%s" error-value)) "")))
+    (or (string-match-p "timeout" error-string)
+        (string-match-p "timed out" error-string))))
+
+(defun sem-url-capture--log-timeout-fail (url stage)
+  "Log timeout `FAIL' for URL at STAGE with explicit message."
+  (sem-core-log "url-capture" "URL-CAPTURE" "FAIL"
+                (format "Timeout after %ds at stage=%s url=%s"
+                        sem-url-capture-timeout-seconds stage url)
+                nil))
 
 ;;; Text Sanitization
 
@@ -303,71 +336,118 @@ It orchestrates the full pipeline:
 6. Request LLM to generate org-roam node via sem-llm-request
 7. Validate and save the result
 
-Returns immediately (async). The CALLBACK is invoked when complete.
+Returns t when async processing starts successfully.
+Returns nil when setup fails before async execution starts.
+
+The CALLBACK is invoked when complete.
 If no callback is provided, processing still happens asynchronously."
-  (condition-case err
-      (progn
-        (sem-core-log "url-capture" "URL-CAPTURE" "OK"
-                      (format "Processing URL: %s" url)
-                      nil)
+  (cl-block sem-url-capture-process
+    (condition-case err
+        (let* ((deadline (time-add (current-time)
+                                   (seconds-to-time sem-url-capture-timeout-seconds)))
+               (remaining-seconds (sem-url-capture--remaining-seconds deadline)))
+          (sem-core-log "url-capture" "URL-CAPTURE" "OK"
+                        (format "Processing URL: %s" url)
+                        nil)
+
+        (when (<= remaining-seconds 0)
+          (sem-url-capture--log-timeout-fail url "orchestration")
+          (when callback
+            (funcall callback nil (list :url url :failure-kind 'timeout)))
+          (cl-return-from sem-url-capture-process nil))
 
         ;; Fetch URL content
-        (let ((raw-content (sem-url-capture--fetch-url url)))
+        (let* ((fetch-result (sem-url-capture--fetch-url url remaining-seconds))
+               (raw-content (plist-get fetch-result :content))
+               (fetch-kind (plist-get fetch-result :kind)))
           (if raw-content
               (let* ((sanitized (sem-url-capture--sanitize-text raw-content))
-                     ;; Apply security masking: sanitize sensitive blocks before LLM
-                     (security-result (sem-security-sanitize-for-llm sanitized))
-                     (tokenized-text (car security-result))
-                     (security-blocks (cadr security-result))
-                     (umbrella-nodes (sem-url-capture--get-umbrella-nodes))
-                     (system-prompt (sem-url-capture--build-system-prompt))
-                     (user-prompt (sem-url-capture--build-user-prompt url tokenized-text umbrella-nodes)))
+                      ;; Apply security masking: sanitize sensitive blocks before LLM
+                      (security-result (sem-security-sanitize-for-llm sanitized))
+                      (tokenized-text (car security-result))
+                      (security-blocks (cadr security-result))
+                      (umbrella-nodes (sem-url-capture--get-umbrella-nodes))
+                      (system-prompt (sem-url-capture--build-system-prompt))
+                      (user-prompt (sem-url-capture--build-user-prompt url tokenized-text umbrella-nodes))
+                      (completed nil)
+                      (timeout-timer nil)
+                      (llm-remaining-seconds (sem-url-capture--remaining-seconds deadline)))
+
+                (when (<= llm-remaining-seconds 0)
+                  (sem-url-capture--log-timeout-fail url "orchestration")
+                  (when callback
+                    (funcall callback nil (list :url url :failure-kind 'timeout)))
+                  (cl-return-from sem-url-capture-process nil))
+
+                (setq timeout-timer
+                      (run-at-time llm-remaining-seconds nil
+                                   (lambda ()
+                                     (unless completed
+                                       (setq completed t)
+                                       (sem-url-capture--log-timeout-fail url "orchestration")
+                                       (when callback
+                                         (funcall callback nil (list :url url :failure-kind 'timeout)))))))
 
                 ;; Request LLM via sem-llm-request with callback
                 (require 'sem-llm)
                 (sem-llm-request user-prompt system-prompt
                                  (lambda (response info context)
-                                   "Callback for sem-llm-request.
+                                    "Callback for sem-llm-request.
 Calls sem-url-capture--validate-and-save with restored sensitive content."
-                                   (let ((filepath nil)
-                                         (url (plist-get context :url)))
-                                      (if (and response (not (string-empty-p response)))
-                                          ;; Restore sensitive blocks before validation
-                                          (let ((restored-response (sem-security-restore-from-llm response (plist-get context :security-blocks))))
-                                            (setq filepath (sem-url-capture--validate-and-save restored-response url))
-                                            (when filepath
-                                              (setq context (plist-put context :security-blocks nil))))
-                                        (progn
-                                          (sem-core-log-error "url-capture" "URL-CAPTURE"
-                                                              (format "LLM request failed: %s"
-                                                                      (plist-get info :error))
-                                                              url
-                                                              response)
-                                          (setq filepath nil)))
-                                      ;; Call the completion callback if provided
-                                      (when callback
-                                        (funcall callback filepath context))))
+                                    (unless completed
+                                      (setq completed t)
+                                      (when timeout-timer
+                                        (cancel-timer timeout-timer)
+                                        (setq timeout-timer nil))
+                                      (let ((filepath nil)
+                                            (url (plist-get context :url))
+                                            (error-value (plist-get info :error)))
+                                        (if (and response (not (string-empty-p response)))
+                                            ;; Restore sensitive blocks before validation
+                                            (let ((restored-response (sem-security-restore-from-llm response (plist-get context :security-blocks))))
+                                              (setq filepath (sem-url-capture--validate-and-save restored-response url))
+                                              (when filepath
+                                                (setq context (plist-put context :security-blocks nil))))
+                                          (progn
+                                            (if (sem-url-capture--timeout-error-p error-value)
+                                                (progn
+                                                  (sem-url-capture--log-timeout-fail url "llm")
+                                                  (setq context (plist-put context :failure-kind 'timeout)))
+                                              (sem-core-log-error "url-capture" "URL-CAPTURE"
+                                                                  (format "LLM request failed: %s"
+                                                                          error-value)
+                                                                  url
+                                                                  response))
+                                            (setq filepath nil)))
+                                        ;; Call the completion callback if provided
+                                        (when callback
+                                          (funcall callback filepath context)))))
                                  (list :security-blocks security-blocks :url url))
 
                 ;; Return immediately - processing continues asynchronously
                 t)
-            (sem-core-log-error "url-capture" "URL-CAPTURE"
-                                "Failed to fetch content"
-                                url
-                                nil)
-            ;; Call callback with failure if provided
-            (when callback
-              (funcall callback nil (list :url url)))
-            nil)))
-    (error
-     (sem-core-log-error "url-capture" "URL-CAPTURE"
-                         (error-message-string err)
-                         url
-                         nil)
-     ;; Call callback with failure if provided
-     (when callback
-       (funcall callback nil (list :url url)))
-     nil)))
+            (progn
+              (if (eq fetch-kind 'timeout)
+                  (sem-url-capture--log-timeout-fail url "fetch")
+                (sem-core-log-error "url-capture" "URL-CAPTURE"
+                                    (or (plist-get fetch-result :message) "Failed to fetch content")
+                                    url
+                                    nil))
+              ;; Call callback with failure if provided
+              (when callback
+                (funcall callback nil (if (eq fetch-kind 'timeout)
+                                          (list :url url :failure-kind 'timeout)
+                                        (list :url url))))
+              nil))))
+      (error
+       (sem-core-log-error "url-capture" "URL-CAPTURE"
+                           (error-message-string err)
+                           url
+                           nil)
+       ;; Call callback with failure if provided
+       (when callback
+         (funcall callback nil (list :url url)))
+       nil))))
 
 (provide 'sem-url-capture)
 ;;; sem-url-capture.el ends here

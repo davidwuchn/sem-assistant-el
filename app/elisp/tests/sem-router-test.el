@@ -671,5 +671,41 @@ Empty body is valid for zero-body headlines."
     ;; The when check for adding BODY section should succeed
     (should (when sanitized-body t))))
 
+(ert-deftest sem-router-test-url-capture-timeout-retries-without-cursor-mark ()
+  "Test URL capture timeout increments retry and does not mark processed."
+  (let* ((hash "timeout-hash-123")
+         (url "https://example.com/timeout")
+         (captured-timeout-log nil)
+         (test-cursor-file (make-temp-file "sem-cursor-timeout-test-"))
+         (test-retries-file (make-temp-file "sem-retries-timeout-test-")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'sem-router--parse-headlines)
+                   (lambda ()
+                     (list (list :title url
+                                 :tags '("link")
+                                 :body nil
+                                 :link url
+                                 :hash hash))))
+                  ((symbol-function 'sem-url-capture-process)
+                   (lambda (_url callback)
+                     (funcall callback nil (list :url url :failure-kind 'timeout))
+                     t))
+                  ((symbol-function 'sem-core--batch-barrier-check)
+                   (lambda () nil))
+                  ((symbol-function 'sem-core-log)
+                   (lambda (_module event status message &optional _raw)
+                     (when (and (string= event "URL-CAPTURE")
+                                (string= status "FAIL")
+                                (string-match-p "timeout" message))
+                       (setq captured-timeout-log t)))))
+          (let ((sem-core-cursor-file test-cursor-file)
+                (sem-core-retries-file test-retries-file))
+            (sem-router-process-inbox)
+            (should (= (sem-core--get-retry-count hash) 1))
+            (should-not (sem-core--is-processed hash))
+            (should captured-timeout-log)))
+      (sem-mock-cleanup-temp-file test-cursor-file)
+      (sem-mock-cleanup-temp-file test-retries-file))))
+
 (provide 'sem-router-test)
 ;;; sem-router-test.el ends here

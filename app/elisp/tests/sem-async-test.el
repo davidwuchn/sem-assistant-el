@@ -152,7 +152,7 @@ Called with RESULT and CONTEXT."
   (let ((start-time (float-time)))
     ;; Mock dependencies
     (cl-letf (((symbol-function 'sem-url-capture--fetch-url)
-               (lambda (url) "Mock content"))
+               (lambda (_url &optional _timeout) (list :content "Mock content")))
               ((symbol-function 'sem-url-capture--sanitize-text)
                (lambda (text) "Sanitized"))
               ((symbol-function 'sem-security-sanitize-for-llm)
@@ -173,7 +173,7 @@ Called with RESULT and CONTEXT."
   (let ((mock-filepath "/data/org-roam/20240101120000-test.org"))
     ;; Mock dependencies
     (cl-letf (((symbol-function 'sem-url-capture--fetch-url)
-               (lambda (url) "Mock content"))
+               (lambda (_url &optional _timeout) (list :content "Mock content")))
               ((symbol-function 'sem-url-capture--sanitize-text)
                (lambda (text) "Sanitized"))
               ((symbol-function 'sem-security-sanitize-for-llm)

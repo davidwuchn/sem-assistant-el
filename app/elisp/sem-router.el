@@ -646,21 +646,27 @@ This is called by sem-core-process-inbox."
                      (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
                      (sem-url-capture-process
                       url
-                      (lambda (filepath context)
-                        "Callback for async URL capture.
+                       (lambda (filepath context)
+                         "Callback for async URL capture.
 Handles success, retry, and DLQ escalation."
-                        (if filepath
+                         (if filepath
                             ;; Success - mark processed and increment count
                             (progn
                               (sem-core--clear-retry hash)
                               (sem-router--mark-processed hash)
                               (setq processed-count (1+ processed-count))
                               (message "SEM: URL captured: %s -> %s" url filepath))
-                          ;; Failure - implement bounded retry
-                          (let ((retry-count (sem-core--increment-retry hash)))
-                            (if (>= retry-count 3)
-                                ;; Max retries reached - move to DLQ
-                                (progn
+                           ;; Failure - implement bounded retry
+                           (let ((failure-kind (plist-get context :failure-kind))
+                                 (retry-count (sem-core--increment-retry hash)))
+                             (when (eq failure-kind 'timeout)
+                               (sem-core-log "router" "URL-CAPTURE" "FAIL"
+                                             (format "URL capture timeout (attempt %d/3): %s"
+                                                     retry-count url)
+                                             nil))
+                             (if (>= retry-count 3)
+                                 ;; Max retries reached - move to DLQ
+                                 (progn
                                   (sem-core--mark-dlq hash title nil)
                                   (message "SEM: URL capture failed after 3 retries, moved to DLQ: %s" url))
                               ;; Will retry on next cron cycle

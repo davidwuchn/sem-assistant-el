@@ -18,7 +18,7 @@ The system SHALL NOT apply URL sanitization (defanging) to url-capture org-roam 
 ## Requirements
 
 ### Requirement: url-capture pipeline triggered by inbox-processing
-The system SHALL provide `sem-url-capture-process` as a non-interactive function callable from `sem-router.el`. The function SHALL accept a URL and headline metadata, run the full capture pipeline, and return the saved filepath on success or `nil` on failure.
+The system SHALL provide `sem-url-capture-process` as a non-interactive function callable from `sem-router.el`. The function SHALL accept a URL and headline metadata, run the full capture pipeline under a single 5-minute end-to-end timeout guard, and return the saved filepath on success or `nil` on failure.
 
 #### Scenario: url-capture called with valid URL
 - **WHEN** `sem-router.el` calls `sem-url-capture-process` with a URL from a `:link:` headline
@@ -31,6 +31,10 @@ The system SHALL provide `sem-url-capture-process` as a non-interactive function
 #### Scenario: Failure returns nil
 - **WHEN** any step in the pipeline fails (trafilatura error, LLM error, validation failure)
 - **THEN** `sem-url-capture-process` returns `nil`
+
+#### Scenario: Timeout returns nil within 5 minutes
+- **WHEN** the orchestration timeout budget is reached
+- **THEN** `sem-url-capture-process` returns `nil` with timeout classified as `FAIL`
 
 ### Requirement: trafilatura installed in Emacs container
 The system SHALL have the `trafilatura` Python package installed in the Emacs container. The Dockerfile SHALL declare this dependency. `sem-url-capture--fetch-url` SHALL verify trafilatura is available via `executable-find`.
