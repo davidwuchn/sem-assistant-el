@@ -13,6 +13,7 @@ A self-hosted Emacs daemon that autonomously processes mobile-captured Org notes
 - **Error Handling**: Dead Letter Queue for malformed LLM output in `/data/errors.org`
 - **Bounded Retry**: Failed LLM requests retry up to 3 times before moving to DLQ
 - **GitHub Sync**: Automated sync of org-roam to GitHub every 6 hours
+- **Daemon Watchdog**: Operational liveness probe every 15 minutes with startup grace and restart trigger
 - **WebDAV TLS**: HTTPS-enabled WebDAV for secure Orgzly sync
 
 ## Architecture
@@ -153,6 +154,21 @@ Headlines that start with `http://` or `https://` are automatically treated as l
 | 4:00 AM | Inbox Purge | Remove processed headlines (atomic) |
 | 5:00-8:00 AM | Elfeed Update | Refresh RSS feed database (hourly) |
 | 9:30 AM | RSS Digest | Generate daily digest from last 24 hours |
+| Every 15 min | Daemon Watchdog | Probe daemon responsiveness and trigger container restart on failure |
+| Every 6 hours | GitHub Sync | Sync `/data/org-roam` to remote repository |
+
+### Daemon Watchdog Scope
+
+- The watchdog cron job (`/usr/local/bin/sem-daemon-watchdog`) is operational-only.
+- It only probes daemon liveness using `emacsclient -s sem-server` and handles restart supervision.
+- It does not run inbox processing, purge, RSS generation, or git sync workflows.
+
+### Watchdog Troubleshooting
+
+- Check container logs for `SEM_WATCHDOG` events (`PROBE_OK`, `PROBE_FAIL`, `RESTART_SUPPRESSED_GRACE`, `LOCK_CONTENTION_SKIP`, `RESTART_TRIGGERED`, `RESTART_ALREADY_SATISFIED`).
+- Tune probe timeout with `SEM_WATCHDOG_PROBE_TIMEOUT_SEC` (default `45`).
+- Tune startup grace with `SEM_WATCHDOG_STARTUP_GRACE_SEC` (default `180`).
+- If you see repeated restarts, inspect Emacs startup and external dependencies first, then raise grace or timeout as needed.
 
 ### ⚠️ WARNING: Orgzly Sync Timing
 
@@ -343,6 +359,8 @@ Configure Orgzly to sync via HTTPS:
 
 **Environment Variable:**
 - `SEM_PROMPTS_DIR` - Override prompt files location (default: `/data/prompts/`)
+- `SEM_WATCHDOG_PROBE_TIMEOUT_SEC` - Watchdog probe timeout in seconds (default: `45`)
+- `SEM_WATCHDOG_STARTUP_GRACE_SEC` - Startup grace period in seconds (default: `180`)
 
 ## Unit Tests
 

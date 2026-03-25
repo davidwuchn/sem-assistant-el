@@ -33,6 +33,7 @@ The system SHALL implement the following complete schedule with no gaps or overl
 0    7 * * *  root  emacsclient -e "(elfeed-update)"
 0    8 * * *  root  emacsclient -e "(elfeed-update)"
 30   9 * * *  root  emacsclient -e "(sem-rss-generate-morning-digest)"
+*/15 * * * *  root  /usr/local/bin/sem-daemon-watchdog
 ```
 
 #### Scenario: Inbox processing every 30 minutes
@@ -50,6 +51,21 @@ The system SHALL implement the following complete schedule with no gaps or overl
 #### Scenario: RSS digest at 9:30AM
 - **WHEN** 9:30 AM arrives
 - **THEN** `sem-rss-generate-morning-digest` is called
+
+#### Scenario: Watchdog executes every 15 minutes
+- **WHEN** every 15th minute of every hour
+- **THEN** `sem-daemon-watchdog` is called
+
+### Requirement: Watchdog cron job is operational-only
+The cron schedule SHALL treat the daemon liveness watchdog as an operational supervision job. The watchdog cron entry MUST NOT invoke inbox processing, purge, RSS generation, or git synchronization workflows.
+
+#### Scenario: Watchdog command scope
+- **WHEN** the watchdog cron entry executes
+- **THEN** it performs only liveness probe and restart supervision behavior
+
+#### Scenario: Business workflows remain separate
+- **WHEN** business workflows are scheduled by cron
+- **THEN** they are executed only by their dedicated cron entries and not by the watchdog job
 
 ### Requirement: Emacs internal timers not used
 The system SHALL NOT use Emacs internal timers (`run-at-time`, `idle-timer`) for scheduled tasks. All scheduling SHALL be done via system cron.

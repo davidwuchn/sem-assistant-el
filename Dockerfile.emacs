@@ -9,6 +9,9 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /uvx /bin/
 # Install trafilatura
 RUN uv tool install -q "trafilatura>=2.0.0,<3.0.0" && uv cache clean -q
 
+# Install watchdog runtime dependencies
+RUN apk add --no-cache util-linux
+
 # Create app directory
 WORKDIR /app
 
@@ -27,7 +30,9 @@ RUN chmod 0744 /etc/cron.d/sem-cron
 
 # Copy start-cron wrapper script
 COPY dev/start-cron /usr/local/bin/start-cron
+COPY dev/sem-daemon-watchdog /usr/local/bin/sem-daemon-watchdog
 RUN chmod +x /usr/local/bin/start-cron \
+    && chmod +x /usr/local/bin/sem-daemon-watchdog \
     && touch /var/log/cron.log \
     && mkdir -p /data/org-roam /data/elfeed /data/morning-read
 

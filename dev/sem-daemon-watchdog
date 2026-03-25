@@ -1,0 +1,89 @@
+#!/bin/sh
+
+set -eu
+
+log_event() {
+  level="$1"
+  event="$2"
+  message="$3"
+  timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  printf 'SEM_WATCHDOG ts=%s level=%s event=%s msg="%s"\n' \
+    "$timestamp" "$level" "$event" "$message"
+}
+
+current_epoch() {
+  if [ -n "${SEM_WATCHDOG_NOW_EPOCH:-}" ]; then
+    printf '%s\n' "$SEM_WATCHDOG_NOW_EPOCH"
+    return
+  fi
+
+  date +%s
+}
+
+container_start_epoch() {
+  if [ -n "${SEM_WATCHDOG_START_EPOCH:-}" ]; then
+    printf '%s\n' "$SEM_WATCHDOG_START_EPOCH"
+    return
+  fi
+
+  if stat -c %Y /proc/1 >/dev/null 2>&1; then
+    stat -c %Y /proc/1
+    return
+  fi
+
+  current_epoch
+}
+
+probe_timeout="${SEM_WATCHDOG_PROBE_TIMEOUT_SEC:-45}"
+startup_grace="${SEM_WATCHDOG_STARTUP_GRACE_SEC:-180}"
+socket_name="${SEM_WATCHDOG_SOCKET:-sem-server}"
+lock_file="${SEM_WATCHDOG_LOCK_FILE:-/tmp/sem-daemon-watchdog.lock}"
+keepalive_pattern="${SEM_WATCHDOG_KEEPALIVE_PATTERN:-tail -F /var/log/cron.log}"
+kill_command="${SEM_WATCHDOG_KILL_COMMAND:-kill}"
+
+if ! command -v flock >/dev/null 2>&1; then
+  log_event "FAIL" "LOCK_UNAVAILABLE" "Missing flock command"
+  exit 1
+fi
+
+exec 9>"$lock_file"
+if ! flock -n 9; then
+  log_event "OK" "LOCK_CONTENTION_SKIP" "Another watchdog run is active"
+  exit 0
+fi
+
+now_epoch="$(current_epoch)"
+start_epoch="$(container_start_epoch)"
+elapsed="$((now_epoch - start_epoch))"
+
+if timeout "${probe_timeout}s" emacsclient -s "$socket_name" -e "(progn t)" >/dev/null 2>&1; then
+  log_event "OK" "PROBE_OK" "Daemon probe succeeded"
+  exit 0
+else
+  probe_exit="$?"
+fi
+
+if [ "$probe_exit" -eq 124 ]; then
+  probe_reason="timeout"
+else
+  probe_reason="failure"
+fi
+
+log_event "RETRY" "PROBE_FAIL" "Daemon probe ${probe_reason}"
+
+if [ "$elapsed" -lt "$startup_grace" ]; then
+  log_event "SKIP" "RESTART_SUPPRESSED_GRACE" \
+    "Failure occurred during startup grace (${elapsed}s < ${startup_grace}s)"
+  exit 0
+fi
+
+if keepalive_pid="$(pgrep -f -o "$keepalive_pattern" 2>/dev/null)"; then
+  "$kill_command" "$keepalive_pid" >/dev/null 2>&1 || true
+  log_event "OK" "RESTART_TRIGGERED" \
+    "Killed keepalive pid=${keepalive_pid} after probe ${probe_reason}"
+  exit 0
+fi
+
+log_event "OK" "RESTART_ALREADY_SATISFIED" \
+  "Keepalive process already absent"
+exit 0
