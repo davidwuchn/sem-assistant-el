@@ -477,6 +477,47 @@ Body."))
       (should (string-match-p "^\\* TODO \\[#A\\] Ping ops about INC-7781$"
                               (car (split-string normalized "\n")))))))
 
+(ert-deftest sem-router-test-task-title-lowercase-normalizes-mixed-case ()
+  "Test mixed-case TODO title is normalized to lowercase." 
+  (let ((response "* TODO Prepare API Rollout Notes
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Body stays mixed case."))
+    (let ((normalized (sem-router--normalize-task-title-lowercase response)))
+      (should (string-match-p "^\\* TODO prepare api rollout notes$"
+                              (car (split-string normalized "\n")))))))
+
+(ert-deftest sem-router-test-task-title-lowercase-idempotent ()
+  "Test lowercasing task title is idempotent across retries."
+  (let ((response "* TODO [#B] already lowercase title
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Body."))
+    (let* ((once (sem-router--normalize-task-title-lowercase response))
+           (twice (sem-router--normalize-task-title-lowercase once)))
+      (should (string= once twice)))))
+
+(ert-deftest sem-router-test-task-title-lowercase-preserves-priority-and-body ()
+  "Test priority token and non-title content remain unchanged."
+  (let ((response "* TODO [#A] Follow Up With OAuth Team
+:PROPERTIES:
+:ID: 550e8400-e29b-41d4-a716-446655440000
+:FILETAGS: :work:
+:END:
+Body MIXED Case remains.
+SCHEDULED: <2026-03-20 09:15>
+DEADLINE: <2026-03-21 Sat>"))
+    (let* ((normalized (sem-router--normalize-task-title-lowercase response))
+           (original-rest (replace-regexp-in-string "\\`[^\n]*\n?" "" response))
+           (normalized-rest (replace-regexp-in-string "\\`[^\n]*\n?" "" normalized)))
+      (should (string-match-p "^\\* TODO \\[#A\\] follow up with oauth team$"
+                              (car (split-string normalized "\n"))))
+      (should (string= original-rest normalized-rest)))))
+
 (ert-deftest sem-router-test-scheduled-duration-defaults-to-30-minutes ()
   "Test missing scheduled end time defaults to 30-minute block."
   (let ((response "* TODO [#B] Test Task

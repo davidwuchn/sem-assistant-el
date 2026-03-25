@@ -217,12 +217,16 @@ Generates a new org-roam ID and includes it in the expected format section."
                     "\n\n")))
 
     (concat umbrella-section
-            (if (and umbrella-nodes-alist (not (null umbrella-nodes-alist)))
-                "MANDATORY LINK REQUIREMENT: Include at least one explicit `[[id:<umbrella-id>][...]]` link to a provided umbrella node in the generated output.\n\n"
-              "")
-            "ARTICLE URL: " url "\n\n"
-            "ARTICLE CONTENT:\n" sanitized-text "\n\n"
-            "EXPECTED OUTPUT FORMAT:\n"
+             (if (and umbrella-nodes-alist (not (null umbrella-nodes-alist)))
+                 "MANDATORY LINK REQUIREMENT: Include at least one explicit `[[id:<umbrella-id>][...]]` link to a provided umbrella node in the generated output.\n\n"
+               "")
+             "TITLE GUIDANCE: Keep `#+title:` concise and high-signal. Use semantic compression to preserve the core topic while removing fluff.\n"
+             "- Example rewrite: `A Comprehensive Historical Overview of Retrieval-Augmented Generation Systems in Production` -> `RAG systems: production lessons`\n"
+             "- Example rewrite: `How We Reduced CI Runtime by 43 Percent Across a Large Monorepo` -> `CI optimization: 43% faster monorepo builds`\n"
+             "Do not hard-truncate by character count; prioritize meaning and scanability.\n\n"
+             "ARTICLE URL: " url "\n\n"
+             "ARTICLE CONTENT:\n" sanitized-text "\n\n"
+             "EXPECTED OUTPUT FORMAT:\n"
             ":PROPERTIES:\n"
             ":ID:          " new-id "\n"
             ":END:\n"

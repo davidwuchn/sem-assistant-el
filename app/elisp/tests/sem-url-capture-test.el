@@ -102,6 +102,17 @@
     (should (string-match-p "MANDATORY LINK REQUIREMENT" prompt))
     (should (string-match-p "\\[\\[id:96a58b04-1f58-47c9-993f-551994939252\\]\\[LLM\\]\\]" prompt))))
 
+(ert-deftest sem-url-capture-test-prompt-builder-includes-concise-title-guidance ()
+  "Test prompt builder includes concise title guidance and rewrite examples."
+  (let* ((url "https://example.com/article")
+         (content "Test content")
+         (prompt (sem-url-capture--build-user-prompt url content nil)))
+    (should (string-match-p "TITLE GUIDANCE: Keep `#\\+title:` concise and high-signal" prompt))
+    (should (string-match-p "semantic compression" prompt))
+    (should (string-match-p "RAG systems: production lessons" prompt))
+    (should (string-match-p "CI optimization: 43% faster monorepo builds" prompt))
+    (should (string-match-p "Do not hard-truncate by character count" prompt))))
+
 ;;; Tests for security masking (Task 4.5-4.6)
 
 (ert-deftest sem-url-capture-test-security-tokenizes-sensitive-blocks ()

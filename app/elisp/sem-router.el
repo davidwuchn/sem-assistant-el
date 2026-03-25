@@ -324,22 +324,25 @@ Validates the LLM response and writes to tasks.org with mutex lock."
                                        (sem-security-restore-from-llm response stored-security-blocks)))
                                 (if (and restored-response (not (string-empty-p restored-response)))
                                     ;; Validate and process response
-                                    (if (sem-router--validate-task-response restored-response injected-uuid)
-                                        ;; Valid response - write to temp file (no lock needed for batch temp file)
-                                        (if (sem-router--write-task-to-file restored-response (sem-router--temp-file-path))
-                                            (progn
-                                              (sem-core-log "router" "INBOX-ITEM" "OK"
-                                                            (format "Task written to temp file: %s" headline-title)
-                                                            nil)
-                                              (sem-router--mark-processed headline-hash)
-                                              (setq headline-context (plist-put headline-context :security-blocks nil))
-                                              (setq success t))
-                                          (progn
-                                            (sem-core-log-error "router" "INBOX-ITEM"
-                                                                "Failed to write task to temp file"
-                                                                headline-title
-                                                                restored-response)
-                                            (setq success nil)))
+                                     (if (sem-router--validate-task-response restored-response injected-uuid)
+                                         ;; Valid response - normalize title then write to temp file.
+                                         (let ((normalized-response
+                                                (sem-router--normalize-task-title-lowercase restored-response)))
+                                           (if (sem-router--write-task-to-file normalized-response
+                                                                               (sem-router--temp-file-path))
+                                               (progn
+                                                 (sem-core-log "router" "INBOX-ITEM" "OK"
+                                                               (format "Task written to temp file: %s" headline-title)
+                                                               nil)
+                                                 (sem-router--mark-processed headline-hash)
+                                                 (setq headline-context (plist-put headline-context :security-blocks nil))
+                                                 (setq success t))
+                                             (progn
+                                               (sem-core-log-error "router" "INBOX-ITEM"
+                                                                   "Failed to write task to temp file"
+                                                                   headline-title
+                                                                   normalized-response)
+                                               (setq success nil))))
                                      ;; Malformed output - send to DLQ
                                      (progn
                                        (sem-core-log-error "router" "INBOX-ITEM"
@@ -462,6 +465,26 @@ returns RESPONSE unchanged."
         (delete-region line-start line-end)
         (goto-char line-start)
         (insert (format "%s TODO %s" stars title))))
+    (buffer-string)))
+
+(defun sem-router--normalize-task-title-lowercase (response)
+  "Lowercase the first TODO headline title in RESPONSE.
+
+Only the title text after the TODO keyword and optional priority marker is
+lowercased. Non-title content remains unchanged."
+  (with-temp-buffer
+    (insert response)
+    (goto-char (point-min))
+    (when (re-search-forward
+           "^\\(\\*+[ \t]+TODO\\(?:[ \t]+\\[#\\([A-Za-z]\\)\\]\\)?[ \t]+\\)\\(.*\\)$"
+           nil t)
+      (let ((line-start (match-beginning 0))
+            (line-end (match-end 0))
+            (headline-prefix (match-string 1))
+            (headline-title (match-string 3)))
+        (delete-region line-start line-end)
+        (goto-char line-start)
+        (insert (concat headline-prefix (downcase headline-title)))))
     (buffer-string)))
 
 (defun sem-router--validate-and-normalize-priority (response)
