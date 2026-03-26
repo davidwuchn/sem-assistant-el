@@ -23,19 +23,22 @@ services:
     restart: unless-stopped
 
   webdav:
-    image: hacdias/webdav:latest
+    image: docker.io/library/httpd:2.4
     container_name: sem-webdav
     volumes:
       - ./data:/data:rw,z
-      - ./webdav-config.yml:/config.yml:ro,z
+      - ./webdav/apache/start-webdav.sh:/usr/local/bin/start-webdav.sh:ro,z
+      - ./webdav/apache/httpd-webdav.conf.template:/usr/local/apache2/conf/extra/httpd-webdav.conf.template:ro,z
       - /etc/letsencrypt:/certs:ro,z
     environment:
       - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-example.com}
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-changeme}
+      - WEBDAV_UID=${WEBDAV_UID:-1000}
+      - WEBDAV_GID=${WEBDAV_GID:-1000}
     ports:
       - "${WEBDAV_PORT:-443}:6065"
-    command: ["--config", "/config.yml"]
+    command: ["/bin/sh", "/usr/local/bin/start-webdav.sh"]
     restart: unless-stopped
 
   certbot:

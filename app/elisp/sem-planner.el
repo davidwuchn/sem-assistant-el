@@ -22,6 +22,9 @@
 (defvar sem-planner--retry-delays [1 2 4]
   "Delays between retries in seconds.")
 
+(defvar sem-planner--conflict-max-attempts 3
+  "Maximum planning attempts when tasks.org version conflicts are detected.")
+
 (defconst sem-planner-high-priority-values '(?A ?B)
   "Priority values treated as high-priority overlap exceptions.")
 
@@ -29,6 +32,23 @@
   "Compute the temp file path for the current batch.
 Returns /tmp/data/tasks-tmp-{batch-id}.org"
   (format "/tmp/data/tasks-tmp-%d.org" sem-core--batch-id))
+
+(defun sem-planner--read-tasks-file-content ()
+  "Return the full current content of `sem-planner-tasks-file'.
+Returns an empty string when the file does not exist."
+  (if (file-exists-p sem-planner-tasks-file)
+      (with-temp-buffer
+        (insert-file-contents sem-planner-tasks-file)
+        (buffer-string))
+    ""))
+
+(defun sem-planner--content-hash (content)
+  "Return deterministic SHA256 hash for CONTENT."
+  (secure-hash 'sha256 (or content "")))
+
+(defun sem-planner--tasks-file-hash ()
+  "Return deterministic SHA256 hash for current tasks.org contents."
+  (sem-planner--content-hash (sem-planner--read-tasks-file-content)))
 
 (defun sem-planner--parse-timestamp (ts)
   "Parse org-mode TIMESTAMP string or timestamp object.
@@ -82,13 +102,13 @@ Return one of `pre-existing-scheduled', `pre-existing-unscheduled', or `newly-ge
       (if scheduled 'pre-existing-scheduled 'pre-existing-unscheduled)
     'newly-generated))
 
-(defun sem-planner--existing-task-snapshot ()
-  "Return existing task metadata from `sem-planner-tasks-file'.
+(defun sem-planner--existing-task-snapshot-from-content (content)
+  "Return existing task metadata parsed from CONTENT.
 Each element is a plist with keys :id, :title, :scheduled, and :priority."
-  (if (not (file-exists-p sem-planner-tasks-file))
+  (if (string-empty-p (or content ""))
       '()
     (with-temp-buffer
-      (insert-file-contents sem-planner-tasks-file)
+      (insert content)
       (org-mode)
       (let ((ast (org-element-parse-buffer))
             (snapshot '()))
@@ -102,6 +122,11 @@ Each element is a plist with keys :id, :title, :scheduled, and :priority."
                             :priority (org-element-property :priority headline))
                       snapshot)))))
         (nreverse snapshot)))))
+
+(defun sem-planner--existing-task-snapshot ()
+  "Return existing task metadata from `sem-planner-tasks-file'."
+  (sem-planner--existing-task-snapshot-from-content
+   (sem-planner--read-tasks-file-content)))
 
 (defun sem-planner--existing-task-index (snapshot)
   "Return hash table index for SNAPSHOT keyed by task ID."
@@ -352,16 +377,15 @@ Appends \\n + merged-tasks to existing tasks.org content."
                          merged-tasks nil)
      nil)))
 
-(defun sem-planner--anonymize-tasks ()
-  "Read tasks.org and anonymize tasks to time blocks.
+(defun sem-planner--anonymize-tasks-content (content)
+  "Anonymize CONTENT tasks to time blocks.
 Returns a string with one line per task in format:
 YYYY-MM-DD HH:MM-HH:MM busy PRIORITY:{A|B|C} TAG:{tag}
 Strips titles and IDs, preserves time+priority+tag."
-  (let ((tasks-file sem-planner-tasks-file)
-        (anonymized '()))
-    (when (file-exists-p tasks-file)
+  (let ((anonymized '()))
+    (when (not (string-empty-p (or content "")))
       (with-temp-buffer
-        (insert-file-contents tasks-file)
+        (insert content)
         (org-mode)
         (let ((ast (org-element-parse-buffer)))
           (org-element-map ast 'headline
@@ -373,42 +397,47 @@ Strips titles and IDs, preserves time+priority+tag."
                      (tag-str (if tags (car tags) ""))
                      (time-str nil))
                 (cond
-                  (scheduled
-                   (let ((ts-parts (sem-planner--parse-timestamp scheduled)))
-                     (when ts-parts
-                       (let ((y (nth 0 ts-parts))
-                             (m (nth 1 ts-parts))
-                             (d (nth 2 ts-parts))
-                             (hs (nth 3 ts-parts))
-                             (ms (nth 4 ts-parts))
-                             (he (nth 5 ts-parts))
-                             (me (nth 6 ts-parts)))
-                         (when (and y m d)
-                           (setq time-str (format "%04d-%02d-%02d %02d:%02d-%02d:%02d busy PRIORITY:%c TAG:%s"
-                                                  y m d
-                                                  (or hs 0) (or ms 0)
-                                                  (or he 23) (or me 59)
-                                                  (or priority ?B)
-                                                  tag-str)))))))
-                  (deadline
-                   (let ((ts-parts (sem-planner--parse-timestamp deadline)))
-                     (when ts-parts
-                       (let ((y (nth 0 ts-parts))
-                             (m (nth 1 ts-parts))
-                             (d (nth 2 ts-parts))
-                             (hs (nth 3 ts-parts))
-                             (ms (nth 4 ts-parts)))
-                         (when (and y m d)
-                           (setq time-str (format "%04d-%02d-%02d %02d:%02d-23:59 busy PRIORITY:%c TAG:%s"
-                                                  y m d
-                                                  (or hs 0) (or ms 0)
-                                                  (or priority ?B)
-                                                  tag-str))))))))
+                 (scheduled
+                  (let ((ts-parts (sem-planner--parse-timestamp scheduled)))
+                    (when ts-parts
+                      (let ((y (nth 0 ts-parts))
+                            (m (nth 1 ts-parts))
+                            (d (nth 2 ts-parts))
+                            (hs (nth 3 ts-parts))
+                            (ms (nth 4 ts-parts))
+                            (he (nth 5 ts-parts))
+                            (me (nth 6 ts-parts)))
+                        (when (and y m d)
+                          (setq time-str (format "%04d-%02d-%02d %02d:%02d-%02d:%02d busy PRIORITY:%c TAG:%s"
+                                                 y m d
+                                                 (or hs 0) (or ms 0)
+                                                 (or he 23) (or me 59)
+                                                 (or priority ?B)
+                                                 tag-str)))))))
+                 (deadline
+                  (let ((ts-parts (sem-planner--parse-timestamp deadline)))
+                    (when ts-parts
+                      (let ((y (nth 0 ts-parts))
+                            (m (nth 1 ts-parts))
+                            (d (nth 2 ts-parts))
+                            (hs (nth 3 ts-parts))
+                            (ms (nth 4 ts-parts)))
+                        (when (and y m d)
+                          (setq time-str (format "%04d-%02d-%02d %02d:%02d-23:59 busy PRIORITY:%c TAG:%s"
+                                                 y m d
+                                                 (or hs 0) (or ms 0)
+                                                 (or priority ?B)
+                                                 tag-str))))))))
                 (when time-str
                   (push time-str anonymized))))))))
     (if anonymized
         (string-join (nreverse anonymized) "\n")
       "")))
+
+(defun sem-planner--anonymize-tasks ()
+  "Read tasks.org and anonymize tasks to time blocks."
+  (sem-planner--anonymize-tasks-content
+   (sem-planner--read-tasks-file-content)))
 
 (defun sem-planner--build-pass2-prompt
     (anonymized-temp anonymized-schedule occupied-windows rules-text runtime-now runtime-min-start)
@@ -499,6 +528,90 @@ Returns t if at least one valid ID line is found."
       (delete-file file)
       (sem-core-log "planner" "INBOX-ITEM" "OK" (format "Deleted temp file: %s" file) nil))))
 
+(defun sem-planner--attempt-context (temp-tasks runtime-min-start)
+  "Build a planning context for TEMP-TASKS and RUNTIME-MIN-START.
+Captures and returns a base tasks.org hash before Pass 2 context generation."
+  (let* ((base-content (sem-planner--read-tasks-file-content))
+         (base-hash (sem-planner--content-hash base-content))
+         (existing-snapshot (sem-planner--existing-task-snapshot-from-content base-content))
+         (existing-index (sem-planner--existing-task-index existing-snapshot))
+         (occupied-windows (sem-planner--occupied-windows existing-snapshot)))
+    (list :base-hash base-hash
+          :existing-index existing-index
+          :occupied-windows occupied-windows
+          :occupied-windows-context (sem-planner--occupied-windows-context occupied-windows)
+          :task-metadata (sem-planner--temp-task-metadata temp-tasks existing-index)
+          :anonymized-existing (sem-planner--anonymize-tasks-content base-content)
+          :anonymized-temp (sem-planner--anonymize-temp-tasks temp-tasks existing-index)
+          :runtime-min-start runtime-min-start)))
+
+(defun sem-planner--attempt-conflict-aware-planning
+    (temp-tasks rules-text runtime-now runtime-min-start attempt callback)
+  "Run one conflict-aware planning ATTEMPT for TEMP-TASKS.
+CALLBACK receives non-nil on success and nil on explicit non-success outcome."
+  (let* ((context (sem-planner--attempt-context temp-tasks runtime-min-start))
+         (base-hash (plist-get context :base-hash))
+         (attempt-label (format "%d/%d" attempt sem-planner--conflict-max-attempts)))
+    (sem-planner--run-with-retry
+     rules-text
+     (plist-get context :anonymized-existing)
+     (plist-get context :occupied-windows-context)
+     (plist-get context :anonymized-temp)
+     runtime-now
+     runtime-min-start
+     (lambda (success response)
+       (if (not success)
+           (funcall callback nil)
+         (if (not (sem-planner--validate-planned-tasks response))
+             (progn
+               (sem-core-log-error "planner" "INBOX-ITEM"
+                                   "Pass 2 response failed validation"
+                                   temp-tasks response)
+               (funcall callback nil))
+           (let ((pre-append-hash (sem-planner--tasks-file-hash)))
+             (if (not (string= pre-append-hash base-hash))
+                 (progn
+                   (sem-core-log "planner" "INBOX-ITEM" "RETRY"
+                                 (format "Conflict detected before append (attempt %s)"
+                                         attempt-label)
+                                 nil)
+                   (if (< attempt sem-planner--conflict-max-attempts)
+                       (progn
+                         (sem-core-log "planner" "INBOX-ITEM" "RETRY"
+                                       (format "Replanning with refreshed tasks.org state (next attempt %d/%d)"
+                                               (1+ attempt)
+                                               sem-planner--conflict-max-attempts)
+                                       nil)
+                         (sem-planner--attempt-conflict-aware-planning
+                          temp-tasks
+                          rules-text
+                          runtime-now
+                          runtime-min-start
+                          (1+ attempt)
+                          callback))
+                     (progn
+                       (sem-core-log-error "planner" "INBOX-ITEM"
+                                           (format "Conflict retry budget exhausted after %d attempts"
+                                                   sem-planner--conflict-max-attempts)
+                                           temp-tasks nil)
+                       (message "SEM: Planning conflict retry budget exhausted")
+                       (funcall callback nil))))
+               (let* ((decisions (sem-planner--parse-scheduling-decisions response))
+                      (merged (sem-planner--merge-scheduling-into-tasks
+                               temp-tasks
+                               decisions
+                               (plist-get context :task-metadata)
+                               (plist-get context :occupied-windows)
+                               runtime-min-start)))
+                 (if (sem-planner--append-merged-to-tasks-org merged)
+                     (progn
+                       (sem-core-log "planner" "INBOX-ITEM" "OK"
+                                     (format "Planning append succeeded on attempt %s"
+                                             attempt-label)
+                                     nil)
+                       (funcall callback t))
+                   (funcall callback nil)))))))))))
+
 (defun sem-planner--fallback-to-pass1 ()
   "Fallback: copy Pass 1 temp file content to tasks.org."
   (condition-case err
@@ -524,52 +637,33 @@ Returns t if at least one valid ID line is found."
               (message "SEM: No tasks in temp file, skipping planning"))
           (sem-core-log "planner" "INBOX-ITEM" "OK" "Starting planning step" nil)
           (message "SEM: Starting planning step")
-          (let* ((existing-snapshot (sem-planner--existing-task-snapshot))
-                 (existing-index (sem-planner--existing-task-index existing-snapshot))
-                 (occupied-windows (sem-planner--occupied-windows existing-snapshot))
-                 (occupied-windows-context (sem-planner--occupied-windows-context occupied-windows))
-                 (task-metadata (sem-planner--temp-task-metadata temp-tasks existing-index))
-                 (anonymized-existing (sem-planner--anonymize-tasks))
-                 (anonymized-temp (sem-planner--anonymize-temp-tasks temp-tasks existing-index))
-                 (rules-text (or (sem-rules-read) ""))
+          (let* ((rules-text (or (sem-rules-read) ""))
                  (runtime-now-time (current-time))
                  (runtime-min-start-time (time-add runtime-now-time (seconds-to-time 3600)))
                  (runtime-now (sem-planner--format-runtime-iso runtime-now-time))
                  (runtime-min-start (sem-planner--format-runtime-iso runtime-min-start-time)))
-            (sem-planner--run-with-retry
-              rules-text
-              anonymized-existing
-              occupied-windows-context
-              anonymized-temp
-              runtime-now
-              runtime-min-start
-                (lambda (success response)
-                 (if success
-                     (progn
-                      (sem-core-log "planner" "INBOX-ITEM" "OK" "Planning successful" nil)
-                       (message "SEM: Planning successful")
-                       (when (sem-planner--validate-planned-tasks response)
-                         (let* ((decisions (sem-planner--parse-scheduling-decisions response))
-                                (merged (sem-planner--merge-scheduling-into-tasks
-                                         temp-tasks
-                                         decisions
-                                         task-metadata
-                                         occupied-windows
-                                         runtime-min-start)))
-                           (sem-planner--append-merged-to-tasks-org merged)))
-                       (sem-planner--delete-temp-file))
-                  (progn
+            (sem-planner--attempt-conflict-aware-planning
+             temp-tasks
+             rules-text
+             runtime-now
+             runtime-min-start
+             1
+             (lambda (success)
+               (if success
+                   (progn
+                     (sem-core-log "planner" "INBOX-ITEM" "OK" "Planning successful" nil)
+                     (message "SEM: Planning successful")
+                     (sem-planner--delete-temp-file))
+                 (progn
                    (sem-core-log-error "planner" "INBOX-ITEM"
-                                       "Planning failed after all retries, using fallback"
+                                       "Planning failed with explicit non-success outcome"
                                        temp-tasks nil)
-                   (message "SEM: Planning failed, using fallback")
-                   (sem-planner--fallback-to-pass1)))))))
+                   (message "SEM: Planning failed with explicit non-success outcome"))))))))
     (error
      (sem-core-log-error "planner" "INBOX-ITEM"
-                         (format "Planning step error: %s" (error-message-string err))
-                         nil nil)
-     (message "SEM: Planning step error: %s" (error-message-string err))
-     (sem-planner--fallback-to-pass1)))))
+                          (format "Planning step error: %s" (error-message-string err))
+                          nil nil)
+     (message "SEM: Planning step error: %s" (error-message-string err)))))
 
 (defun sem-planner--run-with-retry
     (rules-text anonymized-schedule occupied-windows temp-tasks runtime-now runtime-min-start callback)

@@ -5,19 +5,21 @@ This capability defines the WebDAV server that exposes the /data volume for Orgz
 ## Requirements
 
 ### Requirement: WebDAV server exposes /data volume with HTTP Basic Auth
-The system SHALL expose the `/data` directory over WebDAV protocol with HTTP Basic Authentication. Orgzly mobile clients SHALL connect to this endpoint to sync Org files bidirectionally.
+The system SHALL expose the `/data` directory over WebDAV protocol with HTTP Basic Authentication. Orgzly mobile clients SHALL sync against this endpoint, and conflicting stale uploads SHALL be rejected through conditional-write enforcement instead of silently replacing newer content.
 
-#### Scenario: Orgzly connects and syncs files
-- **WHEN** Orgzly is configured with the WebDAV endpoint URL, username, and password
-- **THEN** Orgzly successfully lists, uploads, and downloads files from `/data`
+#### Scenario: Orgzly syncs with explicit conflict rejection
+- **WHEN** Orgzly is configured with endpoint URL, username, and password
+- **THEN** Orgzly can list, upload, and download files from `/data`
+- **AND** stale conflicting uploads are rejected with explicit precondition failure responses
 
 #### Scenario: Authentication is required
 - **WHEN** a client requests the WebDAV endpoint without credentials
 - **THEN** the server returns HTTP 401 Unauthorized
 
-#### Scenario: Concurrent reads are supported
-- **WHEN** multiple Orgzly clients read files simultaneously
-- **THEN** all clients receive consistent file content without errors
+#### Scenario: Concurrent updates do not silently overwrite
+- **WHEN** client and server state diverge and a stale client upload is attempted
+- **THEN** the server rejects the stale write
+- **AND** newer server content remains preserved
 
 ### Requirement: WebDAV credentials configured via environment variables
 The system SHALL read WebDAV username and password from environment variables (`WEBDAV_USERNAME`, `WEBDAV_PASSWORD`). Credentials SHALL NOT be hardcoded in configuration files or container images.

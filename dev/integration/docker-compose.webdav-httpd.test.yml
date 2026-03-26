@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  webdav:
+    environment:
+      - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-webdav-test.local}
+      - WEBDAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
+      - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-changeme}
+      - WEBDAV_UID=${WEBDAV_UID:-1000}
+      - WEBDAV_GID=${WEBDAV_GID:-1000}
+    volumes:
+      - ./test-data-httpd:/data:rw,z
+      - ./webdav/apache/start-webdav.sh:/usr/local/bin/start-webdav.sh:ro,z
+      - ./webdav/apache/httpd-webdav.conf.template:/usr/local/apache2/conf/extra/httpd-webdav.conf.template:ro,z
+      - ./test-data-httpd-certs:/certs:ro,z

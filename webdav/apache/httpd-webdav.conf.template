@@ -1,0 +1,42 @@
+ServerName localhost
+Listen 6065
+
+DavLockDB /tmp/DavLock
+
+<VirtualHost *:6065>
+  SSLEngine on
+  SSLCertificateFile @@CERT_FILE@@
+  SSLCertificateKeyFile @@KEY_FILE@@
+
+  DocumentRoot "/data"
+
+  <Directory "/data">
+    Options Indexes FollowSymLinks
+    AllowOverride None
+    Require all granted
+  </Directory>
+
+  <Location "/">
+    Dav On
+    AuthType Basic
+    AuthName "SEM WebDAV"
+    AuthUserFile "/usr/local/apache2/conf/webdav.htpasswd"
+    Require valid-user
+
+    RewriteEngine On
+
+    # Reject unconditional writes when no supported precondition is provided.
+    RewriteCond %{REQUEST_METHOD} ^(PUT|DELETE|MOVE|COPY|PROPPATCH)$ [NC]
+    RewriteCond %{HTTP:If-Match} ^$
+    RewriteCond %{HTTP:If-Unmodified-Since} ^$
+    RewriteRule ^ - [R=428,L]
+
+    # Reject weak validators for write methods.
+    RewriteCond %{REQUEST_METHOD} ^(PUT|DELETE|MOVE|COPY|PROPPATCH)$ [NC]
+    RewriteCond %{HTTP:If-Match} ^W/ [NC]
+    RewriteRule ^ - [R=412,L]
+  </Location>
+
+  ErrorLog /proc/self/fd/2
+  CustomLog /proc/self/fd/1 combined
+</VirtualHost>

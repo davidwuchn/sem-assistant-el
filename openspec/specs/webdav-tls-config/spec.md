@@ -5,26 +5,20 @@ TBD
 ## Requirements
 
 ### Requirement: Let's Encrypt certificate paths
-The `webdav-config.yml` SHALL use Let's Encrypt standard certificate filenames: `fullchain.pem` for the certificate and `privkey.pem` for the private key. The paths SHALL reference `/certs/live/<domain>/` directory structure, and this path contract SHALL remain compatible with Certbot-managed certificate issuance and renewal.
+Production WebDAV TLS configuration SHALL continue to use Let's Encrypt standard certificate filenames `fullchain.pem` and `privkey.pem` from `/certs/live/<domain>/`, with `<domain>` derived from `WEBDAV_DOMAIN`. This path contract SHALL be preserved while migrating runtime implementation to Apache configuration.
 
-#### Scenario: Certificate file paths
-- **WHEN** inspecting `webdav-config.yml`
-- **THEN** the `cert` field SHALL be set to `/certs/live/<domain>/fullchain.pem`
-- **AND** the `key` field SHALL be set to `/certs/live/<domain>/privkey.pem`
-- **AND** the `<domain>` placeholder SHALL be replaced with a shell-expandable environment variable reference
-
-#### Scenario: Environment variable substitution
-- **WHEN** inspecting the certificate paths in `webdav-config.yml`
-- **THEN** the domain SHALL be specified as `{env}WEBDAV_DOMAIN`
-- **AND** the WebDAV server SHALL expand this to the actual domain at runtime
+#### Scenario: Certificate file paths remain compatible
+- **WHEN** inspecting production WebDAV TLS configuration
+- **THEN** certificate and key paths resolve to `/certs/live/<domain>/fullchain.pem` and `/certs/live/<domain>/privkey.pem`
+- **AND** `<domain>` is sourced from `WEBDAV_DOMAIN`
 
 ### Requirement: Docker compose mount unchanged
-The `docker-compose.yml` WebDAV service mount for certificates SHALL remain as `/etc/letsencrypt:/certs:ro` and SHALL NOT be modified.
+The `docker-compose.yml` WebDAV service certificate mount SHALL remain `/etc/letsencrypt:/certs:ro,z` and SHALL NOT be modified by this change.
 
-#### Scenario: Certificate mount verification
-- **WHEN** inspecting `docker-compose.yml`
-- **THEN** the webdav service volumes SHALL include `/etc/letsencrypt:/certs:ro`
-- **AND** no changes SHALL be made to this mount configuration
+#### Scenario: Certificate mount contract preserved
+- **WHEN** inspecting production compose volumes for `webdav`
+- **THEN** `/etc/letsencrypt:/certs:ro,z` is present
+- **AND** no alternate cert mount path is required
 
 ### Requirement: WEBDAV_DOMAIN environment variable
 The `.env.example` file SHALL include `WEBDAV_DOMAIN` with documentation explaining it must match the Let's Encrypt certificate domain. Production startup behavior SHALL fail fast when TLS is enabled but certificate files for `WEBDAV_DOMAIN` are missing, unreadable, or invalid.

@@ -5,11 +5,12 @@ This capability defines the inbox processing pipeline that reads headlines from 
 ## Requirements
 
 ### Requirement: Inbox processing runs every 30 minutes
-The system SHALL execute inbox processing every 30 minutes via cron. Each run SHALL read unprocessed headlines from `/data/inbox-mobile.org`, route task headlines through Pass 1 LLM processing into `/tmp/data/tasks-tmp-{batch-id}.org`, and trigger planner to append merged output into `/data/tasks.org`.
+The system SHALL execute inbox processing every 30 minutes via cron. Each run SHALL route task headlines through Pass 1 into `/tmp/data/tasks-tmp-{batch-id}.org` and then invoke conflict-aware Pass 2 planning before append to `/data/tasks.org`. If append preconditions fail due to concurrent file updates, planner outcomes SHALL be retry or explicit non-success, never silent overwrite.
 
-#### Scenario: Scheduled inbox processing executes
+#### Scenario: Scheduled inbox processing executes with conflict-aware append
 - **WHEN** the cron schedule triggers at 30-minute intervals
-- **THEN** `sem-core-process-inbox` is called via `emacsclient`
+- **THEN** `sem-core-process-inbox` runs and processes unprocessed headlines
+- **AND** final append uses conflict-aware planner checks before writing to `/data/tasks.org`
 
 #### Scenario: Unprocessed headlines are processed
 - **WHEN** `/data/inbox-mobile.org` contains headlines not yet in the cursor file
@@ -18,6 +19,11 @@ The system SHALL execute inbox processing every 30 minutes via cron. Each run SH
 #### Scenario: Pass 1 output is written to batch temp file
 - **WHEN** the LLM returns valid structured Org output for a task headline
 - **THEN** the output is appended to `/tmp/data/tasks-tmp-{batch-id}.org`
+
+#### Scenario: Contention produces explicit planner outcome
+- **WHEN** concurrent updates change `tasks.org` during planner merge window
+- **THEN** planner records retry or non-success outcome
+- **AND** no silent last-writer-wins overwrite occurs
 
 ### Requirement: inbox-mobile.org is read-only except during 4AM purge window
 The system SHALL NOT write to `/data/inbox-mobile.org` at any time except during the 4:00 AM daily purge window. LLM output SHALL NEVER be written back to `inbox-mobile.org`.

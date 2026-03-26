@@ -1,14 +1,10 @@
-## Purpose
-
-TBD
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Use hacdias/webdav with TLS support
 The WebDAV service SHALL use Apache `httpd` with `mod_dav` for production WebDAV over HTTPS instead of `hacdias/webdav`. The service SHALL preserve the existing external TLS behavior on configured HTTPS port mapping and SHALL remain compatible with certificate files mounted from `/certs/live/<domain>/`.
 
-#### Scenario: WebDAV startup with TLS
-- **WHEN** the `docker-compose up` command is run
+#### Scenario: WebDAV startup with Apache TLS runtime
+- **WHEN** production compose startup runs
 - **THEN** the `webdav` container starts using Apache `httpd` with WebDAV modules enabled
 - **AND** HTTPS service starts using mounted certificate material
 

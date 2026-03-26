@@ -170,16 +170,16 @@ Headlines that start with `http://` or `https://` are automatically treated as l
 - Tune startup grace with `SEM_WATCHDOG_STARTUP_GRACE_SEC` (default `180`).
 - If you see repeated restarts, inspect Emacs startup and external dependencies first, then raise grace or timeout as needed.
 
-### ⚠️ WARNING: Orgzly Sync Timing
+### Orgzly Sync Behavior Under Conflicts
 
-**Orgzly must NOT sync (push or pull) during the following windows to prevent silent data loss:**
+When concurrent edits happen, the planner and WebDAV endpoint now reject stale writes instead of silently overwriting newer content.
 
 | Window | Time | Reason |
 |--------|------|--------|
-| Processing | `XX:28–XX:32` and `XX:58–XX:02` (every hour) | Batch output is merged into `tasks.org`; concurrent edits can still create last-writer-wins conflicts |
-| Purge | `04:00–04:05` (daily) | Purge rewrites `inbox-mobile.org`; concurrent client edits can still be superseded |
+| Processing | `XX:28–XX:32` and `XX:58–XX:02` (every hour) | Planner may detect version conflicts and retry; repeated conflicts can end in explicit non-success |
+| Purge | `04:00–04:05` (daily) | Purge rewrites `inbox-mobile.org`; clients should pull latest state before pushing |
 
-**Why this matters:** The server now uses atomic file replacement, but concurrent client/server edits in these windows can still produce **last-writer-wins** outcomes with no automatic merge.
+**Why this matters:** Atomic replacement prevents partial files, but conflicts still require pull-before-push recovery by clients.
 
 **Recommendation:** Configure Orgzly to sync at safe times like `XX:15` or `XX:45` (midway between cron triggers), or sync manually when needed.
 
@@ -335,14 +335,9 @@ Let's Encrypt paths.
 
 ### Configuration
 
-The `webdav-config.yml` is pre-configured to use Let's Encrypt live-path files:
+The production WebDAV service uses Apache `httpd` + `mod_dav` and keeps the same Let's Encrypt live-path contract:
 
-```yaml
-server:
-  tls: true
-  cert: /certs/live/{env}WEBDAV_DOMAIN/fullchain.pem
-  key: /certs/live/{env}WEBDAV_DOMAIN/privkey.pem
-```
+`/certs/live/<WEBDAV_DOMAIN>/fullchain.pem` and `/certs/live/<WEBDAV_DOMAIN>/privkey.pem`
 
 ### Certificate Issuance and Renewal (Certbot)
 
@@ -379,6 +374,17 @@ live-path contract used by WebDAV.
 - **Permission issues**: ensure `/etc/letsencrypt` files are readable in the
   `webdav` container and SELinux labels allow mounted access.
 - **Issuance/renew failures**: inspect `docker compose logs certbot` for ACME error details.
+
+### Apache WebDAV Migration and Rollback Notes
+
+- Migration checks:
+  1. `docker compose config` renders `webdav` with image `httpd:2.4` and cert mount `/etc/letsencrypt:/certs:ro,z`.
+  2. `docker compose up -d webdav` succeeds only when `WEBDAV_DOMAIN`, `WEBDAV_USERNAME`, `WEBDAV_PASSWORD`, and cert files exist.
+  3. Conflicting stale writes are rejected (HTTP precondition failure) and clients must pull before a successful retry.
+- Rollback steps:
+  1. Restore previous `webdav` service definition and legacy `webdav-config.yml` runtime wiring.
+  2. `docker compose up -d webdav` to redeploy.
+  3. Monitor sync behavior and logs before re-attempting migration.
 
 ### Orgzly HTTPS Configuration
 
@@ -448,6 +454,16 @@ From the repository root:
 ```bash
 bash dev/integration/run-integration-tests.sh
 ```
+
+For Apache WebDAV runtime checks (no LLM calls), run the separate smoke test:
+
+```bash
+bash dev/integration/run-webdav-httpd-smoke-test.sh
+```
+
+This validates:
+- host `/data` mount semantics in both directions (host->WebDAV and WebDAV->host)
+- conditional write behavior for Apache/mod_dav (`PUT` rejected on stale/missing preconditions, accepted on fresh precondition)
 
 The script will:
 1. Start containers with test configuration (port 16065)

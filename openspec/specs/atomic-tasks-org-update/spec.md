@@ -13,11 +13,12 @@ New tasks from a batch SHALL be appended to the end of `tasks.org`, never replac
 - **AND** existing tasks in tasks.org are preserved unchanged
 
 ### Requirement: Re-read tasks.org before append
-Before appending, the system SHALL re-read `tasks.org` to get the latest state in case it was modified via WebDAV concurrent with batch processing.
+Before appending, the system SHALL re-read `tasks.org` and SHALL compute a deterministic content hash representing the latest file version. The append SHALL proceed only if this pre-append hash matches the base hash captured before Pass 2 input generation.
 
-#### Scenario: Re-read before append
+#### Scenario: Re-read and hash verification before append
 - **WHEN** Pass 2 completes and tasks.org will be updated
-- **THEN** the system re-reads tasks.org to find the current end offset
+- **THEN** the system re-reads `tasks.org` and computes the current content hash
+- **AND** append proceeds only when the hash matches the planning base hash
 
 ### Requirement: Write to temp file then rename
 The merged task entries SHALL be written to a new temp file, then `rename-file` SHALL be used to atomically update `tasks.org`.
@@ -35,9 +36,9 @@ The `rename-file` operation SHALL be atomic so readers never see partial writes.
 - **THEN** the operation is atomic from the reader's perspective
 
 ### Requirement: Handles concurrent WebDAV edits
-Re-reading before the append SHALL handle concurrent WebDAV edits to tasks.org.
+Concurrent WebDAV edits SHALL be handled by stale-write detection, not blind append. On hash mismatch, the system SHALL abort the stale append attempt and trigger bounded replanning against the latest file version.
 
-#### Scenario: Concurrent edit preserved
+#### Scenario: Concurrent edit causes stale append rejection
 - **WHEN** tasks.org was edited via WebDAV while batch was processing
-- **THEN** the re-read captures those changes
-- **AND** the atomic append includes those changes in the final file
+- **THEN** the stale append attempt is rejected on hash mismatch
+- **AND** replanning is triggered using the newest file state

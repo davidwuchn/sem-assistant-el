@@ -20,12 +20,12 @@ The system SHALL support automated certificate issuance for `WEBDAV_DOMAIN` usin
 - **AND** the failure reason MUST be available to operators in service logs
 
 ### Requirement: Renewal automation preserves WebDAV certificate path compatibility
-The system SHALL renew certificates with Certbot while preserving the existing WebDAV certificate path contract (`/certs/live/<domain>/fullchain.pem` and `/certs/live/<domain>/privkey.pem`). Renewal behavior MUST not require changes to WebDAV TLS path configuration.
+The system SHALL renew certificates with Certbot HTTP-01 while preserving the WebDAV certificate path contract consumed by production runtime after Apache migration. Renewal behavior MUST continue to update files under `/certs/live/<domain>/fullchain.pem` and `/certs/live/<domain>/privkey.pem` without requiring path changes.
 
-#### Scenario: Renewal updates files in-place
+#### Scenario: Renewal remains compatible after WebDAV runtime migration
 - **WHEN** Certbot performs a successful renewal
-- **THEN** renewed certificate material MUST remain available via the same live-path filenames used by WebDAV
-- **AND** operators MUST be able to continue using domain-driven path resolution without changing WebDAV config structure
+- **THEN** renewed certificates remain available at the same live-path filenames used by production WebDAV
+- **AND** Apache-based WebDAV continues serving TLS without certificate path reconfiguration
 
 ### Requirement: Production certificate state is isolated from integration tests
 The system SHALL isolate Certbot-managed production certificate state from integration test execution. Integration workflows MUST NOT depend on Certbot issuance, HTTP-01 challenge networking, or host-level Let's Encrypt state.

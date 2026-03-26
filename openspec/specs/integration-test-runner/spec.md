@@ -34,12 +34,9 @@ The system SHALL provide a single Bash script at `dev/integration/run-integratio
 - **THEN** the script MUST check exit codes and MUST NOT silently swallow errors with `|| true` unless the specific silent-failure is documented inline with a comment
 
 ### Requirement: Integration test compose override stays compatible with base Emacs service
-The integration test compose override SHALL remain compatible with the base compose Emacs service and apply only test-specific overrides required for integration execution.
+The integration test workflow SHALL remain compatible with the base Emacs service while tolerating production WebDAV runtime substitution. The runner and compose override MUST keep artifact collection paths, container naming assumptions, and lifecycle orchestration deterministic.
 
-#### Scenario: Test compose override does not require fixed Emacs image name
-- **WHEN** `docker-compose.test.yml` is inspected
-- **THEN** the Emacs service is not required to use a hardcoded image tag
-
-#### Scenario: Integration test runner relies on emacsclient execution
-- **WHEN** integration test containers are started with the test compose override
-- **THEN** the runner verifies Emacs readiness and executes workflow through `emacsclient`
+#### Scenario: Runner lifecycle remains deterministic after WebDAV substitution
+- **WHEN** integration tests execute with the test compose override
+- **THEN** setup, execution, cleanup, and artifact collection complete using the same deterministic paths and container expectations
+- **AND** production WebDAV runtime substitutions do not change test lifecycle contracts
