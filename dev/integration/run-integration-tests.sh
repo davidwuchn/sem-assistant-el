@@ -341,7 +341,21 @@ local_git_sync_run_emacs_sync() {
           (setq sem-git-sync-org-roam-dir \"$repo_dir\")
           (setq sem-git-sync-ssh-key \"$REPO_ROOT/.does-not-exist\")
           (condition-case err
-              (cl-letf (((symbol-function 'sem-git-sync--setup-ssh) (lambda () '(t . nil)))
+              (cl-letf (((symbol-function 'sem-git-sync--run-command)
+                         (lambda (command &optional dir)
+                           (let* ((full-command (if dir
+                                                    (format \"cd %s && %s\" (shell-quote-argument dir) command)
+                                                  command))
+                                  (output-buffer (generate-new-buffer \" *git-sync-local-cmd*\")))
+                             (unwind-protect
+                                 (let ((exit-code
+                                        (with-current-buffer output-buffer
+                                          (erase-buffer)
+                                          (call-process-shell-command full-command nil output-buffer nil))))
+                                   (cons exit-code (with-current-buffer output-buffer (buffer-string))))
+                               (when (buffer-live-p output-buffer)
+                                 (kill-buffer output-buffer))))))
+                        ((symbol-function 'sem-git-sync--setup-ssh) (lambda () '(t . nil)))
                         ((symbol-function 'sem-git-sync--teardown-ssh) (lambda (&rest _) nil)))
                 (if (sem-git-sync-org-roam)
                     (princ \"RESULT:SUCCESS\\n\")

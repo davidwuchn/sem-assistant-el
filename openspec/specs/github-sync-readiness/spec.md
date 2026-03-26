@@ -58,3 +58,16 @@ Conflict resolution is explicitly out of scope for this capability.
 #### Scenario: No automatic conflict resolution
 - **WHEN** a merge conflict occurs
 - **THEN** it must be resolved manually by the operator
+
+### Requirement: Non-network git-sync readiness validation path exists
+The system SHALL provide a readiness validation path for scheduled git-sync behavior that runs without production credentials or remote network infrastructure. This validation path MUST use local test repositories and a local bare remote and MUST remain suitable for routine operator verification.
+
+#### Scenario: Readiness validation excludes production credentials
+- **WHEN** operators run routine git-sync readiness checks
+- **THEN** checks MUST execute without production SSH credentials
+- **AND** checks MUST NOT require hosted remote access
+
+#### Scenario: Readiness validation exercises scheduled git-sync boundaries
+- **WHEN** readiness validation is executed
+- **THEN** it verifies successful sync and no-op sync behavior under local deterministic fixtures
+- **AND** it verifies failure classification for invalid local repository and unavailable local push target
