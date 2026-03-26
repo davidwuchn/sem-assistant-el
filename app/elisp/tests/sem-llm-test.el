@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'sem-mock)
 (require 'sem-core)
 
@@ -110,6 +111,84 @@
   "Test that mock cleanup works correctly."
   (sem-mock-reset-all)
   (should t))
+
+(ert-deftest sem-llm-test-resolve-model-for-tier-weak-configured ()
+  "Test weak tier resolves to configured weak model."
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (cond
+                ((string= name "OPENROUTER_MODEL") "openrouter/medium")
+                ((string= name "OPENROUTER_WEAK_MODEL") "openrouter/weak")
+                (t nil)))))
+    (let ((resolved (sem-llm--resolve-model-for-tier 'weak)))
+      (should (eq (plist-get resolved :tier) 'weak))
+      (should (string= (plist-get resolved :model) "openrouter/weak"))
+      (should-not (plist-get resolved :weak-fallback)))))
+
+(ert-deftest sem-llm-test-resolve-model-for-tier-weak-unset-fallback ()
+  "Test weak tier falls back to medium when weak model is unset."
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (cond
+                ((string= name "OPENROUTER_MODEL") "openrouter/medium")
+                ((string= name "OPENROUTER_WEAK_MODEL") nil)
+                (t nil)))))
+    (let ((resolved (sem-llm--resolve-model-for-tier 'weak)))
+      (should (string= (plist-get resolved :model) "openrouter/medium"))
+      (should (plist-get resolved :weak-fallback)))))
+
+(ert-deftest sem-llm-test-resolve-model-for-tier-weak-empty-fallback ()
+  "Test weak tier falls back to medium when weak model is empty."
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (cond
+                ((string= name "OPENROUTER_MODEL") "openrouter/medium")
+                ((string= name "OPENROUTER_WEAK_MODEL") "   ")
+                (t nil)))))
+    (let ((resolved (sem-llm--resolve-model-for-tier 'weak)))
+      (should (string= (plist-get resolved :model) "openrouter/medium"))
+      (should (plist-get resolved :weak-fallback)))))
+
+(ert-deftest sem-llm-test-resolve-model-for-tier-medium-default ()
+  "Test medium tier resolves to OPENROUTER_MODEL."
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (cond
+                ((string= name "OPENROUTER_MODEL") "openrouter/medium")
+                ((string= name "OPENROUTER_WEAK_MODEL") "openrouter/weak")
+                (t nil)))))
+    (let ((resolved (sem-llm--resolve-model-for-tier 'medium)))
+      (should (eq (plist-get resolved :tier) 'medium))
+      (should (string= (plist-get resolved :model) "openrouter/medium"))
+      (should-not (plist-get resolved :weak-fallback)))))
+
+(ert-deftest sem-llm-test-request-binds-gptel-model-per-request ()
+  "Test sem-llm-request uses dynamic gptel-model binding for tier intent."
+  (let ((captured-model nil)
+        (callback-called nil))
+    (cl-letf (((symbol-function 'getenv)
+               (lambda (name)
+                 (cond
+                  ((string= name "OPENROUTER_MODEL") "openrouter/medium")
+                  ((string= name "OPENROUTER_WEAK_MODEL") "openrouter/weak")
+                  (t nil))))
+              ((symbol-function 'gptel-request)
+               (lambda (_prompt &rest args)
+                 (setq captured-model gptel-model)
+                 (let ((cb (plist-get args :callback)))
+                   (when cb
+                     (funcall cb "ok" (list :status 200))))
+                 nil)))
+      (sem-llm-request
+       "prompt"
+       "system"
+       (lambda (response _info _context)
+         (setq callback-called (string= response "ok"))
+         nil)
+       nil
+       'weak)
+      (should callback-called)
+      (should (eq captured-model 'openrouter/weak)))))
 
 (provide 'sem-llm-test)
 ;;; sem-llm-test.el ends here

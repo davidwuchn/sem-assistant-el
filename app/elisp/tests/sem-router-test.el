@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'sem-mock)
 
 ;; Load modules under test
@@ -37,6 +38,22 @@
   "Test that @task tag is detected for LLM routing."
   (let ((headline '(:title "Buy milk" :tags ("task") :body nil)))
     (should (sem-router--is-task-headline headline))))
+
+(ert-deftest sem-router-test-task-route-uses-weak-tier ()
+  "Test task route calls sem-llm-request with weak tier intent."
+  (let ((captured-tier nil))
+    (require 'sem-llm)
+    (cl-letf (((symbol-function 'org-id-new)
+               (lambda () "550e8400-e29b-41d4-a716-446655440000"))
+              ((symbol-function 'sem-llm-request)
+               (lambda (_prompt _system callback context &optional tier)
+                 (setq captured-tier tier)
+                 (funcall callback nil (list :error "mock") context)
+                 nil)))
+      (sem-router--route-to-task-llm
+       '(:title "Buy milk" :tags ("task") :body nil :hash "task-hash")
+       (lambda (_success _context) nil))
+      (should (eq captured-tier 'weak)))))
 
 (ert-deftest sem-router-test-non-task-not-routed ()
   "Test that non-task headlines are not routed to task LLM."

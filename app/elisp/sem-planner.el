@@ -682,7 +682,7 @@ CALLBACK receives non-nil on success and nil on explicit non-success outcome."
                 (message "SEM: Planning attempt %d/%d" (1+ retry-count) sem-planner--max-retries)
                 (sem-llm-request
                  user-prompt system-prompt
-                 (lambda (response info context)
+                  (lambda (response info context)
                    (if response
                        (funcall callback t response)
                      (if (< retry-count (1- sem-planner--max-retries))
@@ -695,7 +695,8 @@ CALLBACK receives non-nil on success and nil on explicit non-success outcome."
                               (setq retry-count (1+ retry-count))
                               (attempt))))
                        (funcall callback nil nil))))
-                 nil)))
+                  nil
+                  'medium)))
       (attempt))))
 
 (provide 'sem-planner)

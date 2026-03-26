@@ -32,12 +32,6 @@
 (defconst sem-rss-dir "/data/morning-read/"
   "Directory where daily digests are stored.")
 
-(defconst sem-rss-model
-  (or (when-let ((val (getenv "OPENROUTER_MODEL")))
-        (intern val))
-      'gptel-default)
-  "Model to use for summarization. Read from OPENROUTER_MODEL.")
-
 ;;; Prompt Templates (loaded from external files)
 
 (defvar sem-rss-prompts-dir nil
@@ -300,7 +294,8 @@ Handles API errors (RETRY) and malformed output (DLQ)."
                          (when callback
                            (funcall callback success context))))
                      (list :target-path target-path :title-prefix title-prefix
-                           :from-org from-org :to-org to-org :prompt prompt))
+                           :from-org from-org :to-org to-org :prompt prompt)
+                     'medium)
 
     ;; Return immediately - processing continues asynchronously
     t))

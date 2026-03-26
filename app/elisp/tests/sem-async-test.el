@@ -49,7 +49,11 @@ Called with RESULT and CONTEXT."
   (let ((start-time (float-time))
         (result nil))
     ;; Mock gptel-request to not actually call the API
-    (cl-letf (((symbol-function 'gptel-request)
+    (cl-letf (((symbol-function 'getenv)
+               (lambda (name)
+                 (if (string= name "OPENROUTER_MODEL") "openrouter/medium"
+                   nil)))
+              ((symbol-function 'gptel-request)
                (lambda (prompt &rest args)
                  ;; Don't call callback - just return nil immediately
                  nil)))
@@ -65,7 +69,11 @@ Called with RESULT and CONTEXT."
   (let ((mock-response "Test LLM response")
         (mock-info '(:status 200)))
     ;; Mock gptel-request to immediately call the callback
-    (cl-letf (((symbol-function 'gptel-request)
+    (cl-letf (((symbol-function 'getenv)
+               (lambda (name)
+                 (if (string= name "OPENROUTER_MODEL") "openrouter/medium"
+                   nil)))
+              ((symbol-function 'gptel-request)
                (lambda (prompt &rest args)
                  (let ((callback (plist-get args :callback)))
                    (when callback
@@ -81,7 +89,11 @@ Called with RESULT and CONTEXT."
   "Test that sem-llm-request handles errors gracefully."
   (sem-async-test--reset)
   ;; Mock gptel-request to signal an error
-  (cl-letf (((symbol-function 'gptel-request)
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (if (string= name "OPENROUTER_MODEL") "openrouter/medium"
+                 nil)))
+            ((symbol-function 'gptel-request)
              (lambda (prompt &rest args)
                (error "Mock API error"))))
     ;; Should not signal error - should return nil and call callback with error
@@ -100,9 +112,9 @@ Called with RESULT and CONTEXT."
         (headline '(:title "Test task" :tags ("task") :hash "abc123")))
     ;; Mock sem-llm-request to return immediately
     (cl-letf (((symbol-function 'sem-llm-request)
-               (lambda (prompt system callback context)
-                 ;; Don't call callback - just return
-                 nil)))
+               (lambda (prompt system callback context &optional _tier)
+                  ;; Don't call callback - just return
+                  nil)))
       (let ((result (sem-router--route-to-task-llm headline #'sem-async-test--callback)))
         ;; Should return immediately
         (should (< (- (float-time) start-time) 0.1))
@@ -116,9 +128,9 @@ Called with RESULT and CONTEXT."
         (mock-response "* TODO Test task\n:PROPERTIES:\n:ID: test-id\n:FILETAGS: :work:\n:END:\nTest description"))
     ;; Mock sem-llm-request to simulate success
     (cl-letf (((symbol-function 'sem-llm-request)
-               (lambda (prompt system callback context)
-                 (funcall callback mock-response '(:status 200) context)
-                 nil))
+               (lambda (prompt system callback context &optional _tier)
+                  (funcall callback mock-response '(:status 200) context)
+                  nil))
               ((symbol-function 'sem-router--validate-task-response)
                (lambda (response _injected-id) t))
               ((symbol-function 'sem-router--write-task-to-file)
@@ -136,9 +148,9 @@ Called with RESULT and CONTEXT."
   (let ((headline '(:title "Test task" :tags ("task") :hash "abc123")))
     ;; Mock sem-llm-request to simulate API error
     (cl-letf (((symbol-function 'sem-llm-request)
-               (lambda (prompt system callback context)
-                 (funcall callback nil '(:error "API timeout") context)
-                 nil)))
+               (lambda (prompt system callback context &optional _tier)
+                  (funcall callback nil '(:error "API timeout") context)
+                  nil)))
       (sem-router--route-to-task-llm headline #'sem-async-test--callback-2arg)
       ;; Callback should be called with nil (failure)
       (should sem-async-test--callback-called)
@@ -160,7 +172,7 @@ Called with RESULT and CONTEXT."
               ((symbol-function 'sem-url-capture--get-umbrella-nodes)
                (lambda () nil))
               ((symbol-function 'sem-llm-request)
-               (lambda (prompt system callback context) nil)))
+               (lambda (prompt system callback context &optional _tier) nil)))
       (let ((result (sem-url-capture-process "http://example.com" #'sem-async-test--callback-2arg)))
         ;; Should return immediately
         (should (< (- (float-time) start-time) 0.1))
@@ -181,9 +193,9 @@ Called with RESULT and CONTEXT."
               ((symbol-function 'sem-url-capture--get-umbrella-nodes)
                (lambda () nil))
               ((symbol-function 'sem-llm-request)
-               (lambda (prompt system callback context)
-                 (funcall callback "Mock LLM output" '(:status 200) context)
-                 nil))
+               (lambda (prompt system callback context &optional _tier)
+                  (funcall callback "Mock LLM output" '(:status 200) context)
+                  nil))
               ((symbol-function 'sem-security-sanitize-urls)
                (lambda (text) text))
               ((symbol-function 'sem-url-capture--validate-and-save)
@@ -201,7 +213,7 @@ Called with RESULT and CONTEXT."
   (let ((start-time (float-time)))
     ;; Mock sem-llm-request
     (cl-letf (((symbol-function 'sem-llm-request)
-               (lambda (prompt system callback context) nil)))
+               (lambda (prompt system callback context &optional _tier) nil)))
       (let ((result (sem-rss--generate-file "/tmp/test.org" "prompt" "Test" 1 #'sem-async-test--callback-2arg)))
         ;; Should return immediately
         (should (< (- (float-time) start-time) 0.1))
@@ -213,9 +225,9 @@ Called with RESULT and CONTEXT."
   (sem-async-test--reset)
   ;; Mock sem-llm-request to simulate success
   (cl-letf (((symbol-function 'sem-llm-request)
-             (lambda (prompt system callback context)
-               (funcall callback "* RSS Digest\nTest content" '(:status 200) context)
-               nil))
+             (lambda (prompt system callback context &optional _tier)
+                (funcall callback "* RSS Digest\nTest content" '(:status 200) context)
+                nil))
             ((symbol-function 'sem-core-log)
              (lambda (&rest args) nil)))
     (sem-rss--generate-file "/tmp/test.org" "prompt" "Test" 1 #'sem-async-test--callback-2arg)
@@ -228,9 +240,9 @@ Called with RESULT and CONTEXT."
   (sem-async-test--reset)
   ;; Mock sem-llm-request to simulate API error
   (cl-letf (((symbol-function 'sem-llm-request)
-             (lambda (prompt system callback context)
-               (funcall callback nil '(:error "Rate limited") context)
-               nil))
+             (lambda (prompt system callback context &optional _tier)
+                (funcall callback nil '(:error "Rate limited") context)
+                nil))
             ((symbol-function 'sem-core-log-error)
              (lambda (&rest args) nil)))
     (sem-rss--generate-file "/tmp/test.org" "prompt" "Test" 1 #'sem-async-test--callback-2arg)

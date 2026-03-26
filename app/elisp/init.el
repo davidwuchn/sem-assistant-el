@@ -20,6 +20,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+
 ;;; 1. Validate Required Environment Variables
 
 (defun sem-init--validate-env ()
@@ -32,6 +34,25 @@ Signal an error if OPENROUTER_KEY or OPENROUTER_MODEL is unset or empty."
     (when (or (null model) (string-empty-p model))
       (error "SEM: OPENROUTER_MODEL environment variable is not set or empty"))
     (message "SEM: Environment variables validated successfully")))
+
+(defun sem-init--resolve-openrouter-models ()
+  "Resolve effective OpenRouter model configuration.
+Returns a plist with keys :medium, :weak, :weak-fallback, and :models.
+Weak-tier uses `OPENROUTER_WEAK_MODEL' when non-empty; otherwise it falls back
+to `OPENROUTER_MODEL'. The returned :models list is deduplicated."
+  (cl-labels ((empty-string-p (value)
+                (or (null value)
+                    (and (stringp value) (string-empty-p (string-trim value))))))
+    (let* ((medium (getenv "OPENROUTER_MODEL"))
+           (weak-raw (getenv "OPENROUTER_WEAK_MODEL"))
+           (weak (if (empty-string-p weak-raw) medium weak-raw))
+           (weak-fallback (or (null weak-raw)
+                              (string-empty-p (string-trim weak-raw))))
+           (all-models (delete-dups (list medium weak))))
+      (list :medium medium
+            :weak weak
+            :weak-fallback weak-fallback
+            :models all-models))))
 
 ;;; 2. Load Package Dependencies (installed at build time)
 
@@ -51,16 +72,25 @@ Signal an error if OPENROUTER_KEY or OPENROUTER_MODEL is unset or empty."
 API key is read from OPENROUTER_KEY via lambda.
 Model is read from OPENROUTER_MODEL at call time."
   (require 'gptel)
-  (gptel-make-openai "OpenRouter"
-    :host "openrouter.ai"
-    :endpoint "/api/v1/chat/completions"
-    :stream t
-    :key (lambda () (getenv "OPENROUTER_KEY"))
-    :models (list (intern (getenv "OPENROUTER_MODEL")))
-    :request-params '(:reasoning (:exclude t)))
-  (setq gptel-backend (gptel-get-backend "OpenRouter"))
-  (setq gptel-model (intern (getenv "OPENROUTER_MODEL")))
-  (message "SEM: gptel configured with OpenRouter backend"))
+  (let* ((resolved (sem-init--resolve-openrouter-models))
+         (medium-model (plist-get resolved :medium))
+         (weak-model (plist-get resolved :weak))
+         (weak-fallback (plist-get resolved :weak-fallback))
+         (registered-models (mapcar #'intern (plist-get resolved :models))))
+    (gptel-make-openai "OpenRouter"
+      :host "openrouter.ai"
+      :endpoint "/api/v1/chat/completions"
+      :stream t
+      :key (lambda () (getenv "OPENROUTER_KEY"))
+      :models registered-models
+      :request-params '(:reasoning (:exclude t)))
+    (setq gptel-backend (gptel-get-backend "OpenRouter"))
+    (setq gptel-model (intern medium-model))
+    (message "SEM: gptel configured with OpenRouter backend")
+    (message "SEM: LLM model config: medium=%s weak=%s%s"
+             medium-model
+             weak-model
+             (if weak-fallback " (fallback to medium)" ""))))
 
 ;;; 4. Set Hardcoded Paths as Globals
 
@@ -242,7 +272,8 @@ written to errors.org to aid debugging."
          (error nil))))))
 
 ;; Run startup when this file is loaded
-(sem-init--startup)
+(unless (bound-and-true-p sem-init--skip-startup)
+  (sem-init--startup))
 
 (provide 'init)
 ;;; init.el ends here

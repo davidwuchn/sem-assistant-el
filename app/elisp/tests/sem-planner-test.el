@@ -245,6 +245,27 @@ Some description here")
     (should (string-match-p "Avoid overlap with pre-existing occupied windows by default" prompt))
     (should (string-match-p "PRE-EXISTING OCCUPIED WINDOWS" prompt))))
 
+(ert-deftest sem-planner-test-run-with-retry-uses-medium-tier ()
+  "Test Pass 2 planner requests sem-llm medium tier intent."
+  (let ((captured-tier nil)
+        (callback-result 'unset))
+    (cl-letf (((symbol-function 'sem-llm-request)
+               (lambda (_prompt _system callback _context &optional tier)
+                 (setq captured-tier tier)
+                 (funcall callback "ok" (list :status 200) nil)
+                 nil)))
+      (sem-planner--run-with-retry
+       "rules"
+       "existing"
+       "occupied"
+       "temp"
+       "2026-03-24T12:00:00Z"
+       "2026-03-24T13:00:00Z"
+       (lambda (success response)
+         (setq callback-result (list success response))))
+      (should (eq captured-tier 'medium))
+      (should (equal callback-result '(t "ok"))))))
+
 ;;; Temp File Path Tests
 
 (ert-deftest sem-planner-test-temp-file-path-format ()

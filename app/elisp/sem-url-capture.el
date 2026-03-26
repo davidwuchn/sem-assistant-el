@@ -394,8 +394,8 @@ If no callback is provided, processing still happens asynchronously."
 
                 ;; Request LLM via sem-llm-request with callback
                 (require 'sem-llm)
-                (sem-llm-request user-prompt system-prompt
-                                 (lambda (response info context)
+                 (sem-llm-request user-prompt system-prompt
+                                  (lambda (response info context)
                                     "Callback for sem-llm-request.
 Calls sem-url-capture--validate-and-save with restored sensitive content."
                                     (unless completed
@@ -426,7 +426,8 @@ Calls sem-url-capture--validate-and-save with restored sensitive content."
                                         ;; Call the completion callback if provided
                                         (when callback
                                           (funcall callback filepath context)))))
-                                 (list :security-blocks security-blocks :url url))
+                                  (list :security-blocks security-blocks :url url)
+                                  'medium)
 
                 ;; Return immediately - processing continues asynchronously
                 t)

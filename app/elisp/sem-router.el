@@ -360,7 +360,8 @@ Validates the LLM response and writes to tasks.org with mutex lock."
                                ;; Call the completion callback
                                (when callback
                                  (funcall callback success context))))
-                           (list :hash hash :title title :headline headline :injected-id injected-id :security-blocks security-blocks)))
+                           (list :hash hash :title title :headline headline :injected-id injected-id :security-blocks security-blocks)
+                           'weak))
 
         ;; Return immediately - processing continues asynchronously
         t)

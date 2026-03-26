@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'sem-mock)
 (require 'sem-url-capture)
 
@@ -113,6 +114,22 @@
     (should (string-match-p "CI optimization: 43% faster monorepo builds" prompt))
     (should (string-match-p "Do not hard-truncate by character count" prompt))))
 
+(ert-deftest sem-url-capture-test-process-uses-medium-tier ()
+  "Test URL capture requests sem-llm-request with medium tier intent."
+  (let ((captured-tier nil))
+    (cl-letf (((symbol-function 'sem-url-capture--fetch-url)
+               (lambda (_url &optional _timeout)
+                 (list :content "Test article content")))
+              ((symbol-function 'sem-url-capture--get-umbrella-nodes)
+               (lambda () nil))
+              ((symbol-function 'sem-llm-request)
+               (lambda (_prompt _system callback context &optional tier)
+                 (setq captured-tier tier)
+                 (funcall callback nil (list :error "mock") context)
+                 nil)))
+      (sem-url-capture-process "https://example.com/article" (lambda (_filepath _context) nil))
+      (should (eq captured-tier 'medium)))))
+
 ;;; Tests for security masking (Task 4.5-4.6)
 
 (ert-deftest sem-url-capture-test-security-tokenizes-sensitive-blocks ()
@@ -194,11 +211,11 @@ and asserts the saved file contains the restored sensitive block text."
 
           ;; Mock sem-llm-request to immediately call callback with tokenized response
           ;; The callback receives (response info context), where context has :security-blocks
-          (cl-letf (((symbol-function 'sem-llm-request)
-                     (lambda (user-prompt system-prompt callback context)
-                       ;; Merge the security-blocks into the context for the callback
-                       (let ((context-with-blocks (plist-put context :security-blocks security-blocks)))
-                         (funcall callback llm-response-with-token (list :status "success") context-with-blocks))))
+           (cl-letf (((symbol-function 'sem-llm-request)
+                     (lambda (user-prompt system-prompt callback context &optional _tier)
+                        ;; Merge the security-blocks into the context for the callback
+                        (let ((context-with-blocks (plist-put context :security-blocks security-blocks)))
+                          (funcall callback llm-response-with-token (list :status "success") context-with-blocks))))
                     ((symbol-function 'sem-url-capture--fetch-url)
                      (lambda (_ &optional _timeout) (list :content "Test article content")))
                     ((symbol-function 'sem-url-capture--get-umbrella-nodes)

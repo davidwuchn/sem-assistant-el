@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 
 ;; Set prompts directory before loading sem-rss so tests can find prompt files
 ;; Test file is at app/elisp/tests/sem-rss-test.el, prompts at data/prompts/
@@ -144,8 +145,21 @@ This is a structural test verifying the code uses sem-llm-request."
   ;; Verify by checking that sem-llm is required in sem-rss--generate-file
   ;; The actual test is that the function loads without error and sem-llm
   ;; is available (which means require 'sem-llm succeeded)
-  (require 'sem-llm)
-  (should (fboundp 'sem-llm-request)))
+   (require 'sem-llm)
+   (should (fboundp 'sem-llm-request)))
+
+(ert-deftest sem-rss-test-generate-file-uses-medium-tier ()
+  "Test RSS digest generation requests medium tier intent."
+  (let ((captured-tier nil))
+    (cl-letf (((symbol-function 'sem-llm-request)
+               (lambda (_prompt _system callback context &optional tier)
+                 (setq captured-tier tier)
+                 (funcall callback nil (list :error "mock") context)
+                 nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _args) nil)))
+      (sem-rss--generate-file "/tmp/test-rss-tier.org" "prompt" "Test" 1)
+      (should (eq captured-tier 'medium)))))
 
 (ert-deftest sem-rss-test-nil-hash-handling ()
   "Test that sem-core--mark-processed handles nil hash without crashing.

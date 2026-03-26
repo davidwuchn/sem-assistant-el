@@ -48,6 +48,10 @@ Shared volume: `/data` contains all Org files, databases, and logs.
    Edit `.env` and set:
    - `OPENROUTER_KEY=your-api-key-here`
    - `OPENROUTER_MODEL=your-preferred-model` (e.g., `anthropic/claude-sonnet-4-5`)
+   - Optional: `OPENROUTER_WEAK_MODEL=your-lower-cost-model` for Pass 1 `:task:` normalization
+
+   If `OPENROUTER_WEAK_MODEL` is unset or empty, weak-tier requests automatically
+   fall back to `OPENROUTER_MODEL`.
 
 3. **Create logs directory**:
    ```bash
@@ -406,6 +410,17 @@ Configure Orgzly to sync via HTTPS:
 - `SEM_PROMPTS_DIR` - Override prompt files location (default: `/data/prompts/`)
 - `SEM_WATCHDOG_PROBE_TIMEOUT_SEC` - Watchdog probe timeout in seconds (default: `45`)
 - `SEM_WATCHDOG_STARTUP_GRACE_SEC` - Startup grace period in seconds (default: `180`)
+- `OPENROUTER_WEAK_MODEL` - Optional weak-tier model for Pass 1 `:task:` normalization; unset/empty falls back to `OPENROUTER_MODEL`
+
+### Model Tier Rollout / Rollback
+
+- **Rollout**
+  1. Deploy with only `OPENROUTER_MODEL` first (all flows use medium/default behavior).
+  2. Set `OPENROUTER_WEAK_MODEL` and restart containers to enable weak tier for Pass 1 task normalization.
+  3. Verify startup/request logs show expected tier-to-model mapping.
+- **Rollback**
+  1. Unset `OPENROUTER_WEAK_MODEL` (or set it empty) and restart.
+  2. Weak-tier traffic immediately falls back to `OPENROUTER_MODEL` without code changes.
 
 ## Unit Tests
 
