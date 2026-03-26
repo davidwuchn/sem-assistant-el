@@ -26,6 +26,14 @@ TRUSTED_UMBRELLA_ID="96a58b04-1f58-47c9-993f-551994939252"
 TRUSTED_UMBRELLA_TITLE="LLM"
 TRUSTED_UMBRELLA_TAG=":umbrella:"
 ORG_ROAM_BASELINE_MANIFEST="$TEST_DATA_DIR/org-roam-baseline-files.txt"
+INTEGRATION_MODE="${SEM_INTEGRATION_MODE:-paid-inbox}"
+LOCAL_GIT_SYNC_MODE="local-git-sync"
+PAID_INBOX_MODE="paid-inbox"
+LOCAL_GIT_SYNC_RUN_DIR_NAME="local-git-sync-run"
+LOCAL_GIT_SYNC_RESULTS_FILE="local-git-sync-results.txt"
+LOCAL_GIT_SYNC_LOCAL_REPO="$TEST_DATA_DIR/org-roam"
+LOCAL_GIT_SYNC_BARE_REMOTE="$TEST_DATA_DIR/local-git-sync-origin.git"
+LOCAL_GIT_SYNC_UNAVAILABLE_REMOTE="$TEST_DATA_DIR/local-git-sync-missing-origin.git"
 
 # Test-specific port mapping (avoids privileged port 443)
 export WEBDAV_PORT=16065
@@ -69,15 +77,24 @@ RUN_DIR=""
 # Validation
 # =============================================================================
 
-# Check OPENROUTER_KEY is set
-if [[ -z "${OPENROUTER_KEY:-}" ]]; then
-    echo "ERROR: OPENROUTER_KEY environment variable is not set" >&2
-    echo "Integration tests require real LLM API access." >&2
+echo "=== SEM Integration Test Suite ==="
+echo "Mode: $INTEGRATION_MODE"
+
+if [[ "$INTEGRATION_MODE" == "$PAID_INBOX_MODE" ]]; then
+    # Paid inbox/LLM path keeps existing behavior and still requires OPENROUTER_KEY.
+    if [[ -z "${OPENROUTER_KEY:-}" ]]; then
+        echo "ERROR: OPENROUTER_KEY environment variable is not set" >&2
+        echo "Integration tests require real LLM API access." >&2
+        exit 1
+    fi
+    echo "OPENROUTER_KEY is set (masked)"
+elif [[ "$INTEGRATION_MODE" == "$LOCAL_GIT_SYNC_MODE" ]]; then
+    echo "Running local git-sync validation without OpenRouter or network APIs"
+else
+    echo "ERROR: Unsupported SEM_INTEGRATION_MODE: $INTEGRATION_MODE" >&2
+    echo "Supported values: $PAID_INBOX_MODE, $LOCAL_GIT_SYNC_MODE" >&2
     exit 1
 fi
-
-echo "=== SEM Integration Test Suite ==="
-echo "OPENROUTER_KEY is set (masked)"
 
 # =============================================================================
 # Cleanup Trap (MUST be registered early, before any other actions)
@@ -86,10 +103,14 @@ echo "OPENROUTER_KEY is set (masked)"
 cleanup() {
     echo ""
     echo "=== Cleanup ==="
-    echo "Stopping containers..."
-    podman-compose -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" down -v 2>/dev/null || true
-    echo "Removing dangling images..."
-    podman image prune -f 2>/dev/null || true
+    if [[ "$INTEGRATION_MODE" == "$PAID_INBOX_MODE" ]]; then
+        echo "Stopping containers..."
+        podman-compose -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" down -v 2>/dev/null || true
+        echo "Removing dangling images..."
+        podman image prune -f 2>/dev/null || true
+    else
+        echo "Local git-sync mode: skipping container cleanup"
+    fi
     echo "Cleanup complete"
 }
 
@@ -286,13 +307,248 @@ create_run_dir() {
     # Create test-results directory if absent
     mkdir -p "$TEST_RESULTS_DIR"
 
-    # Create timestamped run directory
+    # Create run directory (deterministic for local git-sync mode)
     local timestamp
-    timestamp=$(date +%Y-%m-%d-%H-%M-%S)
-    RUN_DIR="$TEST_RESULTS_DIR/${timestamp}-run"
+    if [[ "$INTEGRATION_MODE" == "$LOCAL_GIT_SYNC_MODE" ]]; then
+        RUN_DIR="$TEST_RESULTS_DIR/$LOCAL_GIT_SYNC_RUN_DIR_NAME"
+        rm -rf "$RUN_DIR"
+    else
+        timestamp=$(date +%Y-%m-%d-%H-%M-%S)
+        RUN_DIR="$TEST_RESULTS_DIR/${timestamp}-run"
+    fi
     mkdir -p "$RUN_DIR"
 
     echo "Run directory created: $RUN_DIR"
+}
+
+# =============================================================================
+# Local Git-Sync Validation (No-cost path)
+# =============================================================================
+
+local_git_sync_run_emacs_sync() {
+    local repo_dir="$1"
+    local output_file="$2"
+
+    emacs --batch \
+      --eval "(progn
+  (require 'cl-lib)
+  (load-file \"$REPO_ROOT/app/elisp/sem-core.el\")
+  (load-file \"$REPO_ROOT/app/elisp/sem-git-sync.el\")
+  (let ((sem-git-sync-org-roam-dir \"$repo_dir\")
+        (sem-git-sync-ssh-key \"$REPO_ROOT/.does-not-exist\"))
+    (condition-case err
+        (cl-letf (((symbol-function 'sem-git-sync--setup-ssh) (lambda () '(t . nil)))
+                  ((symbol-function 'sem-git-sync--teardown-ssh) (lambda (&rest _) nil)))
+          (if (sem-git-sync-org-roam)
+              (princ \"RESULT:SUCCESS\\n\")
+            (princ \"RESULT:FAILURE\\n\")))
+      (error
+       (princ (format \"RESULT:ERROR:%s\\n\" (error-message-string err)))))))" > "$output_file" 2>&1
+}
+
+local_git_sync_current_branch() {
+    local repo_dir="$1"
+    git -C "$repo_dir" rev-parse --abbrev-ref HEAD
+}
+
+local_git_sync_head() {
+    local repo_dir="$1"
+    git -C "$repo_dir" rev-parse HEAD
+}
+
+local_git_sync_commit_count() {
+    local repo_dir="$1"
+    git -C "$repo_dir" rev-list --count HEAD
+}
+
+local_git_sync_bare_head() {
+    local bare_repo="$1"
+    local branch_name="$2"
+    git --git-dir "$bare_repo" rev-parse "refs/heads/$branch_name"
+}
+
+local_git_sync_setup_fixtures() {
+    echo ""
+    echo "=== Setting Up Local Git-Sync Fixtures ==="
+
+    rm -rf "$LOCAL_GIT_SYNC_LOCAL_REPO" "$LOCAL_GIT_SYNC_BARE_REMOTE" "$LOCAL_GIT_SYNC_UNAVAILABLE_REMOTE"
+    mkdir -p "$LOCAL_GIT_SYNC_LOCAL_REPO"
+
+    git -C "$LOCAL_GIT_SYNC_LOCAL_REPO" init
+    git -C "$LOCAL_GIT_SYNC_LOCAL_REPO" config user.name "SEM Integration"
+    git -C "$LOCAL_GIT_SYNC_LOCAL_REPO" config user.email "sem-integration@example.com"
+
+    cat > "$LOCAL_GIT_SYNC_LOCAL_REPO/seed.org" <<'EOF'
+* Seed
+Initial local git-sync fixture content.
+EOF
+
+    git -C "$LOCAL_GIT_SYNC_LOCAL_REPO" add -A
+    git -C "$LOCAL_GIT_SYNC_LOCAL_REPO" commit -m "Seed local git-sync fixture"
+
+    git init --bare "$LOCAL_GIT_SYNC_BARE_REMOTE"
+    git -C "$LOCAL_GIT_SYNC_LOCAL_REPO" remote add origin "file://$LOCAL_GIT_SYNC_BARE_REMOTE"
+    git -C "$LOCAL_GIT_SYNC_LOCAL_REPO" push -u origin HEAD
+}
+
+local_git_sync_validate_fixtures() {
+    echo ""
+    echo "=== Validating Local Git-Sync Fixtures ==="
+
+    if [[ ! -d "$LOCAL_GIT_SYNC_LOCAL_REPO/.git" ]]; then
+        echo "FAIL: local fixture is not a git repository: $LOCAL_GIT_SYNC_LOCAL_REPO" | tee -a "$RUN_DIR/$LOCAL_GIT_SYNC_RESULTS_FILE"
+        TEST_STATUS="FAIL"
+        return 1
+    fi
+
+    if [[ ! -d "$LOCAL_GIT_SYNC_BARE_REMOTE" ]]; then
+        echo "FAIL: local bare remote fixture missing: $LOCAL_GIT_SYNC_BARE_REMOTE" | tee -a "$RUN_DIR/$LOCAL_GIT_SYNC_RESULTS_FILE"
+        TEST_STATUS="FAIL"
+        return 1
+    fi
+
+    if [[ ! -f "$LOCAL_GIT_SYNC_BARE_REMOTE/HEAD" ]]; then
+        echo "FAIL: local bare remote fixture missing HEAD file: $LOCAL_GIT_SYNC_BARE_REMOTE" | tee -a "$RUN_DIR/$LOCAL_GIT_SYNC_RESULTS_FILE"
+        TEST_STATUS="FAIL"
+        return 1
+    fi
+
+    local origin_url
+    origin_url=$(git -C "$LOCAL_GIT_SYNC_LOCAL_REPO" remote get-url origin)
+    if [[ "$origin_url" != "file://$LOCAL_GIT_SYNC_BARE_REMOTE" ]]; then
+        echo "FAIL: unexpected local origin URL: $origin_url" | tee -a "$RUN_DIR/$LOCAL_GIT_SYNC_RESULTS_FILE"
+        TEST_STATUS="FAIL"
+        return 1
+    fi
+
+    echo "PASS: local git-sync fixtures validated" | tee -a "$RUN_DIR/$LOCAL_GIT_SYNC_RESULTS_FILE"
+}
+
+run_local_git_sync_validation() {
+    echo ""
+    echo "=== Running Local Git-Sync Validation ==="
+
+    local results_file="$RUN_DIR/$LOCAL_GIT_SYNC_RESULTS_FILE"
+    : > "$results_file"
+
+    local branch_name
+    local before_head
+    local after_head
+    local before_count
+    local after_count
+    local before_remote_head
+    local after_remote_head
+
+    local changed_stdout="$RUN_DIR/local-git-sync-changed.stdout"
+    local noop_stdout="$RUN_DIR/local-git-sync-noop.stdout"
+    local invalid_repo_stdout="$RUN_DIR/local-git-sync-invalid-repo.stdout"
+    local unavailable_remote_stdout="$RUN_DIR/local-git-sync-unavailable-remote.stdout"
+
+    branch_name=$(local_git_sync_current_branch "$LOCAL_GIT_SYNC_LOCAL_REPO")
+
+    echo "Scenario 1: changed content should commit and push" | tee -a "$results_file"
+    before_head=$(local_git_sync_head "$LOCAL_GIT_SYNC_LOCAL_REPO")
+    before_count=$(local_git_sync_commit_count "$LOCAL_GIT_SYNC_LOCAL_REPO")
+    echo "* Change marker $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOCAL_GIT_SYNC_LOCAL_REPO/seed.org"
+
+    local_git_sync_run_emacs_sync "$LOCAL_GIT_SYNC_LOCAL_REPO" "$changed_stdout"
+    if ! grep -q "RESULT:SUCCESS" "$changed_stdout"; then
+        echo "FAIL: changed-content sync did not report success" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    fi
+
+    after_head=$(local_git_sync_head "$LOCAL_GIT_SYNC_LOCAL_REPO")
+    after_count=$(local_git_sync_commit_count "$LOCAL_GIT_SYNC_LOCAL_REPO")
+    after_remote_head=$(local_git_sync_bare_head "$LOCAL_GIT_SYNC_BARE_REMOTE" "$branch_name")
+
+    if [[ "$after_head" == "$before_head" ]]; then
+        echo "FAIL: local HEAD did not advance after changed-content sync" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    else
+        echo "PASS: local HEAD advanced after changed-content sync" | tee -a "$results_file"
+    fi
+
+    if [[ "$after_count" -ne $((before_count + 1)) ]]; then
+        echo "FAIL: expected commit count to increase by one (before=$before_count after=$after_count)" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    else
+        echo "PASS: local commit count increased by one" | tee -a "$results_file"
+    fi
+
+    if [[ "$after_head" != "$after_remote_head" ]]; then
+        echo "FAIL: push propagation mismatch local=$after_head remote=$after_remote_head" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    else
+        echo "PASS: bare remote tip matches local tip after push" | tee -a "$results_file"
+    fi
+
+    echo "Scenario 2: clean repository should be a no-op success" | tee -a "$results_file"
+    before_head=$(local_git_sync_head "$LOCAL_GIT_SYNC_LOCAL_REPO")
+    before_count=$(local_git_sync_commit_count "$LOCAL_GIT_SYNC_LOCAL_REPO")
+    before_remote_head=$(local_git_sync_bare_head "$LOCAL_GIT_SYNC_BARE_REMOTE" "$branch_name")
+
+    local_git_sync_run_emacs_sync "$LOCAL_GIT_SYNC_LOCAL_REPO" "$noop_stdout"
+    if ! grep -q "RESULT:SUCCESS" "$noop_stdout"; then
+        echo "FAIL: no-op sync did not report success" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    fi
+
+    after_head=$(local_git_sync_head "$LOCAL_GIT_SYNC_LOCAL_REPO")
+    after_count=$(local_git_sync_commit_count "$LOCAL_GIT_SYNC_LOCAL_REPO")
+    after_remote_head=$(local_git_sync_bare_head "$LOCAL_GIT_SYNC_BARE_REMOTE" "$branch_name")
+
+    if [[ "$after_count" -ne "$before_count" ]]; then
+        echo "FAIL: no-op sync unexpectedly changed commit count (before=$before_count after=$after_count)" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    else
+        echo "PASS: no-op sync preserved local commit count" | tee -a "$results_file"
+    fi
+
+    if [[ "$after_head" != "$before_head" ]]; then
+        echo "FAIL: no-op sync unexpectedly changed local HEAD" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    else
+        echo "PASS: no-op sync preserved local HEAD" | tee -a "$results_file"
+    fi
+
+    if [[ "$after_remote_head" != "$before_remote_head" ]]; then
+        echo "FAIL: no-op sync unexpectedly changed remote tip" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    else
+        echo "PASS: no-op sync preserved remote tip" | tee -a "$results_file"
+    fi
+
+    echo "Scenario 3: invalid local repository should fail" | tee -a "$results_file"
+    local_git_sync_run_emacs_sync "$TEST_DATA_DIR/nonexistent-local-repo" "$invalid_repo_stdout"
+    if grep -q "RESULT:SUCCESS" "$invalid_repo_stdout"; then
+        echo "FAIL: invalid local repository scenario reported success" | tee -a "$results_file"
+        echo "FAILURE_CLASS:LOCAL_REPO_INVALID:FAIL" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    else
+        echo "PASS: invalid local repository scenario reported failure" | tee -a "$results_file"
+        echo "FAILURE_CLASS:LOCAL_REPO_INVALID:PASS" | tee -a "$results_file"
+    fi
+
+    echo "Scenario 4: unavailable local push target should fail" | tee -a "$results_file"
+    git -C "$LOCAL_GIT_SYNC_LOCAL_REPO" remote set-url origin "file://$LOCAL_GIT_SYNC_UNAVAILABLE_REMOTE"
+    echo "* Push target unavailable marker $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LOCAL_GIT_SYNC_LOCAL_REPO/seed.org"
+    local_git_sync_run_emacs_sync "$LOCAL_GIT_SYNC_LOCAL_REPO" "$unavailable_remote_stdout"
+
+    if grep -q "RESULT:SUCCESS" "$unavailable_remote_stdout"; then
+        echo "FAIL: unavailable push target scenario reported success" | tee -a "$results_file"
+        echo "FAILURE_CLASS:PUSH_TARGET_UNAVAILABLE:FAIL" | tee -a "$results_file"
+        TEST_STATUS="FAIL"
+    else
+        echo "PASS: unavailable push target scenario reported failure" | tee -a "$results_file"
+        echo "FAILURE_CLASS:PUSH_TARGET_UNAVAILABLE:PASS" | tee -a "$results_file"
+    fi
+
+    if [[ "$TEST_STATUS" == "PASS" ]]; then
+        echo "LOCAL_GIT_SYNC_RESULT:PASS" | tee -a "$results_file"
+    else
+        echo "LOCAL_GIT_SYNC_RESULT:FAIL" | tee -a "$results_file"
+        return 1
+    fi
 }
 
 # =============================================================================
@@ -1242,7 +1498,7 @@ PY
 # Main Execution
 # =============================================================================
 
-main() {
+run_paid_inbox_validation() {
     cd "$REPO_ROOT"
     
     # Setup phase
@@ -1329,6 +1585,26 @@ main() {
     
     # Run assertions
     run_assertions
+}
+
+run_local_git_sync_mode() {
+    cd "$REPO_ROOT"
+
+    # Local git-sync validation path is intentionally isolated from paid inbox/LLM checks.
+    cleanup_test_results
+    setup_logs
+    create_run_dir
+    local_git_sync_setup_fixtures
+    local_git_sync_validate_fixtures
+    run_local_git_sync_validation
+}
+
+main() {
+    if [[ "$INTEGRATION_MODE" == "$LOCAL_GIT_SYNC_MODE" ]]; then
+        run_local_git_sync_mode
+    else
+        run_paid_inbox_validation
+    fi
 }
 
 # Run main

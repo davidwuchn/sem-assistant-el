@@ -452,6 +452,10 @@ eask emacs --batch \
 
 The integration test suite provides end-to-end verification of the full inbox processing pipeline.
 
+The runner supports two explicit modes:
+- `paid-inbox` (default): full inbox + LLM assertions with real API calls.
+- `local-git-sync`: deterministic no-cost git-sync validation against a local bare remote.
+
 ### Prerequisites
 
 - **podman** and **podman-compose** installed (not Docker)
@@ -469,6 +473,38 @@ From the repository root:
 ```bash
 bash dev/integration/run-integration-tests.sh
 ```
+
+### Running No-Cost Local Git-Sync Validation
+
+Use this path for routine git-sync readiness checks without OpenRouter, GitHub, or SSH credentials:
+
+```bash
+SEM_INTEGRATION_MODE=local-git-sync bash dev/integration/run-integration-tests.sh
+```
+
+This local path validates:
+- changed-content sync creates exactly one new local commit
+- successful push propagation to local bare remote (`file://...`)
+- clean-repo no-op success with unchanged local/remote tips
+- failure classification for invalid local repository and unavailable push target
+
+Local git-sync artifacts are deterministic and written to:
+
+```
+test-results/
+└── local-git-sync-run/
+    ├── local-git-sync-results.txt
+    ├── local-git-sync-changed.stdout
+    ├── local-git-sync-noop.stdout
+    ├── local-git-sync-invalid-repo.stdout
+    └── local-git-sync-unavailable-remote.stdout
+```
+
+Failure signals for operators:
+- `LOCAL_GIT_SYNC_RESULT:FAIL` in `local-git-sync-results.txt`
+- `FAILURE_CLASS:LOCAL_REPO_INVALID:FAIL`
+- `FAILURE_CLASS:PUSH_TARGET_UNAVAILABLE:FAIL`
+- script exit code `1`
 
 For Apache WebDAV runtime checks (no LLM calls), run the separate smoke test:
 
