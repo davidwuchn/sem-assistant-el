@@ -334,16 +334,22 @@ local_git_sync_run_emacs_sync() {
   (require 'cl-lib)
   (load-file \"$REPO_ROOT/app/elisp/sem-core.el\")
   (load-file \"$REPO_ROOT/app/elisp/sem-git-sync.el\")
-  (let ((sem-git-sync-org-roam-dir \"$repo_dir\")
-        (sem-git-sync-ssh-key \"$REPO_ROOT/.does-not-exist\"))
-    (condition-case err
-        (cl-letf (((symbol-function 'sem-git-sync--setup-ssh) (lambda () '(t . nil)))
-                  ((symbol-function 'sem-git-sync--teardown-ssh) (lambda (&rest _) nil)))
-          (if (sem-git-sync-org-roam)
-              (princ \"RESULT:SUCCESS\\n\")
-            (princ \"RESULT:FAILURE\\n\")))
-      (error
-       (princ (format \"RESULT:ERROR:%s\\n\" (error-message-string err)))))))" > "$output_file" 2>&1
+  (let ((orig-dir sem-git-sync-org-roam-dir)
+        (orig-key sem-git-sync-ssh-key))
+    (unwind-protect
+        (progn
+          (setq sem-git-sync-org-roam-dir \"$repo_dir\")
+          (setq sem-git-sync-ssh-key \"$REPO_ROOT/.does-not-exist\")
+          (condition-case err
+              (cl-letf (((symbol-function 'sem-git-sync--setup-ssh) (lambda () '(t . nil)))
+                        ((symbol-function 'sem-git-sync--teardown-ssh) (lambda (&rest _) nil)))
+                (if (sem-git-sync-org-roam)
+                    (princ \"RESULT:SUCCESS\\n\")
+                  (princ \"RESULT:FAILURE\\n\")))
+            (error
+             (princ (format \"RESULT:ERROR:%s\\n\" (error-message-string err))))))
+      (setq sem-git-sync-org-roam-dir orig-dir)
+      (setq sem-git-sync-ssh-key orig-key))))" > "$output_file" 2>&1
 }
 
 local_git_sync_current_branch() {
