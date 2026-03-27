@@ -46,9 +46,12 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
                          (require 'sem-security)
                          (require 'sem-llm)
                          (require 'sem-rss)
+                         (require 'sem-prompts)
+                         (require 'sem-rules)
                          (require 'sem-url-capture)
                          (require 'sem-git-sync)
                          (require 'sem-router)
+                         (require 'sem-planner)
                          (message "SEM: All modules loaded"))))
 
               ;; Call the load modules function
@@ -94,6 +97,21 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
       (should (string= (plist-get resolved :weak) "openrouter/medium"))
       (should (plist-get resolved :weak-fallback))
       (should (= (length (plist-get resolved :models)) 1)))))
+
+(ert-deftest sem-init-test-readiness-probe-ready-when-all-invariants-satisfied ()
+  "Test readiness probe returns non-nil when all invariants are satisfied."
+  (sem-init--reset-startup-invariants)
+  (dolist (invariant sem-init--required-invariants)
+    (sem-init--mark-startup-invariant invariant))
+  (should (sem-init-readiness-probe)))
+
+(ert-deftest sem-init-test-readiness-probe-not-ready-when-invariant-missing ()
+  "Test readiness probe returns nil when any invariant is missing."
+  (sem-init--reset-startup-invariants)
+  (dolist (invariant sem-init--required-invariants)
+    (unless (eq invariant 'modules-loaded)
+      (sem-init--mark-startup-invariant invariant)))
+  (should-not (sem-init-readiness-probe)))
 
 (provide 'sem-init-test)
 ;;; sem-init-test.el ends here

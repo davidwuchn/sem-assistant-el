@@ -34,6 +34,7 @@ services:
       - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-example.com}
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-changeme}
+      - WEBDAV_RUNTIME_MODE=${WEBDAV_RUNTIME_MODE:-production}
       - WEBDAV_UID=${WEBDAV_UID:-1000}
       - WEBDAV_GID=${WEBDAV_GID:-1000}
     ports:

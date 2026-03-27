@@ -55,10 +55,14 @@ fi
 now_epoch="$(current_epoch)"
 start_epoch="$(container_start_epoch)"
 elapsed="$((now_epoch - start_epoch))"
+readiness_expr="(if (and (fboundp 'sem-init-readiness-probe) (sem-init-readiness-probe)) t nil)"
 
-if timeout "${probe_timeout}s" emacsclient -s "$socket_name" -e "(progn t)" >/dev/null 2>&1; then
-  log_event "OK" "PROBE_OK" "Daemon probe succeeded"
-  exit 0
+if probe_output="$(timeout "${probe_timeout}s" emacsclient -s "$socket_name" --eval "$readiness_expr" 2>/dev/null)"; then
+  if [ "$probe_output" = "t" ]; then
+    log_event "OK" "PROBE_OK" "Daemon readiness probe succeeded"
+    exit 0
+  fi
+  probe_exit=1
 else
   probe_exit="$?"
 fi

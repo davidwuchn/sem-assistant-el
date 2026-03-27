@@ -49,6 +49,7 @@ EOF
   cat >"$mock_dir/emacsclient" <<'EOF'
 #!/bin/sh
 if [ "${MOCK_EMACSCLIENT_EXIT:-0}" = "0" ]; then
+  printf '%s\n' "${MOCK_EMACSCLIENT_OUTPUT:-t}"
   exit 0
 fi
 exit "${MOCK_EMACSCLIENT_EXIT}"
@@ -109,8 +110,18 @@ run_test() {
 test_probe_success() {
   output="$TMP_DIR/success.log"
   : >"$MOCK_KILL_LOG"
-  run_watchdog "$output" env MOCK_EMACSCLIENT_EXIT=0
+  run_watchdog "$output" env MOCK_EMACSCLIENT_EXIT=0 MOCK_EMACSCLIENT_OUTPUT=t
   assert_contains "$output" "event=PROBE_OK" && [ ! -s "$MOCK_KILL_LOG" ]
+}
+
+test_probe_not_ready_output_triggers_restart() {
+  output="$TMP_DIR/not-ready.log"
+  : >"$MOCK_KILL_LOG"
+  run_watchdog "$output" env MOCK_EMACSCLIENT_EXIT=0 MOCK_EMACSCLIENT_OUTPUT=nil \
+    MOCK_KEEPALIVE_PID=3333 MOCK_NOW_EPOCH=2000 MOCK_START_EPOCH=1000
+  assert_contains "$output" "event=PROBE_FAIL" \
+    && assert_contains "$output" "event=RESTART_TRIGGERED" \
+    && assert_contains "$MOCK_KILL_LOG" "3333"
 }
 
 test_probe_timeout_triggers_restart() {
@@ -156,6 +167,7 @@ touch "$MOCK_KILL_LOG"
 create_mocks "$MOCK_BIN"
 
 run_test "probe success" test_probe_success
+run_test "probe not-ready output restart" test_probe_not_ready_output_triggers_restart
 run_test "probe timeout restart" test_probe_timeout_triggers_restart
 run_test "startup grace suppression" test_grace_suppresses_restart
 run_test "lock contention skip" test_lock_contention_skips

@@ -11,6 +11,31 @@ if [ -z "${WEBDAV_USERNAME:-}" ] || [ -z "${WEBDAV_PASSWORD:-}" ]; then
   exit 1
 fi
 
+WEBDAV_RUNTIME_MODE="${WEBDAV_RUNTIME_MODE:-production}"
+
+if [ "$WEBDAV_RUNTIME_MODE" = "production" ]; then
+  password_len="${#WEBDAV_PASSWORD}"
+  has_lower=0
+  has_upper=0
+  has_digit=0
+
+  if printf '%s' "$WEBDAV_PASSWORD" | grep -Eq '[a-z]'; then
+    has_lower=1
+  fi
+  if printf '%s' "$WEBDAV_PASSWORD" | grep -Eq '[A-Z]'; then
+    has_upper=1
+  fi
+  if printf '%s' "$WEBDAV_PASSWORD" | grep -Eq '[0-9]'; then
+    has_digit=1
+  fi
+
+  if [ "$password_len" -lt 20 ] || [ "$has_lower" -ne 1 ] || [ "$has_upper" -ne 1 ] || [ "$has_digit" -ne 1 ]; then
+    echo "[webdav] ERROR: Production password policy validation failed."
+    echo "[webdav] Remediation: set WEBDAV_PASSWORD to >=20 chars with lowercase, uppercase, and digit."
+    exit 1
+  fi
+fi
+
 WEBDAV_UID="${WEBDAV_UID:-1000}"
 WEBDAV_GID="${WEBDAV_GID:-1000}"
 

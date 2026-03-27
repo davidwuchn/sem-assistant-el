@@ -1037,21 +1037,23 @@ run_assertions() {
         runtime_min_start_iso=$(date -u -d "@$runtime_min_start_epoch" +%Y-%m-%dT%H:%M:%SZ)
         echo "Timezone authority: $RUNTIME_TIMEZONE"
 
-        if python3 - "$RUN_DIR/tasks.org" "$PREEXISTING_TASKS_FIXTURE" "$runtime_min_start_epoch" "$runtime_min_start_iso" "$ASSERTION3_LOWER_BOUND_TOLERANCE_SECONDS" <<'PY'
+        if python3 - "$RUN_DIR/tasks.org" "$PREEXISTING_TASKS_FIXTURE" "$TEST_INBOX" "$runtime_min_start_epoch" "$runtime_min_start_iso" "$ASSERTION3_LOWER_BOUND_TOLERANCE_SECONDS" <<'PY'
 import datetime
 import re
 import sys
 
 tasks_path = sys.argv[1]
-fixture_path = sys.argv[2]
-runtime_min_start_epoch = int(sys.argv[3])
-runtime_min_start_iso = sys.argv[4]
-tolerance_seconds = int(sys.argv[5])
+preexisting_fixture_path = sys.argv[2]
+inbox_fixture_path = sys.argv[3]
+runtime_min_start_epoch = int(sys.argv[4])
+runtime_min_start_iso = sys.argv[5]
+tolerance_seconds = int(sys.argv[6])
 
 headline_re = re.compile(r"^(\*+)\s+TODO\s+(.*?)(?:\s+:[^:]+(?::[^:]+)*:)?\s*$")
 scheduled_re = re.compile(r"^\s*SCHEDULED:\s*(<[^>]+>)")
 priority_re = re.compile(r"\[#([A-C])\]")
 org_ts_re = re.compile(r"<(\d{4})-(\d{2})-(\d{2})(?:\s+[A-Za-z]{3})?(?:\s+(\d{2}):(\d{2})(?:-(\d{2}):(\d{2}))?)?>")
+fixed_schedule_exception_titles = {"process quarterly financial reports"}
 
 
 def parse_org_timestamp_range(ts: str):
@@ -1066,6 +1068,28 @@ def parse_org_timestamp_range(ts: str):
     start = datetime.datetime(year, month, day, start_h, start_m, tzinfo=datetime.timezone.utc)
     end = datetime.datetime(year, month, day, end_h, end_m, tzinfo=datetime.timezone.utc)
     return int(start.timestamp()), int(end.timestamp())
+
+
+def timestamps_match_exception_policy(expected_ts: str, actual_ts: str):
+    expected = org_ts_re.fullmatch((expected_ts or "").strip())
+    actual = org_ts_re.fullmatch((actual_ts or "").strip())
+    if not expected or not actual:
+        return expected_ts == actual_ts
+
+    expected_date = expected.group(1, 2, 3)
+    actual_date = actual.group(1, 2, 3)
+    if expected_date != actual_date:
+        return False
+
+    expected_has_time = expected.group(4) is not None and expected.group(5) is not None
+    if not expected_has_time:
+        return True
+
+    expected_start = (expected.group(4), expected.group(5))
+    expected_end = (expected.group(6) or "23", expected.group(7) or "59")
+    actual_start = (actual.group(4) or "00", actual.group(5) or "00")
+    actual_end = (actual.group(6) or "23", actual.group(7) or "59")
+    return expected_start == actual_start and expected_end == actual_end
 
 
 def split_headline_blocks(text: str):
@@ -1083,6 +1107,30 @@ def title_from_block(block: str):
     return m.group(2).strip() if m else "<unknown>"
 
 
+def normalize_title_for_match(title: str):
+    title = re.sub(r"\[#([A-C])\]", "", title or "")
+    title = re.sub(r"\s+", " ", title).strip().lower()
+    return title
+
+
+def match_exception_title(normalized_title: str):
+    if normalized_title in fixed_schedule_exception_titles:
+        return normalized_title
+    partial_matches = [
+        known_title
+        for known_title in fixed_schedule_exception_titles
+        if known_title in normalized_title or normalized_title in known_title
+    ]
+    if len(partial_matches) == 1:
+        return partial_matches[0]
+    if len(partial_matches) > 1:
+        raise ValueError(
+            f"ambiguous exception-title match normalized_title='{normalized_title}' "
+            f"candidates={partial_matches}"
+        )
+    return None
+
+
 def scheduled_from_block(block: str):
     for line in block.splitlines()[1:]:
         m = scheduled_re.match(line)
@@ -1093,11 +1141,14 @@ def scheduled_from_block(block: str):
 
 with open(tasks_path, "r", encoding="utf-8") as f:
     final_text = f.read()
-with open(fixture_path, "r", encoding="utf-8") as f:
+with open(preexisting_fixture_path, "r", encoding="utf-8") as f:
     fixture_text = f.read()
+with open(inbox_fixture_path, "r", encoding="utf-8") as f:
+    inbox_fixture_text = f.read()
 
 final_blocks = split_headline_blocks(final_text)
 fixture_blocks = split_headline_blocks(fixture_text)
+inbox_fixture_blocks = split_headline_blocks(inbox_fixture_text)
 
 failed = False
 
@@ -1127,8 +1178,17 @@ else:
             failed = True
 
 preexisting_windows = []
+fixture_schedules_by_title = {}
+for block in inbox_fixture_blocks:
+    title = title_from_block(block)
+    normalized_title = normalize_title_for_match(title)
+    sched = scheduled_from_block(block)
+    if sched is not None:
+        fixture_schedules_by_title[normalized_title] = sched
+
 for block in fixture_blocks:
     title = title_from_block(block)
+    normalized_title = normalize_title_for_match(title)
     sched = scheduled_from_block(block)
     if sched is None:
         continue
@@ -1143,6 +1203,7 @@ for block in fixture_blocks:
 new_blocks = final_blocks[len(fixture_blocks):]
 for block in new_blocks:
     title = title_from_block(block)
+    normalized_title = normalize_title_for_match(title)
     sched = scheduled_from_block(block)
     if sched is None:
         continue
@@ -1154,6 +1215,28 @@ for block in new_blocks:
     except Exception as err:
         print(f"FAIL: new task has unparseable timestamp task='{title}' ts='{sched}' err='{err}'")
         failed = True
+        continue
+
+    matched_exception_title = match_exception_title(normalized_title)
+    if matched_exception_title:
+        expected_sched = fixture_schedules_by_title.get(matched_exception_title)
+        if expected_sched is None:
+            print(
+                f"FAIL: fixed-schedule exception fixture missing schedule "
+                f"task='{title}' normalized_title='{matched_exception_title}'"
+            )
+            failed = True
+        elif not timestamps_match_exception_policy(expected_sched, sched):
+            print(
+                f"FAIL: fixed-schedule exception mismatch task='{title}' "
+                f"actual='{sched}' expected_fixture='{expected_sched}'"
+            )
+            failed = True
+        else:
+            print(
+                f"PASS: fixed-schedule exception matched task='{title}' "
+                f"actual='{sched}' expected_fixture='{expected_sched}'"
+            )
         continue
 
     if start + tolerance_seconds <= runtime_min_start_epoch:

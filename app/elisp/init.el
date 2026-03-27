@@ -22,6 +22,46 @@
 
 (require 'cl-lib)
 
+(defconst sem-init--required-invariants
+  '(env-validated
+    package-deps-loaded
+    gptel-configured
+    paths-configured
+    security-globals-set
+    git-repo-ready
+    databases-initialized
+    modules-loaded
+    messages-hook-installed)
+  "Mandatory startup invariants for daemon readiness.")
+
+(defvar sem-init--startup-invariants nil
+  "Alist tracking startup invariant completion state.
+Each entry is (INVARIANT . DONE-P) where INVARIANT is a symbol from
+`sem-init--required-invariants'.")
+
+(defun sem-init--reset-startup-invariants ()
+  "Reset startup invariant state to not-ready defaults."
+  (setq sem-init--startup-invariants
+        (mapcar (lambda (invariant)
+                  (cons invariant nil))
+                sem-init--required-invariants)))
+
+(defun sem-init--mark-startup-invariant (invariant)
+  "Mark INVARIANT as completed in `sem-init--startup-invariants'."
+  (let ((cell (assoc invariant sem-init--startup-invariants)))
+    (when cell
+      (setcdr cell t))))
+
+(defun sem-init-readiness-probe ()
+  "Return non-nil when all mandatory startup invariants are satisfied.
+This probe is side-effect free and safe for frequent watchdog/startup checks."
+  (condition-case _err
+      (and (listp sem-init--startup-invariants)
+           (cl-every (lambda (invariant)
+                       (eq t (cdr (assoc invariant sem-init--startup-invariants))))
+                     sem-init--required-invariants))
+    (error nil)))
+
 ;;; 1. Validate Required Environment Variables
 
 (defun sem-init--validate-env ()
@@ -219,41 +259,51 @@ All steps run in strict order. Errors are logged to stderr and
 written to errors.org to aid debugging."
   (condition-case err
       (progn
+        (sem-init--reset-startup-invariants)
         ;; Step 1: Validate env vars
         (message "SEM: Starting init step 1/10 - validate env vars")
         (sem-init--validate-env)
+        (sem-init--mark-startup-invariant 'env-validated)
         (message "SEM: Step 1/10 complete - env vars validated")
         ;; Step 2: Load package dependencies
         (message "SEM: Starting init step 2/10 - load package dependencies")
         (sem-init--load-package-dependencies)
+        (sem-init--mark-startup-invariant 'package-deps-loaded)
         (message "SEM: Step 2/10 complete - package dependencies loaded")
         ;; Step 3: Configure gptel
         (message "SEM: Starting init step 3/10 - configure gptel")
         (sem-init--configure-gptel)
+        (sem-init--mark-startup-invariant 'gptel-configured)
         (message "SEM: Step 3/10 complete - gptel configured")
         ;; Step 4: Set paths
         (message "SEM: Starting init step 4/10 - set paths")
         (sem-init--set-paths)
+        (sem-init--mark-startup-invariant 'paths-configured)
         (message "SEM: Step 4/10 complete - paths configured")
         ;; Step 5: Set security globals
         (message "SEM: Starting init step 5/10 - set security globals")
         (sem-init--set-security-globals)
+        (sem-init--mark-startup-invariant 'security-globals-set)
         (message "SEM: Step 5/10 complete - security globals set")
         ;; Step 6: Init git repo
         (message "SEM: Starting init step 6/10 - init git repo")
         (sem-init--init-git-repo)
+        (sem-init--mark-startup-invariant 'git-repo-ready)
         (message "SEM: Step 6/10 complete - git repo ready")
         ;; Step 7: Init databases
         (message "SEM: Starting init step 7/10 - init databases")
         (sem-init--init-databases)
+        (sem-init--mark-startup-invariant 'databases-initialized)
         (message "SEM: Step 7/10 complete - databases initialized")
         ;; Step 8: Load modules
         (message "SEM: Starting init step 8/10 - load modules")
         (sem-init--load-modules)
+        (sem-init--mark-startup-invariant 'modules-loaded)
         (message "SEM: Step 8/10 complete - modules loaded")
         ;; Step 9: Install messages hook
         (message "SEM: Starting init step 9/10 - install messages hook")
         (sem-init--install-messages-hook)
+        (sem-init--mark-startup-invariant 'messages-hook-installed)
         (message "SEM: Step 9/10 complete - messages hook installed")
         ;; Step 10: Daemon ready
         (message "SEM: Step 10/10 complete - daemon ready")

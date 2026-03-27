@@ -28,10 +28,11 @@
 (defconst sem-planner-high-priority-values '(?A ?B)
   "Priority values treated as high-priority overlap exceptions.")
 
-(defun sem-planner--temp-file-path ()
-  "Compute the temp file path for the current batch.
+(defun sem-planner--temp-file-path (&optional batch-id)
+  "Compute the temp file path for BATCH-ID.
+When BATCH-ID is nil, uses `sem-core--batch-id'.
 Returns /tmp/data/tasks-tmp-{batch-id}.org"
-  (format "/tmp/data/tasks-tmp-%d.org" sem-core--batch-id))
+  (format "/tmp/data/tasks-tmp-%d.org" (or batch-id sem-core--batch-id)))
 
 (defun sem-planner--read-tasks-file-content ()
   "Return the full current content of `sem-planner-tasks-file'.
@@ -78,10 +79,10 @@ Handles both timestamp objects (from planning line) and strings (from property d
             (if (match-string 7 ts) (string-to-number (match-string 7 ts)) 59))))
    (t nil)))
 
-(defun sem-planner--read-temp-file ()
-  "Read the batch temp file and return its contents as a string.
+(defun sem-planner--read-temp-file (&optional batch-id)
+  "Read BATCH-ID temp file and return its contents as a string.
 Returns nil if file doesn't exist or is empty."
-  (let ((file (sem-planner--temp-file-path)))
+  (let ((file (sem-planner--temp-file-path batch-id)))
     (when (file-exists-p file)
       (with-temp-buffer
         (insert-file-contents file)
@@ -521,9 +522,9 @@ Returns t if at least one valid ID line is found."
                           planned-tasks nil)
      nil)))
 
-(defun sem-planner--delete-temp-file ()
-  "Delete the batch temp file if it exists."
-  (let ((file (sem-planner--temp-file-path)))
+(defun sem-planner--delete-temp-file (&optional batch-id)
+  "Delete BATCH-ID temp file if it exists."
+  (let ((file (sem-planner--temp-file-path batch-id)))
     (when (file-exists-p file)
       (delete-file file)
       (sem-core-log "planner" "INBOX-ITEM" "OK" (format "Deleted temp file: %s" file) nil))))
@@ -612,14 +613,14 @@ CALLBACK receives non-nil on success and nil on explicit non-success outcome."
                        (funcall callback t))
                    (funcall callback nil)))))))))))
 
-(defun sem-planner--fallback-to-pass1 ()
-  "Fallback: copy Pass 1 temp file content to tasks.org."
+(defun sem-planner--fallback-to-pass1 (&optional batch-id)
+  "Fallback: copy BATCH-ID Pass 1 temp file content to tasks.org."
   (condition-case err
-      (let ((temp-tasks (sem-planner--read-temp-file)))
+      (let ((temp-tasks (sem-planner--read-temp-file batch-id)))
         (when temp-tasks
           (sem-core-log "planner" "INBOX-ITEM" "OK" "Fallback: using Pass 1 timing" nil)
           (sem-planner--atomic-tasks-org-update temp-tasks)
-          (sem-planner--delete-temp-file)
+          (sem-planner--delete-temp-file batch-id)
           t))
     (error
      (sem-core-log-error "planner" "INBOX-ITEM"
@@ -627,16 +628,20 @@ CALLBACK receives non-nil on success and nil on explicit non-success outcome."
                           nil nil)
      nil)))
 
-(defun sem-planner-run-planning-step ()
-  "Execute the Pass 2 planning step."
+(defun sem-planner-run-planning-step (&optional batch-id)
+  "Execute Pass 2 planning for BATCH-ID.
+When BATCH-ID is nil, defaults to current `sem-core--batch-id'."
   (condition-case err
-      (let ((temp-tasks (sem-planner--read-temp-file)))
+      (let* ((owner-batch-id (or batch-id sem-core--batch-id))
+             (temp-tasks (sem-planner--read-temp-file owner-batch-id)))
         (if (not temp-tasks)
             (progn
-              (sem-core-log "planner" "INBOX-ITEM" "OK" "No tasks, skipping planning" nil)
-              (message "SEM: No tasks in temp file, skipping planning"))
+              (sem-core-log "planner" "INBOX-ITEM" "OK"
+                            (format "No tasks for batch %d, skipping planning" owner-batch-id)
+                            nil)
+              (message "SEM: No tasks in temp file for batch %d, skipping planning" owner-batch-id))
           (sem-core-log "planner" "INBOX-ITEM" "OK" "Starting planning step" nil)
-          (message "SEM: Starting planning step")
+          (message "SEM: Starting planning step for batch %d" owner-batch-id)
           (let* ((rules-text (or (sem-rules-read) ""))
                  (runtime-now-time (current-time))
                  (runtime-min-start-time (time-add runtime-now-time (seconds-to-time 3600)))
@@ -652,17 +657,27 @@ CALLBACK receives non-nil on success and nil on explicit non-success outcome."
                (if success
                    (progn
                      (sem-core-log "planner" "INBOX-ITEM" "OK" "Planning successful" nil)
-                     (message "SEM: Planning successful")
-                     (sem-planner--delete-temp-file))
+                     (message "SEM: Planning successful for batch %d" owner-batch-id)
+                     (sem-planner--delete-temp-file owner-batch-id))
                  (progn
                    (sem-core-log-error "planner" "INBOX-ITEM"
                                        "Planning failed with explicit non-success outcome"
                                        temp-tasks nil)
-                   (message "SEM: Planning failed with explicit non-success outcome"))))))))
+                   (message "SEM: Planning failed with explicit non-success outcome for batch %d"
+                            owner-batch-id)
+                   (if (sem-planner--fallback-to-pass1 owner-batch-id)
+                       (message "SEM: Preserved Pass 1 tasks via fallback for batch %d"
+                                owner-batch-id)
+                     (sem-core-log-error "planner" "INBOX-ITEM"
+                                         (format "Pass 1 fallback preservation failed for batch %d"
+                                                 owner-batch-id)
+                                         temp-tasks nil)
+                     (message "SEM: Pass 1 fallback preservation failed for batch %d"
+                              owner-batch-id)))))))))
     (error
      (sem-core-log-error "planner" "INBOX-ITEM"
-                          (format "Planning step error: %s" (error-message-string err))
-                          nil nil)
+                         (format "Planning step error: %s" (error-message-string err))
+                         nil nil)
      (message "SEM: Planning step error: %s" (error-message-string err)))))
 
 (defun sem-planner--run-with-retry

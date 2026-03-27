@@ -159,8 +159,6 @@ The README SHALL contain a **WARNING** section immediately after the "Scheduled 
 - **WHEN** reading the Orgzly Sync Timing warning
 - **THEN** it explains that concurrent client/server edits can still conflict despite atomic file replacement
 
-## ADDED Requirements
-
 ### Requirement: sem-core--batch-id incremented at start of each cron-triggered inbox processing
 At the start of each cron-triggered `sem-core-process-inbox`, `sem-core--batch-id` SHALL be incremented.
 

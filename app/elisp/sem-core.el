@@ -198,46 +198,61 @@ Nil when no batch is in progress.")
   "Timer for the batch watchdog.
 Cancels the previous timer before setting a new one.")
 
-(defun sem-core--batch-barrier-check ()
-  "Check if batch is complete and fire planning step if needed.
-Called after each callback completes. Decrements pending-callbacks counter.
-When counter reaches 0, invokes the planning step synchronously.
-Also fires synchronously if counter starts at 0 (no items case)."
-  (when (> sem-core--pending-callbacks 0)
-    (setq sem-core--pending-callbacks (1- sem-core--pending-callbacks)))
-  (sem-core-log "core" "INBOX-ITEM" "OK"
-                (format "Batch barrier check: pending=%d" sem-core--pending-callbacks)
-                nil)
-  (when (= sem-core--pending-callbacks 0)
-    (sem-core--cancel-batch-watchdog)
-    (message "SEM: Batch complete, firing planning step")
-    (when (fboundp 'sem-planner-run-planning-step)
-      (sem-planner-run-planning-step))))
-
-(defun sem-core--batch-watchdog-fired ()
-  "Watchdog callback - fires planning step if barrier hasn't fired.
-Called by the watchdog timer after 30 minutes from batch start.
-Checks if pending-callbacks is still > 0, then fires planning step."
-  (condition-case err
-      (progn
-        (message "SEM: Batch watchdog fired")
-        (sem-core-log "core" "INBOX-ITEM" "OK" "Batch watchdog fired" nil)
-        (setq sem-core--pending-callbacks 0)
+(defun sem-core--batch-barrier-check (&optional callback-batch-id)
+  "Check batch barrier and trigger planning for CALLBACK-BATCH-ID.
+CALLBACK-BATCH-ID defaults to `sem-core--batch-id' when nil.
+Only the owning batch is allowed to decrement pending callbacks or trigger
+planning. Stale callbacks are logged and ignored."
+  (let ((batch-id (or callback-batch-id sem-core--batch-id)))
+    (if (/= batch-id sem-core--batch-id)
+        (sem-core-log "core" "INBOX-ITEM" "SKIP"
+                      (format "Ignoring stale barrier callback: callback-batch=%d active-batch=%d"
+                              batch-id sem-core--batch-id)
+                      nil)
+      (when (> sem-core--pending-callbacks 0)
+        (setq sem-core--pending-callbacks (1- sem-core--pending-callbacks)))
+      (sem-core-log "core" "INBOX-ITEM" "OK"
+                    (format "Batch barrier check: batch=%d pending=%d"
+                            batch-id sem-core--pending-callbacks)
+                    nil)
+      (when (= sem-core--pending-callbacks 0)
+        (sem-core--cancel-batch-watchdog)
+        (message "SEM: Batch %d complete, firing planning step" batch-id)
         (when (fboundp 'sem-planner-run-planning-step)
-          (sem-planner-run-planning-step)))
+          (sem-planner-run-planning-step batch-id))))))
+
+(defun sem-core--batch-watchdog-fired (watchdog-batch-id)
+  "Watchdog callback for WATCHDOG-BATCH-ID.
+Only the owning batch may mutate barrier state or trigger planning."
+  (condition-case err
+      (if (/= watchdog-batch-id sem-core--batch-id)
+          (sem-core-log "core" "INBOX-ITEM" "SKIP"
+                        (format "Ignoring stale watchdog: watchdog-batch=%d active-batch=%d"
+                                watchdog-batch-id sem-core--batch-id)
+                        nil)
+        (progn
+          (message "SEM: Batch watchdog fired for batch %d" watchdog-batch-id)
+          (sem-core-log "core" "INBOX-ITEM" "OK"
+                        (format "Batch watchdog fired: batch=%d" watchdog-batch-id)
+                        nil)
+          (setq sem-core--pending-callbacks 0)
+          (when (fboundp 'sem-planner-run-planning-step)
+            (sem-planner-run-planning-step watchdog-batch-id))))
     (error
      (message "SEM: Watchdog error: %s" (error-message-string err)))))
 
-(defun sem-core--start-batch-watchdog ()
+(defun sem-core--start-batch-watchdog (&optional batch-id)
   "Start or reset the batch watchdog timer.
 The watchdog fires after 30 minutes if the barrier hasn't fired.
 Cancels any existing watchdog before starting a new one."
-  (setq sem-core--batch-start-time (current-time))
+  (let ((owner-batch-id (or batch-id sem-core--batch-id)))
+    (setq sem-core--batch-start-time (current-time))
   (when sem-core--batch-watchdog-timer
     (cancel-timer sem-core--batch-watchdog-timer))
   (setq sem-core--batch-watchdog-timer
-        (run-with-timer (* 30 60) nil #'sem-core--batch-watchdog-fired))
-  (message "SEM: Batch watchdog started (30 min timeout)"))
+        (run-with-timer (* 30 60) nil
+                        (lambda () (sem-core--batch-watchdog-fired owner-batch-id))))
+    (message "SEM: Batch watchdog started (30 min timeout) for batch %d" owner-batch-id)))
 
 (defun sem-core--cancel-batch-watchdog ()
   "Cancel the batch watchdog timer if running."
@@ -460,16 +475,17 @@ Initializes batch state for tracking callbacks and triggering planning step."
         (sem-core--cleanup-stale-temp-files)
         (setq sem-core--batch-id (1+ sem-core--batch-id))
         (setq sem-core--pending-callbacks 0)
-        (sem-core--start-batch-watchdog)
+        (sem-core--start-batch-watchdog sem-core--batch-id)
         (when (fboundp 'sem-router-process-inbox)
           (message "SEM: Calling sem-router-process-inbox...")
-          (sem-router-process-inbox)
+          (sem-router-process-inbox sem-core--batch-id)
           (message "SEM: sem-router-process-inbox returned"))
         (when (= sem-core--pending-callbacks 0)
           (sem-core--cancel-batch-watchdog)
-          (message "SEM: No pending callbacks, firing planning step immediately")
+          (message "SEM: No pending callbacks, firing planning step immediately (batch %d)"
+                   sem-core--batch-id)
           (when (fboundp 'sem-planner-run-planning-step)
-            (sem-planner-run-planning-step)))
+            (sem-planner-run-planning-step sem-core--batch-id)))
         (message "SEM: sem-core-process-inbox done"))
     (error
      (sem-core-log-error "core" "INBOX-ITEM" (error-message-string err) nil)

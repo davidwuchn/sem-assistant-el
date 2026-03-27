@@ -28,11 +28,24 @@ The system SHALL run assertions after artifact collection to validate integratio
 
 #### Scenario: Scheduled time lower-bound and overlap policy assertion
 - **WHEN** running scheduling policy assertions
-- **THEN** each newly generated scheduled task MUST be strictly greater than `runtime_now + 1 hour`
+- **THEN** each newly generated scheduled task MUST be strictly greater than `runtime_now + 1 hour`, except explicit fixed-schedule exception tasks
 - **AND** assertion evaluation MAY apply a small tolerance window (for example 60 seconds) to account for minute-granularity Org timestamps vs second-granularity runtime anchors
 - **AND** newly generated tasks MUST avoid overlaps with pre-existing occupied windows by default
+- **AND** overlap checks MUST be skipped for explicit fixed-schedule exception tasks because they intentionally preserve fixture-authored timestamps
 - **AND** overlaps with pre-existing occupied windows MUST be accepted only for explicit exception policy cases
 - **AND** if a violation occurs, the failure message MUST identify the task and compared timestamps or conflicting window
+
+#### Scenario: Fixed-schedule exception title matching is permissive
+- **WHEN** matching generated task titles to fixed-schedule exception titles during assertions
+- **THEN** matching MUST be case-insensitive
+- **AND** Org priority markers (for example `[#A]`, `[#B]`, `[#C]`) MUST be ignored
+- **AND** assertions MAY allow a bounded partial-title match to tolerate deterministic normalization differences
+- **AND** for matched fixed-schedule exceptions, scheduled timestamp MUST match fixture schedule intent
+
+#### Scenario: Date-only fixture accepts same-day normalized time range
+- **WHEN** a fixed-schedule exception fixture timestamp is date-only (`<YYYY-MM-DD Day>`)
+- **THEN** assertion matching MUST accept generated same-day timestamps that include explicit time ranges
+- **AND** exact start/end minute equality is required only when fixture timestamp includes explicit time components
 
 #### Scenario: Pre-existing TODO immutability assertion
 - **WHEN** running pre-existing lifecycle assertions after a full run

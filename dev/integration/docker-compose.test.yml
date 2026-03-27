@@ -24,6 +24,7 @@ services:
       - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-example.com}
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-changeme}
+      - WEBDAV_RUNTIME_MODE=${WEBDAV_RUNTIME_MODE:-integration-test}
     command: ["--config", "/config.yml"]
     restart: "no"
 

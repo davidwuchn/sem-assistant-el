@@ -16,6 +16,31 @@ fi
 # Use Eask so package dependencies are available on load-path.
 eask emacs --bg-daemon=sem-server --load=/app/elisp/init.el
 
+# Gate keepalive handoff on readiness success.
+ready_max_attempts="${SEM_DAEMON_READY_MAX_ATTEMPTS:-30}"
+ready_sleep_sec="${SEM_DAEMON_READY_SLEEP_SEC:-2}"
+readiness_expr="(if (and (fboundp 'sem-init-readiness-probe) (sem-init-readiness-probe)) t nil)"
+attempt=0
+ready=0
+
+while [ "$attempt" -lt "$ready_max_attempts" ]; do
+  attempt=$((attempt + 1))
+  probe_output="$(emacsclient -s sem-server --eval "$readiness_expr" 2>/dev/null || true)"
+  if [ "$probe_output" = "t" ]; then
+    ready=1
+    break
+  fi
+  echo "SEM: startup readiness pending (${attempt}/${ready_max_attempts})"
+  if [ "$attempt" -lt "$ready_max_attempts" ]; then
+    sleep "$ready_sleep_sec"
+  fi
+done
+
+if [ "$ready" -ne 1 ]; then
+  echo "SEM: startup readiness failed after ${ready_max_attempts} attempts"
+  exit 1
+fi
+
 # Keep container alive by tailing the log file
 # This runs in foreground and keeps PID 1 alive
 tail -F /var/log/cron.log

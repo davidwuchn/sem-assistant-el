@@ -50,13 +50,14 @@ Returns t if lock acquired, nil if already held."
 Always sets the lock to nil."
   (setq sem-router--tasks-write-lock nil))
 
-(defun sem-router--with-tasks-write-lock (headline callback retry-count &optional dlq-callback)
+(defun sem-router--with-tasks-write-lock (headline callback retry-count &optional dlq-callback batch-id)
   "Execute CALLBACK with tasks.org write lock held.
 If lock is held, re-schedules with 0.5s delay up to 10 retries.
 After 10 retries, routes to DLQ via sem-core-log-error.
 HEADLINE is the headline plist for error logging.
 RETRY-COUNT is the current retry attempt number.
-DLQ-CALLBACK is an optional function called when lock contention hits DLQ."
+DLQ-CALLBACK is an optional function called when lock contention hits DLQ.
+BATCH-ID is the dispatch batch id used for stale-safe retries."
   (if (sem-router--acquire-tasks-write-lock)
       ;; Lock acquired - execute callback with unwind-protect
       (unwind-protect
@@ -78,7 +79,8 @@ DLQ-CALLBACK is an optional function called when lock contention hits DLQ."
       ;; Schedule retry
       (run-with-timer sem-router--write-retry-delay nil
                       (lambda ()
-                        (sem-router--with-tasks-write-lock headline callback (1+ retry-count) dlq-callback))))))
+                        (sem-router--with-tasks-write-lock
+                         headline callback (1+ retry-count) dlq-callback batch-id))))))
 
 ;;; Headline Parsing
 
@@ -260,7 +262,7 @@ HEADLINE: * %s %s"
                    injected-id))))
     (list :user-prompt user-prompt :system-prompt system-prompt)))
 
-(defun sem-router--route-to-task-llm (headline callback)
+(defun sem-router--route-to-task-llm (headline callback &optional batch-id)
   "Route a task headline to LLM for task generation.
 
 HEADLINE is the headline plist with :title, :tags, :body, :hash, etc.
@@ -286,7 +288,8 @@ validated to ensure the ID matches exactly.
 Uses sem-llm-request for consistent retry/DLQ handling.
 
 Returns immediately (async). The CALLBACK is invoked when complete."
-  (condition-case err
+  (let ((dispatch-batch-id (or batch-id sem-core--batch-id)))
+    (condition-case err
       (let* ((title (plist-get headline :title))
              (hash (plist-get headline :hash))
              (tags (plist-get headline :tags))
@@ -316,72 +319,89 @@ Returns immediately (async). The CALLBACK is invoked when complete."
                            (lambda (response info context)
                              "Callback for sem-llm-request.
 Validates the LLM response and writes to tasks.org with mutex lock."
-                             (let ((headline-hash (plist-get context :hash))
-                                   (headline-title (plist-get context :title))
-                                   (injected-uuid (plist-get context :injected-id))
-                                   (stored-security-blocks (plist-get context :security-blocks))
-                                   (restored-response response)
-                                   (success nil)
-                                   (headline-context context))
-                               ;; Restore security blocks if they were stored
-                               (when stored-security-blocks
-                                 (require 'sem-security)
-                                 (setq restored-response
-                                       (sem-security-restore-from-llm response stored-security-blocks)))
-                                (if (and restored-response (not (string-empty-p restored-response)))
-                                    ;; Validate and process response
-                                     (if (sem-router--validate-task-response restored-response injected-uuid)
-                                          ;; Valid response - normalize title then write to temp file.
-                                          (let ((normalized-response
-                                                 (sem-router--normalize-task-title-lowercase restored-response)))
-                                            (sem-router--with-tasks-write-lock
-                                             (plist-get context :headline)
-                                             (lambda ()
-                                               (if (sem-router--write-task-to-file normalized-response
-                                                                                   (sem-router--temp-file-path))
-                                                   (progn
-                                                     (sem-core-log "router" "INBOX-ITEM" "OK"
-                                                                   (format "Task written to temp file: %s" headline-title)
-                                                                   nil)
-                                                     (sem-router--mark-processed headline-hash)
-                                                     (setq headline-context (plist-put headline-context :security-blocks nil))
-                                                     (setq success t))
-                                                 (progn
-                                                   (sem-core-log-error "router" "INBOX-ITEM"
-                                                                       "Failed to write task to temp file"
-                                                                       headline-title
-                                                                       normalized-response)
-                                                   (setq success nil)))
-                                               (when callback
-                                                 (funcall callback success headline-context)))
-                                             0
-                                             (lambda ()
-                                               ;; Lock contention DLQ path counts as processed.
-                                               (when callback
-                                                 (funcall callback t headline-context)))))
-                                      ;; Malformed output - send to DLQ
-                                      (progn
-                                        (sem-core-log-error "router" "INBOX-ITEM"
-                                                            "Malformed LLM output for task (UUID mismatch or missing)"
-                                                            headline-title
-                                                            restored-response)
-                                        (sem-router--mark-processed headline-hash)
-                                        (setq headline-context (plist-put headline-context :security-blocks nil))
-                                        (setq success t)))
-                                  ;; API error - do NOT mark as processed (retry)
+                              (let ((headline-hash (plist-get context :hash))
+                                    (headline-title (plist-get context :title))
+                                    (injected-uuid (plist-get context :injected-id))
+                                    (callback-batch-id (plist-get context :batch-id))
+                                    (stored-security-blocks (plist-get context :security-blocks))
+                                    (restored-response response)
+                                    (success nil)
+                                    (headline-context context))
+                                (if (/= callback-batch-id sem-core--batch-id)
+                                    (progn
+                                      (sem-core-log "router" "INBOX-ITEM" "SKIP"
+                                                    (format "Ignoring stale task callback: callback-batch=%d active-batch=%d title=%s"
+                                                            callback-batch-id sem-core--batch-id headline-title)
+                                                    nil)
+                                      (when (fboundp 'sem-core--batch-barrier-check)
+                                        (sem-core--batch-barrier-check callback-batch-id)))
                                   (progn
-                                    (sem-core-log "router" "INBOX-ITEM" "RETRY"
-                                                  (format "LLM API error: %s" (plist-get info :error))
-                                                  nil)
-                                    (setq success nil)))
-                                ;; Call the completion callback for non-write paths.
-                                (unless (and restored-response
-                                             (not (string-empty-p restored-response))
-                                             (sem-router--validate-task-response restored-response injected-uuid))
-                                  (when callback
-                                    (funcall callback success headline-context)))))
-                            (list :hash hash :title title :headline headline :injected-id injected-id :security-blocks security-blocks)
-                            'weak))
+                                    ;; Restore security blocks if they were stored
+                                    (when stored-security-blocks
+                                      (require 'sem-security)
+                                      (setq restored-response
+                                            (sem-security-restore-from-llm response stored-security-blocks)))
+                                    (if (and restored-response (not (string-empty-p restored-response)))
+                                        ;; Validate and process response
+                                        (if (sem-router--validate-task-response restored-response injected-uuid)
+                                            ;; Valid response - normalize title then write to temp file.
+                                            (let ((normalized-response
+                                                   (sem-router--normalize-task-title-lowercase restored-response)))
+                                              (sem-router--with-tasks-write-lock
+                                               (plist-get context :headline)
+                                               (lambda ()
+                                                 (if (sem-router--write-task-to-file normalized-response
+                                                                                     (sem-router--temp-file-path callback-batch-id)
+                                                                                     callback-batch-id)
+                                                     (progn
+                                                       (sem-core-log "router" "INBOX-ITEM" "OK"
+                                                                     (format "Task written to temp file: %s" headline-title)
+                                                                     nil)
+                                                       (sem-router--mark-processed headline-hash)
+                                                       (setq headline-context (plist-put headline-context :security-blocks nil))
+                                                       (setq success t))
+                                                   (progn
+                                                     (sem-core-log-error "router" "INBOX-ITEM"
+                                                                         "Failed to write task to temp file"
+                                                                         headline-title
+                                                                         normalized-response)
+                                                     (setq success nil)))
+                                                 (when callback
+                                                   (funcall callback success headline-context)))
+                                               0
+                                               (lambda ()
+                                                 ;; Lock contention DLQ path counts as processed.
+                                                 (when callback
+                                                   (funcall callback t headline-context)))
+                                               callback-batch-id))
+                                          ;; Malformed output - send to DLQ
+                                          (progn
+                                            (sem-core-log-error "router" "INBOX-ITEM"
+                                                                "Malformed LLM output for task (UUID mismatch or missing)"
+                                                                headline-title
+                                                                restored-response)
+                                            (sem-router--mark-processed headline-hash)
+                                            (setq headline-context (plist-put headline-context :security-blocks nil))
+                                            (setq success t)))
+                                      ;; API error - do NOT mark as processed (retry)
+                                      (progn
+                                        (sem-core-log "router" "INBOX-ITEM" "RETRY"
+                                                      (format "LLM API error: %s" (plist-get info :error))
+                                                      nil)
+                                        (setq success nil)))
+                                    ;; Call the completion callback for non-write paths.
+                                    (unless (and restored-response
+                                                 (not (string-empty-p restored-response))
+                                                 (sem-router--validate-task-response restored-response injected-uuid))
+                                      (when callback
+                                        (funcall callback success headline-context)))))))
+                             (list :hash hash
+                                   :title title
+                                   :headline headline
+                                   :injected-id injected-id
+                                   :batch-id dispatch-batch-id
+                                   :security-blocks security-blocks)
+                             'weak))
 
         ;; Return immediately - processing continues asynchronously
         t)
@@ -394,7 +414,7 @@ Validates the LLM response and writes to tasks.org with mutex lock."
      (when callback
        (funcall callback nil (list :hash (plist-get headline :hash)
                                    :title (plist-get headline :title))))
-     nil)))
+      nil))))
 
 (defun sem-router--validate-task-response (response injected-id)
   "Validate LLM RESPONSE for task processing.
@@ -612,10 +632,18 @@ Returns /tmp/data/tasks-tmp-{batch-id}.org"
   (let ((id (or batch-id sem-core--batch-id 0)))
     (format "/tmp/data/tasks-tmp-%d.org" id)))
 
-(defun sem-router--write-task-to-file (response &optional temp-file)
+(defun sem-router--temp-file-batch-id (temp-file)
+  "Extract batch id from TEMP-FILE path.
+Returns integer batch id or nil when TEMP-FILE is not a batch temp path."
+  (when (and (stringp temp-file)
+             (string-match "tasks-tmp-\\([0-9]+\\)\\.org\\'" temp-file))
+    (string-to-number (match-string 1 temp-file))))
+
+(defun sem-router--write-task-to-file (response &optional temp-file expected-batch-id)
   "Validate and write task RESPONSE to tasks.org or TEMP-FILE.
 
 If TEMP-FILE is provided, writes to that file instead of tasks.org.
+When EXPECTED-BATCH-ID is non-nil, TEMP-FILE must match that batch id.
 Normalizes tag, priority fallback, and schedule duration fallback.
 Creates the target file if it doesn't exist.
 Appends the task entry to the file.
@@ -623,7 +651,15 @@ Appends the task entry to the file.
 Returns t on success, nil on failure."
   (condition-case err
       (let* ((normalized (sem-router--normalize-task-response response))
-             (target-file (or temp-file sem-router-tasks-file)))
+             (target-file (or temp-file sem-router-tasks-file))
+             (target-batch-id (and temp-file (sem-router--temp-file-batch-id temp-file))))
+
+        (when (and temp-file expected-batch-id (/= expected-batch-id (or target-batch-id -1)))
+          (sem-core-log "router" "INBOX-ITEM" "SKIP"
+                        (format "Dropped stale temp write: expected-batch=%d target-file=%s"
+                                expected-batch-id temp-file)
+                        nil)
+          (cl-return-from sem-router--write-task-to-file nil))
 
         ;; Create file if it doesn't exist
         (unless (file-exists-p target-file)
@@ -650,7 +686,7 @@ Returns t on success, nil on failure."
 
 ;;; Main Processing Entry Point
 
-(defun sem-router-process-inbox ()
+(defun sem-router-process-inbox (&optional batch-id)
   "Process all unprocessed headlines from inbox-mobile.org.
 Routes each headline to the appropriate handler:
 - @link or URL headlines -> sem-url-capture-process
@@ -661,6 +697,7 @@ This is called by sem-core-process-inbox."
   (cl-block sem-router-process-inbox
     (condition-case err
         (let ((headlines (sem-router--parse-headlines))
+              (dispatch-batch-id (or batch-id sem-core--batch-id))
               (processed-count 0)
               (skipped-count 0)
               (error-count 0))
@@ -688,49 +725,62 @@ This is called by sem-core-process-inbox."
                     (url
                      (message "SEM: Routing to URL capture: %s" url)
                      (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
-                     (sem-url-capture-process
-                      url
-                       (lambda (filepath context)
-                         "Callback for async URL capture.
+                      (sem-url-capture-process
+                       url
+                        (lambda (filepath context)
+                          "Callback for async URL capture.
 Handles success, retry, and DLQ escalation."
-                         (if filepath
-                            ;; Success - mark processed and increment count
-                            (progn
-                              (sem-core--clear-retry hash)
-                              (sem-router--mark-processed hash)
-                              (setq processed-count (1+ processed-count))
-                              (message "SEM: URL captured: %s -> %s" url filepath))
-                           ;; Failure - implement bounded retry
-                           (let ((failure-kind (plist-get context :failure-kind))
-                                 (retry-count (sem-core--increment-retry hash)))
-                             (when (eq failure-kind 'timeout)
-                               (sem-core-log "router" "URL-CAPTURE" "FAIL"
-                                             (format "URL capture timeout (attempt %d/3): %s"
-                                                     retry-count url)
-                                             nil))
-                             (if (>= retry-count 3)
-                                 ;; Max retries reached - move to DLQ
-                                 (progn
-                                  (sem-core--mark-dlq hash title nil)
-                                  (message "SEM: URL capture failed after 3 retries, moved to DLQ: %s" url))
-                              ;; Will retry on next cron cycle
-                              (message "SEM: URL capture failed (attempt %d/3), will retry: %s" retry-count url))))
-                        (when (fboundp 'sem-core--batch-barrier-check)
-                          (sem-core--batch-barrier-check)))))
+                          (if (/= dispatch-batch-id sem-core--batch-id)
+                              (sem-core-log "router" "INBOX-ITEM" "SKIP"
+                                            (format "Ignoring stale URL callback: callback-batch=%d active-batch=%d url=%s"
+                                                    dispatch-batch-id sem-core--batch-id url)
+                                            nil)
+                            (if filepath
+                                ;; Success - mark processed and increment count
+                                (progn
+                                  (sem-core--clear-retry hash)
+                                  (sem-router--mark-processed hash)
+                                  (setq processed-count (1+ processed-count))
+                                  (message "SEM: URL captured: %s -> %s" url filepath))
+                              ;; Failure - implement bounded retry
+                              (let ((failure-kind (plist-get context :failure-kind))
+                                    (retry-count (sem-core--increment-retry hash)))
+                                (when (eq failure-kind 'timeout)
+                                  (sem-core-log "router" "URL-CAPTURE" "FAIL"
+                                                (format "URL capture timeout (attempt %d/3): %s"
+                                                        retry-count url)
+                                                nil))
+                                (if (>= retry-count 3)
+                                    ;; Max retries reached - move to DLQ
+                                    (progn
+                                      (sem-core--mark-dlq hash title nil)
+                                      (message "SEM: URL capture failed after 3 retries, moved to DLQ: %s" url))
+                                  ;; Will retry on next cron cycle
+                                  (message "SEM: URL capture failed (attempt %d/3), will retry: %s" retry-count url)))))
+                          (when (fboundp 'sem-core--batch-barrier-check)
+                            (sem-core--batch-barrier-check dispatch-batch-id)))))
                     ;; Task headline -> LLM task generation (async)
                     ((sem-router--is-task-headline headline)
                      (message "SEM: Routing to LLM task generation: %s" title)
                      (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
-                     (sem-router--route-to-task-llm
-                      headline
-                      (lambda (success context)
-                        "Callback for async task LLM processing."
-                        (if success
-                            (message "SEM: Task LLM processed: %s" (plist-get context :title))
-                          (message "SEM: Task LLM failed: %s" (plist-get context :title)))
-                        (when (fboundp 'sem-core--batch-barrier-check)
-                          (sem-core--batch-barrier-check))))
-                     (setq processed-count (1+ processed-count)))
+                      (sem-router--route-to-task-llm
+                       headline
+                       (lambda (success context)
+                         "Callback for async task LLM processing."
+                         (let ((callback-batch-id (or (plist-get context :batch-id) dispatch-batch-id)))
+                           (if (/= callback-batch-id sem-core--batch-id)
+                               (sem-core-log "router" "INBOX-ITEM" "SKIP"
+                                             (format "Ignoring stale task completion callback: callback-batch=%d active-batch=%d title=%s"
+                                                     callback-batch-id sem-core--batch-id
+                                                     (plist-get context :title))
+                                             nil)
+                             (if success
+                                 (message "SEM: Task LLM processed: %s" (plist-get context :title))
+                               (message "SEM: Task LLM failed: %s" (plist-get context :title))))
+                           (when (fboundp 'sem-core--batch-barrier-check)
+                             (sem-core--batch-barrier-check callback-batch-id))))
+                       dispatch-batch-id)
+                      (setq processed-count (1+ processed-count)))
                    ;; Unknown - skip
                    (t
                     (message "SEM: No routing rule matched, skipping: %s" title)

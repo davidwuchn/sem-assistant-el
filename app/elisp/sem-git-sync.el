@@ -10,6 +10,7 @@
 ;;; Code:
 
 (require 'sem-core)
+(require 'cl-lib)
 
 ;;; Constants
 
@@ -45,6 +46,126 @@ Returns t if there are changes to commit, nil otherwise."
   (let ((result (sem-git-sync--run-command "git" '("status" "--porcelain") sem-git-sync-org-roam-dir)))
     (and (= (car result) 0)
          (not (string-empty-p (string-trim (cdr result)))))))
+
+(defun sem-git-sync--parse-upstream (upstream)
+  "Parse UPSTREAM string into (REMOTE . BRANCH).
+UPSTREAM is expected in format `remote/branch'. Returns nil on parse failure."
+  (when (and (stringp upstream)
+             (string-match "\\`\\([^/]+\\)/\\(.+\\)\\'" upstream))
+    (cons (match-string 1 upstream)
+          (match-string 2 upstream))))
+
+(defun sem-git-sync--sync-state ()
+  "Return repository sync state for `sem-git-sync-org-roam-dir'.
+The returned plist contains:
+- :ok             Non-nil when state checks succeeded.
+- :dirty          Non-nil when working tree has uncommitted changes.
+- :ahead          Local commits ahead of upstream.
+- :behind         Upstream commits ahead of local branch.
+- :upstream       Tracked upstream ref (for example, `origin/main').
+- :remote         Upstream remote name.
+- :branch         Upstream branch name.
+- :sync-needed    Non-nil when dirty or ahead > 0.
+- :error          Optional error message when checks fail.
+
+When no upstream is configured, :ok is nil and :error is set."
+  (let* ((status-result
+          (sem-git-sync--run-command "git" '("status" "--porcelain") sem-git-sync-org-roam-dir))
+         (dirty (and (= (car status-result) 0)
+                     (not (string-empty-p (string-trim (cdr status-result))))))
+         (upstream-result
+          (sem-git-sync--run-command "git"
+                                     '("rev-parse" "--abbrev-ref" "--symbolic-full-name" "@{u}")
+                                     sem-git-sync-org-roam-dir)))
+    (if (/= (car upstream-result) 0)
+        (list :ok nil
+              :dirty dirty
+              :ahead 0
+              :behind 0
+              :sync-needed dirty
+              :error (format "Upstream not configured: %s" (string-trim (cdr upstream-result))))
+      (let* ((upstream (string-trim (cdr upstream-result)))
+             (upstream-parts (sem-git-sync--parse-upstream upstream))
+             (divergence-result
+              (sem-git-sync--run-command "git"
+                                         '("rev-list" "--left-right" "--count" "@{u}...HEAD")
+                                         sem-git-sync-org-roam-dir))
+             (divergence-output (string-trim (cdr divergence-result)))
+             (counts (split-string divergence-output "[ \t\n]+" t))
+             (behind 0)
+             (ahead 0))
+        (if (or (/= (car divergence-result) 0)
+                (< (length counts) 2)
+                (null upstream-parts))
+            (list :ok nil
+                  :dirty dirty
+                  :ahead 0
+                  :behind 0
+                  :sync-needed dirty
+                  :error (format "Failed to compute branch divergence: %s"
+                                 (string-trim (cdr divergence-result))))
+          (setq behind (string-to-number (nth 0 counts)))
+          (setq ahead (string-to-number (nth 1 counts)))
+          (list :ok t
+                :dirty dirty
+                :ahead ahead
+                :behind behind
+                :upstream upstream
+                :remote (car upstream-parts)
+                :branch (cdr upstream-parts)
+                :sync-needed (or dirty (> ahead 0))))))))
+
+(defun sem-git-sync--classify-git-failure (output)
+  "Classify git failure OUTPUT into a stable keyword symbol.
+Returns one of: conflict, auth, network, other."
+  (let ((text (downcase (or output ""))))
+    (cond
+     ((or (string-match-p "conflict" text)
+          (string-match-p "could not apply" text)
+          (string-match-p "merge conflict" text)
+          (string-match-p "resolve all conflicts" text))
+      'conflict)
+     ((or (string-match-p "auth" text)
+          (string-match-p "permission denied" text)
+          (string-match-p "could not read from remote repository" text)
+          (string-match-p "repository not found" text)
+          (string-match-p "access denied" text))
+      'auth)
+     ((or (string-match-p "timed out" text)
+          (string-match-p "could not resolve host" text)
+          (string-match-p "failed to connect" text)
+          (string-match-p "connection reset" text)
+          (string-match-p "network is unreachable" text)
+          (string-match-p "temporary failure" text))
+      'network)
+     (t 'other))))
+
+(defun sem-git-sync--pull-before-push (remote branch)
+  "Run pull reconciliation for REMOTE and BRANCH.
+Returns t on success. On failure, logs classified failure and returns nil."
+  (let* ((pull-result (sem-git-sync--run-command
+                       "git" (list "pull" "--rebase" remote branch) sem-git-sync-org-roam-dir))
+         (pull-output (cdr pull-result)))
+    (if (= (car pull-result) 0)
+        t
+      (let ((classification (sem-git-sync--classify-git-failure pull-output)))
+        (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                      (format "Pull failed (%s): %s" classification (string-trim pull-output))
+                      nil)
+        nil))))
+
+(defun sem-git-sync--push-with-classification (remote)
+  "Run push to REMOTE and classify failures.
+Returns t on success, nil on failure."
+  (let* ((push-result (sem-git-sync--run-command "git" (list "push" remote) sem-git-sync-org-roam-dir))
+         (push-output (cdr push-result)))
+    (if (= (car push-result) 0)
+        t
+      (let ((classification (sem-git-sync--classify-git-failure push-output)))
+        (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                      (format "Push failed (%s): %s" classification (string-trim push-output))
+                      nil)
+        nil))))
 
 (defun sem-git-sync--setup-ssh ()
   "Set up SSH agent and add the SSH key for GitHub authentication.
@@ -145,10 +266,11 @@ Handles nil SSH_AGENT_PID gracefully."
 This is the cron entry point. It:
 1. Checks if /data/org-roam is a git repository
 2. Sets up SSH authentication (reuses existing agent if available)
-3. Checks for uncommitted changes (respecting .gitignore)
-4. Commits all changes with timestamp
-5. Pushes to origin
-6. Tears down SSH agent (if spawned in this cycle)
+3. Computes sync-needed state from dirty tree + upstream divergence
+4. Commits local changes (when dirty)
+5. Pulls before push (mandatory for sync-needed)
+6. Pushes pending commits to upstream remote
+7. Tears down SSH agent (if spawned in this cycle)
 
 Returns t on success, nil on failure or when no changes to sync.
 Uses unwind-protect to ensure agent teardown runs even on failure."
@@ -174,72 +296,159 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
                           nil)
             (cl-return-from sem-git-sync-org-roam nil)))
 
-        ;; Check for changes
-        (unless (sem-git-sync--has-changes-p)
-          (sem-core-log "git-sync" "GIT-SYNC" "SKIP"
-                        "No changes to sync"
-                        nil)
-          (message "SEM: Git sync - no changes to commit")
-          (cl-return-from sem-git-sync-org-roam t))
-
-        ;; Set up SSH and track if we spawned a new agent
-        (let* ((ssh-setup-result (sem-git-sync--setup-ssh))
-               (sem-git-sync--agent-spawned-this-cycle (and ssh-setup-result (cdr ssh-setup-result)))
-               (push-success nil))
-
-          (unless ssh-setup-result
+        (let ((initial-state (sem-git-sync--sync-state)))
+          (unless (plist-get initial-state :ok)
+            (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                          (plist-get initial-state :error)
+                          nil)
             (cl-return-from sem-git-sync-org-roam nil))
 
-          ;; Use unwind-protect to ensure teardown runs on success, failure, or condition
-          (unwind-protect
-              (progn
-                ;; Stage all changes
-                (let ((add-result (sem-git-sync--run-command "git" '("add" "-A") sem-git-sync-org-roam-dir)))
-                  (when (/= (car add-result) 0)
-                    (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
-                                  (format "Failed to stage changes: %s" (cdr add-result))
-                                  nil)
-                    (cl-return-from sem-git-sync-org-roam nil)))
+          (unless (plist-get initial-state :sync-needed)
+            (sem-core-log "git-sync" "GIT-SYNC" "SKIP"
+                          "No sync needed (clean tree and not ahead of upstream)"
+                          nil)
+            (message "SEM: Git sync - no sync needed")
+            (cl-return-from sem-git-sync-org-roam t))
 
-                ;; Commit with timestamp
-                (let* ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S"))
-                       (commit-msg (format "Sync org-roam: %s" timestamp))
-                       (commit-result (sem-git-sync--run-command
-                                       "git" (list "commit" "-m" commit-msg)
-                                       sem-git-sync-org-roam-dir)))
-                  (when (/= (car commit-result) 0)
-                    (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
-                                  (format "Failed to commit: %s" (cdr commit-result))
-                                  nil)
-                    (cl-return-from sem-git-sync-org-roam nil)))
+          ;; Set up SSH and track if we spawned a new agent
+          (let* ((ssh-setup-result (sem-git-sync--setup-ssh))
+                 (sem-git-sync--agent-spawned-this-cycle (and ssh-setup-result (cdr ssh-setup-result)))
+                 (sync-success nil))
 
-                ;; Push to origin
-                (let ((push-result (sem-git-sync--run-command "git" '("push" "origin") sem-git-sync-org-roam-dir)))
-                  (when (/= (car push-result) 0)
-                    (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
-                                  (format "Failed to push: %s" (cdr push-result))
-                                  nil)
-                    (cl-return-from sem-git-sync-org-roam nil)))
+            (unless ssh-setup-result
+              (cl-return-from sem-git-sync-org-roam nil))
 
-                ;; Mark push as successful
-                (setq push-success t)
+            ;; Use unwind-protect to ensure teardown runs on success, failure, or condition
+            (unwind-protect
+                (progn
+                  ;; Stage + commit only when tree is dirty
+                  (when (plist-get initial-state :dirty)
+                    (let ((add-result (sem-git-sync--run-command "git" '("add" "-A") sem-git-sync-org-roam-dir)))
+                      (when (/= (car add-result) 0)
+                        (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                                      (format "Failed to stage changes: %s" (cdr add-result))
+                                      nil)
+                        (cl-return-from sem-git-sync-org-roam nil)))
 
-                ;; Success
-                (sem-core-log "git-sync" "GIT-SYNC" "OK"
-                              "Successfully synced org-roam to GitHub"
-                              nil)
-                (message "SEM: Git sync complete"))
+                    (let* ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S"))
+                           (commit-msg (format "Sync org-roam: %s" timestamp))
+                           (commit-result (sem-git-sync--run-command
+                                           "git" (list "commit" "-m" commit-msg)
+                                           sem-git-sync-org-roam-dir))
+                           (commit-output (string-trim (cdr commit-result))))
+                      (when (/= (car commit-result) 0)
+                        (if (string-match-p "nothing to commit" (downcase commit-output))
+                            (sem-core-log "git-sync" "GIT-SYNC" "SKIP"
+                                          "Commit skipped (nothing to commit after stage)"
+                                          nil)
+                          (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                                        (format "Failed to commit: %s" commit-output)
+                                        nil)
+                          (cl-return-from sem-git-sync-org-roam nil)))))
 
-            ;; Cleanup: always run teardown (even on failure or condition)
-            (sem-git-sync--teardown-ssh sem-git-sync--agent-spawned-this-cycle))
+                  ;; Recompute sync state after optional commit so ahead/behind is current.
+                  (let ((state (sem-git-sync--sync-state)))
+                    (unless (plist-get state :ok)
+                      (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                                    (plist-get state :error)
+                                    nil)
+                      (cl-return-from sem-git-sync-org-roam nil))
 
-          push-success))
+                    (if (<= (plist-get state :ahead) 0)
+                        (progn
+                          (sem-core-log "git-sync" "GIT-SYNC" "OK"
+                                        "Sync complete: no local commits ahead after reconciliation"
+                                        nil)
+                          (setq sync-success t)
+                          (message "SEM: Git sync complete (no ahead commits)"))
+                      (let ((remote (plist-get state :remote))
+                            (branch (plist-get state :branch)))
+                        (unless (sem-git-sync--pull-before-push remote branch)
+                          (cl-return-from sem-git-sync-org-roam nil))
+                        (unless (sem-git-sync--push-with-classification remote)
+                          (cl-return-from sem-git-sync-org-roam nil))
+                        (sem-core-log "git-sync" "GIT-SYNC" "OK"
+                                      "Successfully synced org-roam to upstream"
+                                      nil)
+                        (setq sync-success t)
+                        (message "SEM: Git sync complete")))))
+
+              ;; Cleanup: always run teardown (even on failure or condition)
+              (sem-git-sync--teardown-ssh sem-git-sync--agent-spawned-this-cycle))
+
+            sync-success)))
     (error
      (sem-core-log-error "git-sync" "GIT-SYNC"
                          (error-message-string err)
                          nil
                          nil)
      (message "SEM: Git sync error: %s" (error-message-string err))
+     nil)))
+
+;;;###autoload
+(defun sem-git-sync-org-roam-prepull ()
+  "Run pull-only reconciliation for org-roam repository.
+
+This entry point validates repository/upstream state and performs
+`git pull --rebase <remote> <branch>' without creating commits or pushing.
+Returns t on success and nil on failure."
+  (condition-case err
+      (cl-block sem-git-sync-org-roam-prepull
+        (sem-core-log "git-sync" "GIT-SYNC" "OK"
+                      "Starting org-roam pre-pull"
+                      nil)
+
+        (unless (file-directory-p sem-git-sync-org-roam-dir)
+          (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                        (format "Directory does not exist: %s" sem-git-sync-org-roam-dir)
+                        nil)
+          (cl-return-from sem-git-sync-org-roam-prepull nil))
+
+        (let ((git-check (sem-git-sync--run-command "git" '("rev-parse" "--git-dir") sem-git-sync-org-roam-dir)))
+          (when (or (/= (car git-check) 0)
+                    (string-empty-p (string-trim (cdr git-check))))
+            (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                          (format "Not a git repository: %s" sem-git-sync-org-roam-dir)
+                          nil)
+            (cl-return-from sem-git-sync-org-roam-prepull nil)))
+
+        (let ((state (sem-git-sync--sync-state)))
+          (unless (plist-get state :ok)
+            (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                          (plist-get state :error)
+                          nil)
+            (cl-return-from sem-git-sync-org-roam-prepull nil))
+
+          (let* ((ssh-setup-result (sem-git-sync--setup-ssh))
+                 (sem-git-sync--agent-spawned-this-cycle (and ssh-setup-result (cdr ssh-setup-result))))
+            (unless ssh-setup-result
+              (cl-return-from sem-git-sync-org-roam-prepull nil))
+
+            (unwind-protect
+                (let* ((remote (plist-get state :remote))
+                       (branch (plist-get state :branch))
+                       (pull-result (sem-git-sync--run-command
+                                     "git" (list "pull" "--rebase" remote branch) sem-git-sync-org-roam-dir))
+                       (pull-output (string-trim (cdr pull-result))))
+                  (if (= (car pull-result) 0)
+                      (progn
+                        (sem-core-log "git-sync" "GIT-SYNC" "OK"
+                                      "Pre-pull completed successfully"
+                                      nil)
+                        (message "SEM: Git pre-pull complete")
+                        t)
+                    (let ((classification (sem-git-sync--classify-git-failure pull-output)))
+                      (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                                    (format "Pre-pull failed (%s): %s" classification pull-output)
+                                    nil)
+                      nil)))
+              (sem-git-sync--teardown-ssh sem-git-sync--agent-spawned-this-cycle)))))
+    (error
+     (sem-core-log-error "git-sync" "GIT-SYNC"
+                         (format "Pre-pull error: %s" (error-message-string err))
+                         nil
+                         nil)
+     (message "SEM: Git pre-pull error: %s" (error-message-string err))
      nil)))
 
 (provide 'sem-git-sync)

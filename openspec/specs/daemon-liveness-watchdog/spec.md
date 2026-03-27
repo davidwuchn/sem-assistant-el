@@ -5,14 +5,15 @@ This capability defines watchdog behavior that supervises Emacs daemon liveness 
 ## Requirements
 
 ### Requirement: Watchdog probes daemon liveness on a bounded cadence
-The system SHALL run a daemon liveness watchdog probe on a fixed cadence between 10 and 20 minutes. Each probe SHALL use `emacsclient` and SHALL enforce a hard timeout so probe execution cannot hang indefinitely.
+The system SHALL run a daemon watchdog probe on a fixed cadence between 10 and 20 minutes, but probe success SHALL be determined by SEM readiness (functional startup state), not process liveness alone. Each probe SHALL use a bounded execution timeout.
 
-#### Scenario: Probe runs on configured cadence
+#### Scenario: Watchdog uses readiness outcome for health decision
 - **WHEN** the configured watchdog interval elapses
-- **THEN** the system executes one daemon liveness probe
+- **THEN** the watchdog executes one SEM readiness probe
+- **AND** restart decisions use readiness result rather than daemon-process existence alone
 
 #### Scenario: Probe timeout is enforced
-- **WHEN** daemon responsiveness check exceeds the configured timeout
+- **WHEN** readiness probe execution exceeds the configured timeout
 - **THEN** the probe is recorded as failed due to timeout
 
 ### Requirement: Startup grace suppresses restart decisions
