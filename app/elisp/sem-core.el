@@ -171,6 +171,14 @@ Used to detect date rollover for daily log rotation.
 Initial value is empty string to force first flush to detect as new day.
 Module-level variable that resets on daemon restart.")
 
+(defvar sem-core--last-flushed-messages-hash nil
+  "Hash of the last successfully flushed *Messages* snapshot.
+Used by `sem-core--flush-messages-daily' to skip duplicate appends.")
+
+(defvar sem-core--last-flushed-messages-hash-date nil
+  "UTC date (YYYY-MM-DD) associated with last flushed messages hash.
+Used to keep hash dedup independent across daily log rollovers.")
+
 (defvar sem-core--batch-id 0
   "Monotonically increasing batch ID for inbox processing.
 Incremented at the start of each cron-triggered inbox processing run.
@@ -263,11 +271,21 @@ Wrapped in condition-case to never crash the daemon."
         (let ((content (with-current-buffer "*Messages*"
                          (buffer-string))))
 
-          ;; Ensure log directory exists
-          (make-directory log-dir t)
+          (let ((current-hash (secure-hash 'sha256 content)))
+            ;; Skip unchanged snapshots only within the same UTC day.
+            (unless (and sem-core--last-flushed-messages-hash
+                         (string= today (or sem-core--last-flushed-messages-hash-date ""))
+                         (string= current-hash sem-core--last-flushed-messages-hash))
 
-          ;; Write content in append mode (t = append)
-          (write-region content nil log-path t 'silent))
+              ;; Ensure log directory exists
+              (make-directory log-dir t)
+
+              ;; Write content in append mode (t = append)
+              (write-region content nil log-path t 'silent)
+
+              ;; Update hash state only after successful append.
+              (setq sem-core--last-flushed-messages-hash current-hash)
+              (setq sem-core--last-flushed-messages-hash-date today))))
 
         ;; Update last flush date after successful write
         (setq sem-core--last-flush-date today))

@@ -119,7 +119,7 @@ The system SHALL create `/data/tasks.org` if it does not exist when the first pr
 - **THEN** the file is created and the output is written
 
 ### Requirement: Headlines parsed with org-element including body
-The function `sem-router--parse-headlines` SHALL use `org-element-parse-buffer` and `org-element-map` over `headline` type elements instead of regex. It SHALL return the same plist shape as before plus a `:body` key. Tags SHALL be extracted via `org-element-property :tags`. Title SHALL be extracted via `org-element-property :raw-value`. Body SHALL be extracted as the concatenated text of all non-headline child elements of the headline, trimmed.
+The function `sem-router--parse-headlines` SHALL use `org-element-parse-buffer` and `org-element-map` over `headline` type elements instead of regex. It SHALL return the same plist shape as before plus a `:body` key. Tags SHALL be extracted via `org-element-property :tags`. Title SHALL be extracted via `org-element-property :raw-value`. Body SHALL be extracted as the concatenated text of all non-headline child elements of the headline, trimmed. Debug logging in this parse path SHALL use numeric position values only and SHALL NOT call numeric operators with marker objects.
 
 #### Scenario: Headline parsed with org-element
 - **WHEN** `sem-router--parse-headlines` processes an Org buffer
@@ -137,6 +137,11 @@ The function `sem-router--parse-headlines` SHALL use `org-element-parse-buffer` 
 #### Scenario: Hash includes body in computation
 - **WHEN** computing the hash for a headline
 - **THEN** the formula is `(secure-hash 'sha256 (concat title "|" (or tags-str "") "|" (or body "")))`
+
+#### Scenario: Debug preview bounds use numeric positions
+- **WHEN** `sem-router--parse-headlines` emits debug preview logging
+- **THEN** numeric bound expressions use numeric positions (for example `(min (point-max) 100)`)
+- **AND** marker objects are not passed to numeric operators such as `min`
 
 ### Requirement: README documents Orgzly sync timing warning
 The README SHALL contain a **WARNING** section immediately after the "Scheduled Tasks" table titled "Orgzly Sync Timing". The section SHALL warn users that Orgzly must not sync during specific windows to prevent data loss.

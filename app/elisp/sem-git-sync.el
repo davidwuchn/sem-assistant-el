@@ -21,24 +21,28 @@
 
 ;;; Helper Functions
 
-(defun sem-git-sync--run-command (command &optional dir)
-  "Run shell COMMAND in DIR and return (exit-code . output).
+(defun sem-git-sync--run-command (program args &optional dir)
+  "Run PROGRAM with ARGS in DIR and return (exit-code . output).
 Returns a cons cell where car is the exit code and cdr is the command output."
   (let ((default-directory (or dir default-directory))
         (output-buffer (generate-new-buffer " *git-sync-cmd*")))
     (unwind-protect
-        (let ((exit-code
-               (with-current-buffer output-buffer
-                 (erase-buffer)
-                 (call-process-shell-command command nil output-buffer nil))))
-          (cons exit-code (with-current-buffer output-buffer (buffer-string))))
+        (with-current-buffer output-buffer
+          (erase-buffer)
+          (condition-case err
+              (let ((exit-code
+                     (apply #'call-process program nil output-buffer nil args)))
+                (cons exit-code (buffer-string)))
+            (error
+             (insert (error-message-string err))
+             (cons 127 (buffer-string)))))
       (when (buffer-live-p output-buffer)
         (kill-buffer output-buffer)))))
 
 (defun sem-git-sync--has-changes-p ()
   "Check if there are uncommitted changes in org-roam directory.
 Returns t if there are changes to commit, nil otherwise."
-  (let ((result (sem-git-sync--run-command "git status --porcelain" sem-git-sync-org-roam-dir)))
+  (let ((result (sem-git-sync--run-command "git" '("status" "--porcelain") sem-git-sync-org-roam-dir)))
     (and (= (car result) 0)
          (not (string-empty-p (string-trim (cdr result)))))))
 
@@ -61,9 +65,9 @@ nil if an existing agent was reused. Returns nil on failure."
                               nil))
 
             ;; No valid existing agent - spawn a new one
-            (let* ((agent-result (sem-git-sync--run-command "ssh-agent -s"))
-                   (agent-exit-code (car agent-result))
-                   (agent-output (cdr agent-result)))
+             (let* ((agent-result (sem-git-sync--run-command "ssh-agent" '("-s")))
+                    (agent-exit-code (car agent-result))
+                    (agent-output (cdr agent-result)))
               (when (/= agent-exit-code 0)
                 (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
                               "Failed to start ssh-agent"
@@ -97,7 +101,7 @@ nil if an existing agent was reused. Returns nil on failure."
           ;; Add SSH key
           (if (file-exists-p sem-git-sync-ssh-key)
               (let ((add-result (sem-git-sync--run-command
-                                 (format "ssh-add %s" sem-git-sync-ssh-key))))
+                                 "ssh-add" (list sem-git-sync-ssh-key))))
                 (if (= (car add-result) 0)
                     (cons t agent-spawned)
                   (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
@@ -124,7 +128,7 @@ Handles nil SSH_AGENT_PID gracefully."
     (let ((agent-pid (getenv "SSH_AGENT_PID")))
       (if (and agent-pid (not (string-empty-p agent-pid)))
           (progn
-            (sem-git-sync--run-command (format "ssh-agent -k"))
+            (sem-git-sync--run-command "ssh-agent" '("-k"))
             (sem-core-log "git-sync" "GIT-SYNC" "OK"
                           (format "Killed ssh-agent PID=%s" agent-pid)
                           nil))
@@ -162,7 +166,7 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
           (cl-return-from sem-git-sync-org-roam nil))
 
         ;; Check if it's a git repository
-        (let ((git-check (sem-git-sync--run-command "git rev-parse --git-dir" sem-git-sync-org-roam-dir)))
+        (let ((git-check (sem-git-sync--run-command "git" '("rev-parse" "--git-dir") sem-git-sync-org-roam-dir)))
           (when (or (/= (car git-check) 0)
                     (string-empty-p (string-trim (cdr git-check))))
             (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
@@ -190,7 +194,7 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
           (unwind-protect
               (progn
                 ;; Stage all changes
-                (let ((add-result (sem-git-sync--run-command "git add -A" sem-git-sync-org-roam-dir)))
+                (let ((add-result (sem-git-sync--run-command "git" '("add" "-A") sem-git-sync-org-roam-dir)))
                   (when (/= (car add-result) 0)
                     (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
                                   (format "Failed to stage changes: %s" (cdr add-result))
@@ -201,7 +205,7 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
                 (let* ((timestamp (format-time-string "%Y-%m-%d %H:%M:%S"))
                        (commit-msg (format "Sync org-roam: %s" timestamp))
                        (commit-result (sem-git-sync--run-command
-                                       (format "git commit -m '%s'" commit-msg)
+                                       "git" (list "commit" "-m" commit-msg)
                                        sem-git-sync-org-roam-dir)))
                   (when (/= (car commit-result) 0)
                     (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
@@ -210,7 +214,7 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
                     (cl-return-from sem-git-sync-org-roam nil)))
 
                 ;; Push to origin
-                (let ((push-result (sem-git-sync--run-command "git push origin" sem-git-sync-org-roam-dir)))
+                (let ((push-result (sem-git-sync--run-command "git" '("push" "origin") sem-git-sync-org-roam-dir)))
                   (when (/= (car push-result) 0)
                     (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
                                   (format "Failed to push: %s" (cdr push-result))

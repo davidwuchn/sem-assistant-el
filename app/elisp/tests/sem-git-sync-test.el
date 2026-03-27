@@ -15,29 +15,40 @@
 
 (ert-deftest sem-git-sync-test-run-command-success ()
   "Test that run-command returns exit code 0 for successful command."
-  (let ((result (sem-git-sync--run-command "echo 'success'")))
+  (let ((result (sem-git-sync--run-command "echo" '("success"))))
     (should (consp result))
     (should (= (car result) 0))
     (should (string-match-p "success" (cdr result)))))
 
 (ert-deftest sem-git-sync-test-run-command-failure ()
   "Test that run-command returns non-zero exit code for failed command."
-  (let ((result (sem-git-sync--run-command "false")))
+  (let ((result (sem-git-sync--run-command "false" nil)))
     (should (consp result))
     (should-not (= (car result) 0))))
 
 (ert-deftest sem-git-sync-test-run-command-invalid-command ()
   "Test that run-command returns non-zero exit code for invalid command."
-  (let ((result (sem-git-sync--run-command "nonexistent-command-12345")))
+  (let ((result (sem-git-sync--run-command "nonexistent-command-12345" nil)))
     (should (consp result))
     (should-not (= (car result) 0))))
 
 (ert-deftest sem-git-sync-test-run-command-exit-code-127 ()
   "Test that run-command returns exit code 127 for command not found."
-  (let ((result (sem-git-sync--run-command "command-not-found-test")))
+  (let ((result (sem-git-sync--run-command "command-not-found-test" nil)))
     (should (consp result))
-    ;; Shell returns 127 for command not found
-    (should (= (car result) 127))))
+    ;; call-process returns non-zero for command not found
+    (should-not (= (car result) 0))))
+
+(ert-deftest sem-git-sync-test-run-command-preserves-literal-argv ()
+  "Test that argv values with shell chars are passed literally."
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'call-process)
+               (lambda (program _in _out _display &rest args)
+                 (setq captured (cons program args))
+                 0)))
+      (let ((result (sem-git-sync--run-command "git" '("commit" "-m" "A & B; C"))))
+        (should (= (car result) 0))
+        (should (equal captured '("git" "commit" "-m" "A & B; C")))))))
 
 ;;; SSH Agent Setup Tests
 
@@ -48,12 +59,13 @@
         (mock-output "SSH_AUTH_SOCK=/tmp/ssh-abc/agent.123; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=456; export SSH_AGENT_PID;\n"))
     (unwind-protect
         (cl-letf (((symbol-function 'sem-git-sync--run-command)
-                   (lambda (command &optional _dir)
+                   (lambda (program args &optional _dir)
                      (cond
-                      ((string= command "ssh-agent -s")
+                      ((and (string= program "ssh-agent") (equal args '("-s")))
                        (cons 0 mock-output))
-                      ((string-prefix-p "ssh-add" command)
-                       (cons 0 ""))
+                      ((and (string= program "ssh-add")
+                            (equal args (list sem-git-sync-ssh-key)))
+                        (cons 0 ""))
                       (t (cons 1 "")))))
                   ((symbol-function 'file-exists-p)
                    (lambda (path) (string= path sem-git-sync-ssh-key))))
@@ -71,9 +83,9 @@
         (mock-output "malformed output without expected vars"))
     (unwind-protect
         (cl-letf (((symbol-function 'sem-git-sync--run-command)
-                   (lambda (command &optional _dir)
-                     (when (string= command "ssh-agent -s")
-                       (cons 0 mock-output)))))
+                   (lambda (program args &optional _dir)
+                     (when (and (string= program "ssh-agent") (equal args '("-s")))
+                        (cons 0 mock-output)))))
           (should (null (sem-git-sync--setup-ssh))))
       ;; Teardown
       (setenv "SSH_AUTH_SOCK" orig-auth-sock)
@@ -85,9 +97,9 @@
         (orig-agent-pid (getenv "SSH_AGENT_PID")))
     (unwind-protect
         (cl-letf (((symbol-function 'sem-git-sync--run-command)
-                   (lambda (command &optional _dir)
-                     (when (string= command "ssh-agent -s")
-                       (cons 1 "")))))
+                   (lambda (program args &optional _dir)
+                     (when (and (string= program "ssh-agent") (equal args '("-s")))
+                        (cons 1 "")))))
           (should (null (sem-git-sync--setup-ssh))))
       ;; Teardown
       (setenv "SSH_AUTH_SOCK" orig-auth-sock)
@@ -106,10 +118,11 @@
   (cl-letf (((symbol-function 'file-directory-p)
              (lambda (_) t))
             ((symbol-function 'sem-git-sync--run-command)
-             (lambda (command &optional _dir)
+             (lambda (program args &optional _dir)
                (cond
-                ((string= command "git rev-parse --git-dir")
-                 (cons 0 ".git\n"))
+                ((and (string= program "git")
+                      (equal args '("rev-parse" "--git-dir")))
+                  (cons 0 ".git\n"))
                 (t (cons 0 "")))))
             ((symbol-function 'sem-git-sync--has-changes-p)
              (lambda () nil)))
@@ -142,15 +155,16 @@
                      (lambda (path)
                        ;; Return t for socket path and SSH key path
                        (or (string= path "/tmp/ssh-existing/agent.999")
-                           (string= path sem-git-sync-ssh-key))))
+                            (string= path sem-git-sync-ssh-key))))
                     ((symbol-function 'sem-git-sync--run-command)
-                     (lambda (command &optional _dir)
+                     (lambda (program args &optional _dir)
                        ;; Should NOT call ssh-agent -s
-                       (when (string= command "ssh-agent -s")
-                         (setq agent-spawned t))
+                       (when (and (string= program "ssh-agent") (equal args '("-s")))
+                          (setq agent-spawned t))
                        ;; Should call ssh-add
-                       (when (string-prefix-p "ssh-add" command)
-                         (cons 0 ""))
+                       (when (and (string= program "ssh-add")
+                                  (equal args (list sem-git-sync-ssh-key)))
+                          (cons 0 ""))
                        (cons 0 ""))))
             (let ((result (sem-git-sync--setup-ssh)))
               ;; Should return success
@@ -175,14 +189,15 @@
           (cl-letf (((symbol-function 'file-exists-p)
                      (lambda (path)
                        ;; Only return t for SSH key path
-                       (string= path sem-git-sync-ssh-key)))
+                        (string= path sem-git-sync-ssh-key)))
                     ((symbol-function 'sem-git-sync--run-command)
-                     (lambda (command &optional _dir)
+                     (lambda (program args &optional _dir)
                        (cond
-                        ((string= command "ssh-agent -s")
-                         (cons 0 mock-output))
-                        ((string-prefix-p "ssh-add" command)
-                         (cons 0 ""))
+                        ((and (string= program "ssh-agent") (equal args '("-s")))
+                          (cons 0 mock-output))
+                        ((and (string= program "ssh-add")
+                              (equal args (list sem-git-sync-ssh-key)))
+                          (cons 0 ""))
                         (t (cons 0 ""))))))
             (let ((result (sem-git-sync--setup-ssh)))
               ;; Should return success
@@ -199,13 +214,13 @@
 (ert-deftest sem-git-sync-test-teardown-calls-ssh-agent-k ()
   "Test that teardown calls ssh-agent -k when agent was spawned."
   (let ((teardown-called nil)
-        (kill-command nil))
+        (kill-invocation nil))
     (cl-letf (((symbol-function 'sem-git-sync--run-command)
-               (lambda (command &optional _dir)
-                 (when (string= command "ssh-agent -k")
-                   (setq teardown-called t)
-                   (setq kill-command command))
-                 (cons 0 "")))
+               (lambda (program args &optional _dir)
+                  (when (and (string= program "ssh-agent") (equal args '("-k")))
+                    (setq teardown-called t)
+                    (setq kill-invocation (cons program args)))
+                  (cons 0 "")))
               ((symbol-function 'getenv)
                (lambda (var)
                  (if (string= var "SSH_AGENT_PID") "12345" nil))))
@@ -213,16 +228,16 @@
       (sem-git-sync--teardown-ssh t)
       ;; Should have called ssh-agent -k
       (should teardown-called)
-      (should (string= kill-command "ssh-agent -k")))))
+      (should (equal kill-invocation '("ssh-agent" "-k"))))))
 
 (ert-deftest sem-git-sync-test-teardown-skips-when-agent-reused ()
   "Test that teardown does NOT kill agent when it was reused."
   (let ((teardown-called nil))
     (cl-letf (((symbol-function 'sem-git-sync--run-command)
-               (lambda (command &optional _dir)
-                 (when (string= command "ssh-agent -k")
-                   (setq teardown-called t))
-                 (cons 0 ""))))
+               (lambda (program args &optional _dir)
+                  (when (and (string= program "ssh-agent") (equal args '("-k")))
+                    (setq teardown-called t))
+                  (cons 0 ""))))
       ;; Call teardown with agent-spawned-this-cycle = nil (reused)
       (sem-git-sync--teardown-ssh nil)
       ;; Should NOT have called ssh-agent -k
@@ -232,10 +247,10 @@
   "Test that teardown handles nil SSH_AGENT_PID gracefully."
   (let ((teardown-called nil))
     (cl-letf (((symbol-function 'sem-git-sync--run-command)
-               (lambda (command &optional _dir)
-                 (when (string= command "ssh-agent -k")
-                   (setq teardown-called t))
-                 (cons 0 "")))
+               (lambda (program args &optional _dir)
+                  (when (and (string= program "ssh-agent") (equal args '("-k")))
+                    (setq teardown-called t))
+                  (cons 0 "")))
               ((symbol-function 'getenv)
                (lambda (_) nil)))  ; SSH_AGENT_PID is nil
       ;; Should not error
@@ -250,25 +265,36 @@
     (cl-letf (((symbol-function 'file-directory-p)
                (lambda (_) t))
               ((symbol-function 'sem-git-sync--run-command)
-               (lambda (command &optional _dir)
-                 (cond
-                  ((string= command "ssh-agent -s")
-                   (cons 0 mock-output))
-                  ((string= command "ssh-agent -k")
-                   (setq teardown-called t)
-                   (cons 0 ""))
-                  ((string= command "git rev-parse --git-dir")
-                   (cons 0 ".git\n"))
+               (lambda (program args &optional _dir)
+                  (cond
+                  ((and (string= program "ssh-agent") (equal args '("-s")))
+                    (cons 0 mock-output))
+                  ((and (string= program "ssh-agent") (equal args '("-k")))
+                    (setq teardown-called t)
+                    (cons 0 ""))
+                  ((and (string= program "git") (equal args '("rev-parse" "--git-dir")))
+                    (cons 0 ".git\n"))
                   (t (cons 0 "")))))
               ((symbol-function 'file-exists-p)
                (lambda (_) t))
               ((symbol-function 'sem-git-sync--has-changes-p)
                (lambda () t))
               ((symbol-function 'sem-git-sync--teardown-ssh)
-               (lambda (spawned) (setq teardown-called spawned)))
-              ;; Simulate an error during git add
-              ((symbol-function 'call-process-shell-command)
-               (lambda (&rest _) (error "Simulated git error"))))
+                (lambda (spawned) (setq teardown-called spawned)))
+              ;; Simulate a git add failure
+              ((symbol-function 'sem-git-sync--run-command)
+               (lambda (program args &optional _dir)
+                 (cond
+                  ((and (string= program "ssh-agent") (equal args '("-s")))
+                   (cons 0 mock-output))
+                  ((and (string= program "ssh-add")
+                        (equal args (list sem-git-sync-ssh-key)))
+                   (cons 0 ""))
+                  ((and (string= program "git") (equal args '("rev-parse" "--git-dir")))
+                   (cons 0 ".git\n"))
+                  ((and (string= program "git") (equal args '("add" "-A")))
+                   (cons 1 "add failed"))
+                  (t (cons 0 ""))))))
       ;; The unwind-protect should ensure teardown is called
       ;; even if an error occurs during the protected form
       (condition-case _err

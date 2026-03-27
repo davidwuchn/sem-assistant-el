@@ -142,6 +142,8 @@ This test mocks write-region to capture the filename being used."
         (progn
           ;; Reset last-flush-date
           (setq sem-core--last-flush-date "")
+          (setq sem-core--last-flushed-messages-hash nil)
+          (setq sem-core--last-flushed-messages-hash-date nil)
           ;; Mock write-region to capture filename
           (cl-letf (((symbol-function 'write-region)
                      (lambda (_start _end filename &optional _append _visit)
@@ -154,7 +156,9 @@ This test mocks write-region to capture the filename being used."
             (should captured-filename)
             (should (string-match-p "messages-[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\.log" captured-filename))))
       ;; Cleanup
-      (setq sem-core--last-flush-date ""))))
+      (setq sem-core--last-flush-date "")
+      (setq sem-core--last-flushed-messages-hash nil)
+      (setq sem-core--last-flushed-messages-hash-date nil))))
 
 (ert-deftest sem-core-test-buffer-erase-on-date-rollover ()
   "Test that *Messages* buffer is erased on date rollover.
@@ -245,6 +249,138 @@ The function should catch errors and return nil without signaling."
              (should nil)))))
     ;; Cleanup
     (setq sem-core--last-flush-date "")))
+
+(ert-deftest sem-core-test-messages-flush-hash-dedup-skips-unchanged ()
+  "Test unchanged messages snapshot is skipped after first successful flush."
+  (let ((write-count 0)
+        (fixed-date "2026-03-17"))
+    (unwind-protect
+        (progn
+          (setq sem-core--last-flush-date "")
+          (setq sem-core--last-flushed-messages-hash nil)
+          (setq sem-core--last-flushed-messages-hash-date nil)
+          (cl-letf (((symbol-function 'write-region)
+                     (lambda (&rest _)
+                       (setq write-count (1+ write-count))
+                       nil))
+                    ((symbol-function 'make-directory)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'format-time-string)
+                     (lambda (format &optional _time _utc)
+                       (if (string= format "%Y-%m-%d")
+                           fixed-date
+                         "00:00:00"))))
+            (with-current-buffer "*Messages*"
+              (let ((inhibit-read-only t))
+                (erase-buffer)
+                (insert "same snapshot")))
+            (sem-core--flush-messages-daily)
+            (sem-core--flush-messages-daily)
+            (should (= write-count 1))))
+      (setq sem-core--last-flush-date "")
+      (setq sem-core--last-flushed-messages-hash nil)
+      (setq sem-core--last-flushed-messages-hash-date nil))))
+
+(ert-deftest sem-core-test-messages-flush-hash-dedup-appends-when-changed ()
+  "Test changed messages snapshot appends and updates hash state."
+  (let ((write-count 0)
+        (fixed-date "2026-03-17"))
+    (unwind-protect
+        (progn
+          (setq sem-core--last-flush-date "")
+          (setq sem-core--last-flushed-messages-hash nil)
+          (setq sem-core--last-flushed-messages-hash-date nil)
+          (cl-letf (((symbol-function 'write-region)
+                     (lambda (&rest _)
+                       (setq write-count (1+ write-count))
+                       nil))
+                    ((symbol-function 'make-directory)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'format-time-string)
+                     (lambda (format &optional _time _utc)
+                       (if (string= format "%Y-%m-%d")
+                           fixed-date
+                         "00:00:00"))))
+            (with-current-buffer "*Messages*"
+              (let ((inhibit-read-only t))
+                (erase-buffer)
+                (insert "snapshot one")))
+            (sem-core--flush-messages-daily)
+            (with-current-buffer "*Messages*"
+              (let ((inhibit-read-only t))
+                (erase-buffer)
+                (insert "snapshot two")))
+            (sem-core--flush-messages-daily)
+            (should (= write-count 2))))
+      (setq sem-core--last-flush-date "")
+      (setq sem-core--last-flushed-messages-hash nil)
+      (setq sem-core--last-flushed-messages-hash-date nil))))
+
+(ert-deftest sem-core-test-messages-flush-hash-state-not-updated-on-write-failure ()
+  "Test failed append keeps hash state unchanged for retry eligibility."
+  (let ((write-count 0)
+        (fixed-date "2026-03-17")
+        (captured-hash nil))
+    (unwind-protect
+        (progn
+          (setq sem-core--last-flush-date "")
+          (setq sem-core--last-flushed-messages-hash nil)
+          (setq sem-core--last-flushed-messages-hash-date nil)
+          (cl-letf (((symbol-function 'write-region)
+                     (lambda (&rest _)
+                       (setq write-count (1+ write-count))
+                       (if (= write-count 1)
+                           (error "simulated append failure")
+                         nil)))
+                    ((symbol-function 'make-directory)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'format-time-string)
+                     (lambda (format &optional _time _utc)
+                       (if (string= format "%Y-%m-%d")
+                           fixed-date
+                         "00:00:00"))))
+            (with-current-buffer "*Messages*"
+              (let ((inhibit-read-only t))
+                (erase-buffer)
+                (insert "retry me")))
+            (sem-core--flush-messages-daily)
+            (setq captured-hash sem-core--last-flushed-messages-hash)
+            (should-not captured-hash)
+            (sem-core--flush-messages-daily)
+            (should (= write-count 2))
+            (should sem-core--last-flushed-messages-hash)
+            (should (string= sem-core--last-flushed-messages-hash-date fixed-date))))
+      (setq sem-core--last-flush-date "")
+      (setq sem-core--last-flushed-messages-hash nil)
+      (setq sem-core--last-flushed-messages-hash-date nil))))
+
+(ert-deftest sem-core-test-messages-flush-date-rollover-dedup-independent ()
+  "Test new UTC day first snapshot is eligible independently for dedup."
+  (let ((write-count 0)
+        (today (format-time-string "%Y-%m-%d" nil t)))
+    (unwind-protect
+        (progn
+          (setq sem-core--last-flush-date today)
+          (cl-letf (((symbol-function 'write-region)
+                     (lambda (&rest _)
+                       (setq write-count (1+ write-count))
+                       nil))
+                    ((symbol-function 'make-directory)
+                     (lambda (&rest _) nil)))
+            (with-current-buffer "*Messages*"
+              (let ((inhibit-read-only t))
+                (erase-buffer)
+                (insert "same across days")))
+            (setq sem-core--last-flushed-messages-hash
+                  (secure-hash 'sha256 "same across days"))
+            (setq sem-core--last-flushed-messages-hash-date "2000-01-01")
+            (sem-core--flush-messages-daily)
+            (should (= write-count 1))
+            (should (string= sem-core--last-flush-date today))
+            (should (string= sem-core--last-flushed-messages-hash-date today))))
+      (setq sem-core--last-flush-date "")
+      (setq sem-core--last-flushed-messages-hash nil)
+      (setq sem-core--last-flushed-messages-hash-date nil))))
 
 ;;; Test inbox purge preserves full subtrees (Task 3.4)
 

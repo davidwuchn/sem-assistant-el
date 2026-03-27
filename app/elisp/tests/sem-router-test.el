@@ -701,6 +701,54 @@ Uses unwind-protect to ensure cleanup."
     ;; Lock should be released
     (should-not sem-router--tasks-write-lock)))
 
+(ert-deftest sem-router-test-task-route-writes-through-guarded-lock-path ()
+  "Test async task callback routes temp write through lock helper."
+  (let ((lock-wrapper-called nil)
+        (write-called nil)
+        (callback-result nil))
+    (require 'sem-llm)
+    (cl-letf (((symbol-function 'org-id-new)
+               (lambda () "550e8400-e29b-41d4-a716-446655440000"))
+              ((symbol-function 'sem-llm-request)
+               (lambda (_prompt _system callback context &optional _tier)
+                 (funcall callback
+                          "* TODO Test task\n:PROPERTIES:\n:ID: 550e8400-e29b-41d4-a716-446655440000\n:FILETAGS: :work:\n:END:\nBody"
+                          nil
+                          context)
+                 nil))
+              ((symbol-function 'sem-router--with-tasks-write-lock)
+               (lambda (_headline callback _retry-count &optional _dlq-callback)
+                 (setq lock-wrapper-called t)
+                 (funcall callback)))
+              ((symbol-function 'sem-router--write-task-to-file)
+               (lambda (&rest _)
+                 (setq write-called t)
+                 t))
+              ((symbol-function 'sem-router--mark-processed)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil)))
+      (sem-router--route-to-task-llm
+       '(:title "Buy milk" :tags ("task") :body nil :hash "task-hash")
+       (lambda (success _context)
+         (setq callback-result success)))
+      (should lock-wrapper-called)
+      (should write-called)
+      (should callback-result))))
+
+(ert-deftest sem-router-test-parse-headlines-debug-preview-non-fatal ()
+  "Test debug preview logging path does not crash parsing."
+  (let ((test-file (make-temp-file "inbox-test-")))
+    (unwind-protect
+        (progn
+          (with-temp-file test-file
+            (insert "* Headline 1 :link:\n"))
+          (let ((sem-router-inbox-file test-file))
+            (should (= (length (sem-router--parse-headlines)) 1))))
+      (sem-mock-cleanup-temp-file test-file))))
+
 ;;; Tests for body handling
 
 (ert-deftest sem-router-test-body-nil-skips-sanitization ()
