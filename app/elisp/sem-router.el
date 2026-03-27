@@ -23,6 +23,21 @@
 (defconst sem-router-task-tags '("work" "family" "routine" "opensource")
   "Allowed tags for task headlines. Must be one of these values.")
 
+(defvar sem-router--task-api-max-retries 3
+  "Default maximum API-failure retries for task LLM requests.
+Can be overridden by environment variable `SEM_TASK_API_MAX_RETRIES'.")
+
+(defun sem-router--task-api-max-retries ()
+  "Return effective max retries for task LLM API failures.
+Reads `SEM_TASK_API_MAX_RETRIES' at call time and falls back to
+`sem-router--task-api-max-retries' when unset/invalid."
+  (let* ((raw (getenv "SEM_TASK_API_MAX_RETRIES"))
+         (parsed (and raw (string-match-p "^[0-9]+$" raw)
+                      (string-to-number raw))))
+    (if (and (integerp parsed) (> parsed 0))
+        parsed
+      sem-router--task-api-max-retries)))
+
 ;;; Mutex for tasks.org writes
 
 (defvar sem-router--tasks-write-lock nil
@@ -383,12 +398,30 @@ Validates the LLM response and writes to tasks.org with mutex lock."
                                             (sem-router--mark-processed headline-hash)
                                             (setq headline-context (plist-put headline-context :security-blocks nil))
                                             (setq success t)))
-                                      ;; API error - do NOT mark as processed (retry)
-                                      (progn
-                                        (sem-core-log "router" "INBOX-ITEM" "RETRY"
-                                                      (format "LLM API error: %s" (plist-get info :error))
-                                                      nil)
-                                        (setq success nil)))
+                                     ;; API error - do NOT mark as processed (retry)
+                                     (progn
+                                       (let* ((api-error (or (plist-get info :error)
+                                                             "Unknown API error"))
+                                              (max-retries (sem-router--task-api-max-retries))
+                                              (retry-count (sem-core--increment-retry headline-hash)))
+                                         (if (>= retry-count max-retries)
+                                             (progn
+                                               (sem-core-log "router" "INBOX-ITEM" "DLQ"
+                                                             (format "Task LLM API failure exhausted retries (%d/%d): %s"
+                                                                     retry-count max-retries headline-title)
+                                                             nil)
+                                               (sem-core-log-error "router" "INBOX-ITEM"
+                                                                   (format "Task LLM API terminal failure after %d retries: %s"
+                                                                           max-retries api-error)
+                                                                   headline-title
+                                                                   api-error)
+                                               (sem-core--mark-dlq headline-hash)
+                                               (setq success t))
+                                           (sem-core-log "router" "INBOX-ITEM" "RETRY"
+                                                         (format "Task LLM API failure (attempt %d/%d): %s"
+                                                                 retry-count max-retries api-error)
+                                                         nil)
+                                           (setq success nil)))))
                                     ;; Call the completion callback for non-write paths.
                                     (unless (and restored-response
                                                  (not (string-empty-p restored-response))

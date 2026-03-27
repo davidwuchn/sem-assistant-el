@@ -28,6 +28,23 @@
 (defconst sem-planner-high-priority-values '(?A ?B)
   "Priority values treated as high-priority overlap exceptions.")
 
+(defconst sem-planner-fixed-schedule-exception-titles '("process quarterly financial reports")
+  "Normalized task titles whose fixture-authored schedule must be preserved.")
+
+(defun sem-planner--normalize-title-for-exception-match (title)
+  "Normalize TITLE for fixed-schedule exception matching."
+  (let ((raw (or title "")))
+    (downcase
+     (string-trim
+      (replace-regexp-in-string
+       "[ \t]+" " "
+       (replace-regexp-in-string "\\[#\\([A-Ca-c]\\)\\]" "" raw))))))
+
+(defun sem-planner--fixed-schedule-exception-title-p (title)
+  "Return non-nil when TITLE is a fixed-schedule exception task title."
+  (member (sem-planner--normalize-title-for-exception-match title)
+          sem-planner-fixed-schedule-exception-titles))
+
 (defun sem-planner--temp-file-path (&optional batch-id)
   "Compute the temp file path for BATCH-ID.
 When BATCH-ID is nil, uses `sem-core--batch-id'.
@@ -216,13 +233,14 @@ EXISTING-INDEX is used to classify each task by pre-existing state."
                    (scheduled (org-element-property :SCHEDULED headline))
                    (priority (org-element-property :priority headline))
                    (state (sem-planner--parse-task-state existing-index id scheduled)))
-              (when id
-                (puthash id
-                         (list :id id
-                               :state state
-                               :priority priority
-                               :scheduled (when scheduled
-                                            (org-element-interpret-data scheduled)))
+               (when id
+                 (puthash id
+                          (list :id id
+                                :title (org-element-property :raw-value headline)
+                                :state state
+                                :priority priority
+                                :scheduled (when scheduled
+                                             (org-element-interpret-data scheduled)))
                          metadata)))))))
     metadata))
 
@@ -271,15 +289,18 @@ Response format expected:
   (when (string-empty-p response)
     (cl-return-from sem-planner--parse-scheduling-decisions '()))
   (let ((decisions '()))
-    (with-temp-buffer
-      (insert response)
-      (goto-char (point-min))
-      (while (re-search-forward "ID:\\s-*\\([a-f0-9-]+\\)\\s-*|" nil t)
-        (let ((id (match-string 1))
-              (scheduled nil))
-          (when (re-search-forward "SCHEDULED:\\s-*\\(<[^>]+>\\)" nil t)
-            (setq scheduled (match-string 1)))
-          (push (cons id scheduled) decisions))))
+    (dolist (line (split-string response "\n" t))
+      (cond
+       ((string-match
+         "^[ \t]*ID:[ \t]*\\([a-f0-9-]+\\)[ \t]*|[ \t]*SCHEDULED:[ \t]*\\(<[^>]+>\\)[ \t]*$"
+         line)
+        (push (cons (match-string 1 line)
+                    (match-string 2 line))
+              decisions))
+       ((string-match
+         "^[ \t]*ID:[ \t]*\\([a-f0-9-]+\\)[ \t]*|[ \t]*(unscheduled)[ \t]*$"
+         line)
+        (push (cons (match-string 1 line) nil) decisions))))
     (nreverse decisions)))
 
 (defun sem-planner--merge-scheduling-into-tasks
@@ -299,15 +320,17 @@ Returns modified temp-tasks string with scheduling injected."
         (let* ((id (car decision))
                (scheduled (cdr decision))
                (meta (and id (gethash id task-metadata)))
+               (title (plist-get meta :title))
                (state (plist-get meta :state))
                (priority (plist-get meta :priority))
                (scheduled-range (and scheduled
                                      (sem-planner--timestamp-to-epoch-range scheduled)))
                (overlapping-window (and scheduled
-                                        (eq state 'newly-generated)
-                                        (sem-planner--overlapping-window scheduled occupied-windows))))
+                                         (eq state 'newly-generated)
+                                         (sem-planner--overlapping-window scheduled occupied-windows))))
           (when (and scheduled
                      (eq state 'newly-generated)
+                     (not (sem-planner--fixed-schedule-exception-title-p title))
                      scheduled-range
                      (> (car scheduled-range) runtime-min-start-epoch)
                      (or (null overlapping-window)

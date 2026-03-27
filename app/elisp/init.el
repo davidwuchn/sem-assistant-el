@@ -97,13 +97,23 @@ to `OPENROUTER_MODEL'. The returned :models list is deduplicated."
 ;;; 2. Load Package Dependencies (installed at build time)
 
 (defun sem-init--load-package-dependencies ()
-  "Load build-time-installed package dependencies with `require'."
-  (dolist (pkg '(gptel elfeed elfeed-org org-roam websocket))
-    (condition-case err
-        (require pkg)
-      (error
-       (message "SEM: Failed to load package %s: %s"
-                pkg (error-message-string err))))))
+  "Load build-time-installed package dependencies with `require'.
+Signals an error when any required dependency fails to load."
+  (let ((failed '()))
+    (dolist (pkg '(gptel elfeed elfeed-org org-roam websocket))
+      (condition-case err
+          (require pkg)
+        (error
+         (let ((msg (error-message-string err)))
+           (push (cons pkg msg) failed)
+           (message "SEM: Failed to load package %s: %s" pkg msg)))))
+    (when failed
+      (error "Dependency load failed: %s"
+             (mapconcat
+              (lambda (entry)
+                (format "%s (%s)" (car entry) (cdr entry)))
+              (nreverse failed)
+              ", ")))))
 
 ;;; 3. Configure gptel with OpenRouter Backend
 

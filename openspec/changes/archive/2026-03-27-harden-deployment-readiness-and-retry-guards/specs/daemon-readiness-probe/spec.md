@@ -1,8 +1,4 @@
-## Purpose
-
-Define deterministic and side-effect-free SEM readiness probing requirements for startup gating and watchdog health checks.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: SEM readiness probe returns deterministic functional state
 The system SHALL provide a lightweight readiness probe function that reports ready/not-ready based on mandatory startup invariants for SEM workflow execution. Readiness success MUST require successful completion of dependency-load invariants, and logged dependency-load failures MUST force a not-ready result. The readiness result MUST be deterministic for the current process state and MUST NOT depend on external network availability.
@@ -19,14 +15,3 @@ The system SHALL provide a lightweight readiness probe function that reports rea
 - **WHEN** dependency loading fails during startup and the failure is logged
 - **THEN** readiness probe returns not-ready
 - **AND** startup is not reported as healthy
-
-### Requirement: Readiness probing is safe for frequent invocation
-The readiness probe SHALL execute without triggering inbox processing, RSS generation, git sync, or other heavy workflows. The probe MUST avoid external network calls and side effects so watchdog and startup checks can run it frequently.
-
-#### Scenario: Watchdog invokes readiness probe repeatedly
-- **WHEN** watchdog executes on its configured cadence
-- **THEN** each readiness probe call completes without running heavy workflows
-
-#### Scenario: Startup gate invokes readiness probe before service handoff
-- **WHEN** container startup performs readiness gating
-- **THEN** the probe checks only startup invariants and returns without mutating workflow state

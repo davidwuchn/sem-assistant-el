@@ -1,8 +1,4 @@
-## Purpose
-
-Define production-only WebDAV password validation requirements that prevent weak credentials while preserving non-production and integration-test workflows.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Production WebDAV password policy is enforced at startup
 In production mode, WebDAV startup SHALL reject credentials unless `WEBDAV_PASSWORD` is at least 20 characters long and includes at least one lowercase letter, one uppercase letter, and one digit.

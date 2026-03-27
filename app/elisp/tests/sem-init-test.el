@@ -113,5 +113,16 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
       (sem-init--mark-startup-invariant invariant)))
   (should-not (sem-init-readiness-probe)))
 
+(ert-deftest sem-init-test-load-package-dependencies-signals-on-failure ()
+  "Test dependency load failures signal and block readiness path." 
+  (cl-letf (((symbol-function 'require)
+             (lambda (feature &rest _)
+               (if (eq feature 'websocket)
+                   (error "missing websocket")
+                 feature)))
+            ((symbol-function 'message)
+             (lambda (&rest _) nil)))
+    (should-error (sem-init--load-package-dependencies))))
+
 (provide 'sem-init-test)
 ;;; sem-init-test.el ends here

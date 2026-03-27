@@ -28,14 +28,18 @@ Shared volume: `/data` contains all Org files, databases, and logs.
 
 ### Prerequisites
 
-- Docker and Docker Compose installed on VPS
+- Docker Engine with the Docker Compose plugin (`docker compose`) installed on VPS
 - Eask installed for local development/testing (https://emacs-eask.github.io/)
 - OpenRouter API key (https://openrouter.ai/keys)
 - Orgzly configured on mobile device
 
+If your host only provides legacy `docker-compose`, substitute `docker-compose` for `docker compose` in commands below.
+
 ### Deployment
 
 1. **Clone the repository** to your VPS:
+
+   _Illustrative example (replace placeholder values):_
    ```bash
    git clone <repository-url> sem-assistant-el
    cd sem-assistant-el
@@ -49,6 +53,7 @@ Shared volume: `/data` contains all Org files, databases, and logs.
    - `OPENROUTER_KEY=your-api-key-here`
    - `OPENROUTER_MODEL=your-preferred-model` (e.g., `anthropic/claude-sonnet-4-5`)
    - Optional: `OPENROUTER_WEAK_MODEL=your-lower-cost-model` for Pass 1 `:task:` normalization
+   - `WEBDAV_PASSWORD=ChangeMeStrongPassword2026` (replace with your own strong value)
 
    If `OPENROUTER_WEAK_MODEL` is unset or empty, weak-tier requests automatically
    fall back to `OPENROUTER_MODEL`.
@@ -77,20 +82,85 @@ Shared volume: `/data` contains all Org files, databases, and logs.
    - `%s` (2nd) - Number of days
    - `%s` (3rd) - Entries text
 
-   Example templates are in `data/prompts/` after first run, or copy from the repository examples.
+   Template content is user-defined; this repository does not ship prompt defaults.
 
 6. **Start the daemon**:
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
-6. **Verify startup**:
+7. **Verify startup**:
    ```bash
-   docker-compose logs -f emacs
+   docker compose logs -f emacs
    ```
    Look for: `SEM: Daemon ready`
 
    **Note:** If startup fails with "Required prompt file missing", ensure step 5 is completed.
+
+### Common Startup Failures (and what to do)
+
+- **`OPENROUTER_KEY` missing/empty**: LLM requests fail; set it in `.env` from `.env.example` and restart.
+- **`OPENROUTER_MODEL` missing/empty**: request routing fails; set a valid model ID in `.env` and restart.
+- **`docker compose` not found**: install Docker Compose plugin, or use legacy `docker-compose` binary if already installed.
+- **WebDAV cert files unavailable**: production `webdav` start can fail before certificates exist; complete certbot issuance first.
+- **Port 80 in use during certbot flow**: stop conflicting services before running `certbot` profile.
+
+## Dummy VPS Deployment (Non-Production Walkthrough)
+
+**WARNING: This section is a learning-only dummy flow. Do not use these placeholder values in production.**
+
+1. **Prepare a fresh VPS with Podman tooling**:
+   ```bash
+   sudo apt update
+   sudo apt install -y podman podman-compose git
+   ```
+
+2. **Clone and enter the repository**:
+
+   _Illustrative example (replace placeholder repository URL):_
+   ```bash
+   git clone https://example.invalid/your-user/sem-assistant-el.git
+   cd sem-assistant-el
+   ```
+
+3. **Create dummy environment configuration**:
+
+   _Placeholder-only example (never use real keys/domains from this README):_
+   ```bash
+   cp .env.example .env
+   sed -i 's/^OPENROUTER_KEY=.*/OPENROUTER_KEY=placeholder-openrouter-key/' .env
+   sed -i 's/^OPENROUTER_MODEL=.*/OPENROUTER_MODEL=openai\/gpt-4o-mini/' .env
+   sed -i 's/^WEBDAV_DOMAIN=.*/WEBDAV_DOMAIN=example.invalid/' .env
+   sed -i 's/^CERTBOT_EMAIL=.*/CERTBOT_EMAIL=admin@example.invalid/' .env
+   sed -i 's/^WEBDAV_PASSWORD=.*/WEBDAV_PASSWORD=PlaceholderPass1234567890/' .env
+   ```
+
+4. **Review where repository configuration lives**:
+   - Runtime environment values: `.env` (template: `.env.example`)
+   - Container wiring and cert mounts: `docker-compose.yml`
+   - Apache WebDAV startup/config templates: `webdav/apache/`
+   - Legacy WebDAV config reference: `webdav-config.yml` (not used by current `webdav` service)
+
+5. **Issue dummy certificates with certbot flow**:
+   ```bash
+   podman-compose --profile certbot up -d certbot
+   podman-compose logs -f certbot
+   ```
+   For first validation keep `CERTBOT_STAGING=true` in `.env`.
+
+6. **Start services with Podman Compose**:
+   ```bash
+   podman-compose up -d
+   podman-compose logs -f emacs
+   ```
+
+7. **Renewal lifecycle check (certbot container loop)**:
+   ```bash
+   podman-compose logs certbot
+   ```
+   Confirm renewal checks continue on `CERTBOT_RENEW_INTERVAL`.
+
+**WARNING: This is not a production hardening guide. Add your own provider-specific firewall, backup, secret-management, and monitoring controls separately.**
 
 ### Orgzly Configuration
 
@@ -161,6 +231,19 @@ Headlines that start with `http://` or `https://` are automatically treated as l
 | Every 15 min | Daemon Watchdog | Probe daemon responsiveness and trigger container restart on failure |
 | Every 6 hours | GitHub Sync | Sync `/data/org-roam` to remote repository |
 
+### WARNING: Orgzly Sync Timing
+
+When concurrent edits happen, the planner and WebDAV endpoint reject stale writes instead of silently overwriting newer content.
+
+| Window | Time | Reason |
+|--------|------|--------|
+| Processing | `XX:28–XX:32` and `XX:58–XX:02` (every hour) | Planner may detect version conflicts and retry; repeated conflicts can end in explicit non-success |
+| Purge | `04:00–04:05` (daily) | Purge rewrites `inbox-mobile.org`; clients should pull latest state before pushing |
+
+**Why this matters:** Atomic replacement prevents partial files, but conflicts still require pull-before-push recovery by clients.
+
+**Recommendation:** Configure Orgzly to sync at safe times like `XX:15` or `XX:45` (midway between cron triggers), or sync manually when needed.
+
 ### Daemon Watchdog Scope
 
 - The watchdog cron job (`/usr/local/bin/sem-daemon-watchdog`) is operational-only.
@@ -173,19 +256,6 @@ Headlines that start with `http://` or `https://` are automatically treated as l
 - Tune probe timeout with `SEM_WATCHDOG_PROBE_TIMEOUT_SEC` (default `45`).
 - Tune startup grace with `SEM_WATCHDOG_STARTUP_GRACE_SEC` (default `180`).
 - If you see repeated restarts, inspect Emacs startup and external dependencies first, then raise grace or timeout as needed.
-
-### Orgzly Sync Behavior Under Conflicts
-
-When concurrent edits happen, the planner and WebDAV endpoint now reject stale writes instead of silently overwriting newer content.
-
-| Window | Time | Reason |
-|--------|------|--------|
-| Processing | `XX:28–XX:32` and `XX:58–XX:02` (every hour) | Planner may detect version conflicts and retry; repeated conflicts can end in explicit non-success |
-| Purge | `04:00–04:05` (daily) | Purge rewrites `inbox-mobile.org`; clients should pull latest state before pushing |
-
-**Why this matters:** Atomic replacement prevents partial files, but conflicts still require pull-before-push recovery by clients.
-
-**Recommendation:** Configure Orgzly to sync at safe times like `XX:15` or `XX:45` (midway between cron triggers), or sync manually when needed.
 
 ## File Structure
 
@@ -211,7 +281,7 @@ sem-assistant-el/
 ├── logs/                   # *Messages* persistence
 ├── docker-compose.yml      # Container orchestration
 ├── Dockerfile.emacs        # Emacs container build
-├── Dockerfile.webdav       # WebDAV container build
+├── webdav/                 # Apache WebDAV startup/config templates
 ├── crontab                 # Scheduled tasks
 └── .env                    # Configuration (gitignored)
 ```
@@ -221,10 +291,20 @@ sem-assistant-el/
 Configure logrotate on the host for daily message logs in `./logs/messages-*.log`:
 
 ```bash
-sudo cp deploy/logrotate.conf /etc/logrotate.d/sem
+sudo tee /etc/logrotate.d/sem-assistant >/dev/null <<'EOF'
+/absolute/path/to/sem-assistant-el/logs/messages-*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
 ```
 
-Example logrotate config:
+Example logrotate config (adjust the absolute path):
 ```
 /var/home/sem/github/sem-assistant-el/logs/messages-*.log {
     daily
@@ -335,7 +415,11 @@ Let's Encrypt paths.
    WEBDAV_DOMAIN=your-domain.com
    CERTBOT_EMAIL=you@example.com
    CERTBOT_STAGING=true
+   WEBDAV_PASSWORD=UseAtLeast20CharsWithUpperLower123
    ```
+
+   Production WebDAV startup enforces password policy: at least 20 characters,
+   with at least one lowercase letter, one uppercase letter, and one digit.
 
 ### Configuration
 
@@ -361,6 +445,12 @@ The production WebDAV service uses Apache `httpd` + `mod_dav` and keeps the same
 3. **Start or restart WebDAV after certificates are present/renewed**:
    ```bash
    docker compose up -d webdav
+   ```
+
+   If startup fails, confirm cert readability from host before retrying:
+   ```bash
+   sudo test -r /etc/letsencrypt/live/$WEBDAV_DOMAIN/fullchain.pem
+   sudo test -r /etc/letsencrypt/live/$WEBDAV_DOMAIN/privkey.pem
    ```
 
 4. **Check certificate expiry visibility**:
@@ -411,6 +501,7 @@ Configure Orgzly to sync via HTTPS:
 - `SEM_WATCHDOG_PROBE_TIMEOUT_SEC` - Watchdog probe timeout in seconds (default: `45`)
 - `SEM_WATCHDOG_STARTUP_GRACE_SEC` - Startup grace period in seconds (default: `180`)
 - `OPENROUTER_WEAK_MODEL` - Optional weak-tier model for Pass 1 `:task:` normalization; unset/empty falls back to `OPENROUTER_MODEL`
+- `SEM_TASK_API_MAX_RETRIES` - Optional cap for task LLM API-failure retries (default: `3`)
 
 ### Model Tier Rollout / Rollback
 

@@ -186,6 +186,30 @@ Some description here")
     (should (string-match-p "SCHEDULED: <2099-01-02 16:00-17:00>" merged))
     (should-not (string-match-p "SCHEDULED: <2024-06-01 09:00-10:00>" merged))))
 
+(ert-deftest sem-planner-test-merge-scheduling-skips-fixed-schedule-exception-title ()
+  "Test fixed-schedule exception title keeps Pass 1 fixture schedule unchanged."
+  (let* ((temp-tasks (concat "* TODO [#C] process quarterly financial reports :routine:\n"
+                             ":PROPERTIES:\n"
+                             ":ID: fixed-001\n"
+                             ":FILETAGS: :routine:\n"
+                             ":END:\n"
+                             "SCHEDULED: <2026-03-20 Fri>\n"
+                             "Body\n"))
+         (decisions '(("fixed-001" . "<2099-01-02 16:00-17:00>")))
+         (task-metadata (make-hash-table :test #'equal))
+         (merged nil))
+    (puthash "fixed-001"
+             '(:id "fixed-001"
+               :title "[#C] process quarterly financial reports"
+               :state newly-generated
+               :priority ?C)
+             task-metadata)
+    (setq merged
+          (sem-planner--merge-scheduling-into-tasks
+           temp-tasks decisions task-metadata '() "2026-03-24T13:00:00Z"))
+    (should (string-match-p "SCHEDULED: <2026-03-20 Fri>" merged))
+    (should-not (string-match-p "SCHEDULED: <2099-01-02 16:00-17:00>" merged))))
+
 (ert-deftest sem-planner-test-append-merged-strips-tasks-heading ()
   "Test that append strips a leading '* Tasks' heading from merged content."
   (let* ((tmp-dir (make-temp-file "sem-test-" t))
@@ -312,6 +336,32 @@ ID: b96db7b3-e2cd-4983-ba79-5dd26a6d5215 | (unscheduled)"))
   "Test that validation fails for empty response."
   (should-not (sem-planner--validate-planned-tasks ""))
   (should-not (sem-planner--validate-planned-tasks nil)))
+
+(ert-deftest sem-planner-test-parse-scheduling-decisions-line-scoped-mixed-outcomes ()
+  "Test parser maps adjacent mixed outcomes independently per line."
+  (let* ((response
+          (string-join
+           '("ID: 11111111-1111-1111-1111-111111111111 | SCHEDULED: <2026-03-24 10:00-11:00>"
+             "ID: 22222222-2222-2222-2222-222222222222 | (unscheduled)")
+           "\n"))
+         (parsed (sem-planner--parse-scheduling-decisions response)))
+    (should (equal parsed
+                   '(("11111111-1111-1111-1111-111111111111" . "<2026-03-24 10:00-11:00>")
+                     ("22222222-2222-2222-2222-222222222222" . nil))))))
+
+(ert-deftest sem-planner-test-parse-scheduling-decisions-ignores-unknown-lines ()
+  "Test parser ignores non-decision lines and keeps valid line decisions."
+  (let* ((response
+          (string-join
+           '("notes: this line is commentary"
+             "ID: 33333333-3333-3333-3333-333333333333 | SCHEDULED: <2026-03-24 12:00-13:00>"
+             "ID: 44444444-4444-4444-4444-444444444444 | maybe later"
+             "ID: 55555555-5555-5555-5555-555555555555 | (unscheduled)")
+           "\n"))
+         (parsed (sem-planner--parse-scheduling-decisions response)))
+    (should (equal parsed
+                   '(("33333333-3333-3333-3333-333333333333" . "<2026-03-24 12:00-13:00>")
+                     ("55555555-5555-5555-5555-555555555555" . nil))))))
 
 ;;; Atomic Update Tests
 

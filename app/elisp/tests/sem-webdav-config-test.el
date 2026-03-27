@@ -25,6 +25,7 @@
     (should (string-match-p "/etc/letsencrypt:/certs:ro,z" compose))
     (should (string-match-p "WEBDAV_DOMAIN" compose))
     (should (string-match-p "WEBDAV_RUNTIME_MODE=.*production" compose))
+    (should (string-match-p "WEBDAV_PASSWORD=.*ChangeMeStrongPassword2026" compose))
     (should (string-match-p "start-webdav\\.sh" compose))))
 
 (ert-deftest sem-webdav-config-test-apache-template-enforces-conditional-writes ()

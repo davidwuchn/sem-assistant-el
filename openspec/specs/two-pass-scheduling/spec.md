@@ -28,12 +28,18 @@ Pass 2 SHALL output scheduling decisions in a simple line-based format, one line
 ID: <uuid> | SCHEDULED: <timestamp>
 ID: <uuid> | (unscheduled)
 ```
+Decision parsing MUST be deterministic and line-scoped: each decision line SHALL map exactly one task ID to exactly one scheduling outcome, and parsing MUST NOT scan neighboring lines to infer or merge outcomes.
 
 #### Scenario: Pass 2 uses simple scheduling format
 - **WHEN** Pass 2 generates scheduling decisions
 - **THEN** each decision is on its own line
 - **AND** format is `ID: <uuid> | SCHEDULED: <timestamp>` or `ID: <uuid> | (unscheduled)`
 - **AND** task bodies are NOT included in Pass 2 output
+
+#### Scenario: Mixed scheduled and unscheduled lines are parsed independently
+- **WHEN** Pass 2 output contains adjacent `SCHEDULED` and `(unscheduled)` decision lines for different task IDs
+- **THEN** each line maps only to the task ID present on that same line
+- **AND** no scheduling outcome is inherited from or associated with another line
 
 ### Requirement: Merge step combines Pass 2 decisions with Pass 1 task bodies
 After Pass 2 returns scheduling decisions, a merge step SHALL combine the decisions with full task bodies from the Pass 1 temp file. Before append, the planner SHALL validate that `tasks.org` still matches the base file version used to build Pass 2 context. On version mismatch, the planner SHALL discard the stale merge result, rebuild planning context from current file state, and rerun Pass 2 within a bounded retry budget.
