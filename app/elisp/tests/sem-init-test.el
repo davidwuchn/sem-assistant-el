@@ -124,5 +124,49 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
              (lambda (&rest _) nil)))
     (should-error (sem-init--load-package-dependencies))))
 
+(ert-deftest sem-init-test-set-paths-decouples-notes-and-repo-roots ()
+  "Test startup path config sets notes root separately from repository root."
+  (let ((captured-messages '()))
+    (cl-letf (((symbol-function 'sem-paths-resolve)
+               (lambda ()
+                 (list :repository-root "/tmp/repo/"
+                       :notes-root "/tmp/repo/org-files/")))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) captured-messages))))
+      (sem-init--set-paths)
+      (should (string= org-roam-directory "/tmp/repo/org-files/"))
+      (should (string= org-roam-db-location "/tmp/repo/org-roam.db"))
+      (should (cl-some (lambda (msg)
+                         (string-match-p "repo-root=/tmp/repo/ notes-root=/tmp/repo/org-files/"
+                                         msg))
+                       captured-messages)))))
+
+(ert-deftest sem-init-test-init-git-repo-uses-repository-root-only ()
+  "Test git initialization remains anchored to repository root." 
+  (let ((created-dirs '())
+        (git-inits '()))
+    (cl-letf (((symbol-function 'sem-paths-resolve)
+               (lambda ()
+                 (list :repository-root "/tmp/repo/"
+                       :notes-root "/tmp/repo/org-files/")))
+              ((symbol-function 'file-directory-p)
+               (lambda (_) nil))
+              ((symbol-function 'make-directory)
+               (lambda (path &optional _parents)
+                 (push path created-dirs)))
+              ((symbol-function 'write-region)
+               (lambda (&rest _) nil))
+              ((symbol-function 'call-process)
+               (lambda (_program _in _out _display &rest args)
+                 (push args git-inits)
+                 0))
+              ((symbol-function 'message)
+               (lambda (&rest _) nil)))
+      (sem-init--init-git-repo)
+      (should (member "/tmp/repo/" created-dirs))
+      (should-not (member "/tmp/repo/org-files/" created-dirs))
+      (should (member '("init" "/tmp/repo/") git-inits)))))
+
 (provide 'sem-init-test)
 ;;; sem-init-test.el ends here

@@ -5,7 +5,7 @@ A self-hosted Emacs daemon that autonomously processes mobile-captured Org notes
 ## Features
 
 - **Inbox Processing**: Every 30 minutes, processes headlines from `inbox-mobile.org` via LLM
-- **URL Capture**: Fetches full article text via trafilatura and creates org-roam nodes
+- **URL Capture**: Fetches full article text via trafilatura and creates org-roam nodes under `/data/org-roam/org-files/`
 - **RSS Digest**: Daily morning digest from RSS feeds at 9:30 AM
 - **arXiv Digest**: Daily arXiv paper digest for research tracking
 - **Atomic Purge**: Daily cleanup of processed headlines at 4:00 AM
@@ -64,8 +64,14 @@ If your host only provides legacy `docker-compose`, substitute `docker-compose` 
    ```
 
 4. **(Optional) Pre-populate data**:
-   - Clone existing org-roam notes to `./data/org-roam/`
+   - Clone existing org-roam notes to `./data/org-roam/org-files/`
    - Copy `feeds.org` to `./data/feeds.org` for Elfeed subscriptions
+
+### Path Contract (Notes Root vs Repository Root)
+
+- **Notes root**: `/data/org-roam/org-files/` (all org-roam node creation and indexing)
+- **Repository root**: `/data/org-roam/` (git init/readiness/sync lifecycle)
+- New URL-capture notes are written only under `org-files/`; top-level `/data/org-roam/` is not used as a note destination.
 
 5. **Create prompt files** (required for RSS digest generation):
    ```bash
@@ -271,7 +277,8 @@ sem-assistant-el/
 │   ├── sem-url-capture.el  # URL to org-roam pipeline
 │   └── sem-rss.el          # RSS digest generation
 ├── data/                   # Shared volume (persisted)
-│   ├── org-roam/           # Org-roam notes
+│   ├── org-roam/           # Git repository root for org-roam sync
+│   │   └── org-files/      # Canonical org-roam notes subtree
 │   ├── elfeed/             # Elfeed database
 │   ├── morning-read/       # Daily digests
 │   ├── inbox-mobile.org    # Mobile inbox (Orgzly writes)
@@ -387,7 +394,7 @@ The SEM Assistant can automatically sync your org-roam notes to a GitHub reposit
 ### How It Works
 
 - Sync runs every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
-- Only `/data/org-roam` is synced (not the entire `/data` volume)
+- Git sync runs from `/data/org-roam` repository root and includes `org-files/` note changes
 - Commits all changes with timestamp: `Sync org-roam: YYYY-MM-DD HH:MM:SS`
 - Skips if no changes detected
 - Uses SSH key for authentication (no passwords stored)

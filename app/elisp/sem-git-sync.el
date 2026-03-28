@@ -11,10 +11,12 @@
 
 (require 'sem-core)
 (require 'cl-lib)
+(require 'sem-paths)
 
 ;;; Constants
 
-(defconst sem-git-sync-org-roam-dir "/data/org-roam"
+(defconst sem-git-sync-org-roam-dir
+  (directory-file-name (plist-get (sem-paths-resolve) :repository-root))
   "Path to the org-roam directory to synchronize.")
 
 (defconst sem-git-sync-ssh-key "/root/.ssh/id_rsa"

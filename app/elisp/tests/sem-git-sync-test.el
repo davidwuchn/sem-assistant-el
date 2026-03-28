@@ -50,6 +50,10 @@
         (should (= (car result) 0))
         (should (equal captured '("git" "commit" "-m" "A & B; C")))))))
 
+(ert-deftest sem-git-sync-test-root-remains-repository-root ()
+  "Test git-sync root remains anchored at repository root." 
+  (should (string= sem-git-sync-org-roam-dir "/data/org-roam")))
+
 ;;; SSH Agent Setup Tests
 
 (ert-deftest sem-git-sync-test-setup-ssh-parses-auth-sock ()

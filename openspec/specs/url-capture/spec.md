@@ -134,11 +134,12 @@ The system SHALL restore sensitive content blocks into the LLM response before s
 - **THEN** `sem-security-restore-from-llm` is still called and returns the text unchanged
 
 ### Requirement: LLM output validated before saving
-The system SHALL validate LLM output before writing to disk. Validation SHALL check for presence of `:PROPERTIES:`, `:ID:`, and `#+title:`. Invalid output SHALL be sent to `/data/errors.org`.
+The system SHALL validate LLM output before writing to disk. Validation SHALL check for presence of `:PROPERTIES:`, `:ID:`, and `#+title:`. Invalid output SHALL be sent to `/data/errors.org`. Valid output SHALL be saved under the notes root `/data/org-roam/org-files/` and SHALL NOT be written to `/data/org-roam` top-level.
 
 #### Scenario: Valid output passes validation
 - **WHEN** LLM output contains `:PROPERTIES:`, `:ID:`, and `#+title:`
-- **THEN** the output is saved to `/data/org-roam/`
+- **THEN** the output is saved to `/data/org-roam/org-files/`
+- **AND** no new node file is written directly under `/data/org-roam`
 
 #### Scenario: Missing :PROPERTIES: fails validation
 - **WHEN** LLM output lacks `:PROPERTIES:` block
@@ -160,11 +161,16 @@ The system SHALL call `org-roam-db-sync` after each successful node file write. 
 - **THEN** `org-roam-db-sync` is called to index the new node
 
 ### Requirement: org-roam directory hardcoded
-The system SHALL use `/data/org-roam/` as the org-roam directory. This path SHALL be hardcoded in `init.el`, not configurable at runtime.
+The system SHALL configure org-roam note operations to use `/data/org-roam/org-files/` as the canonical notes directory. This notes-root contract SHALL be set in startup configuration and SHALL be used by URL-capture output paths.
 
-#### Scenario: org-roam uses hardcoded path
+#### Scenario: org-roam uses canonical notes root
 - **WHEN** the daemon starts
-- **THEN** `org-roam-directory` is set to `/data/org-roam/` from `init.el`
+- **THEN** org-roam note destination resolves to `/data/org-roam/org-files/`
+
+#### Scenario: URL-capture writes only under notes root
+- **WHEN** URL-capture saves a generated node
+- **THEN** the saved filepath is under `/data/org-roam/org-files/`
+- **AND** URL-capture does not write new nodes directly under `/data/org-roam`
 
 ### Requirement: Source URL visible in Summary section
 The system SHALL write the source URL as the first line of the `* Summary` section body as a plain org-mode link: `Source: [[URL][URL]]`. This ensures visibility in org-roam-ui's node preview. `#+ROAM_REFS` SHALL still be written for backlink resolution but is not the primary display mechanism.

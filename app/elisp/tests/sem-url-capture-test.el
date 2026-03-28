@@ -85,6 +85,45 @@
       (sem-mock-cleanup-temp-file test-log-file)
       (sem-mock-cleanup-temp-file test-errors-file))))
 
+(ert-deftest sem-url-capture-test-next-node-filepath-under-notes-root ()
+  "Test node filepath generation always targets notes root." 
+  (let* ((base (make-temp-file "sem-notes-root-" t))
+         (notes-root (expand-file-name "org-files" base)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'sem-paths-resolve)
+                   (lambda ()
+                     (list :repository-root (file-name-as-directory base)
+                           :notes-root (file-name-as-directory notes-root)))))
+          (let ((path (sem-url-capture--next-node-filepath "test-article")))
+            (should (string-prefix-p (file-name-as-directory notes-root) path))
+            (should (string-match-p "test-article\\.org$" path))))
+      (when (file-directory-p base)
+        (delete-directory base t)))))
+
+(ert-deftest sem-url-capture-test-next-node-filepath-avoids-overwrite ()
+  "Test node filepath generation avoids existing filename collisions."
+  (let* ((base (make-temp-file "sem-notes-root-" t))
+         (notes-root (expand-file-name "org-files" base))
+         (existing nil)
+         (next nil))
+    (unwind-protect
+        (progn
+          (make-directory notes-root t)
+          (cl-letf (((symbol-function 'sem-paths-resolve)
+                     (lambda ()
+                       (list :repository-root (file-name-as-directory base)
+                             :notes-root (file-name-as-directory notes-root))))
+                    ((symbol-function 'format-time-string)
+                     (lambda (&rest _) "20260327120000")))
+            (setq existing (sem-url-capture--next-node-filepath "collision-test"))
+            (with-temp-file existing
+              (insert "already exists"))
+            (setq next (sem-url-capture--next-node-filepath "collision-test")))
+          (should-not (string= existing next))
+          (should (string-match-p "collision-test-1\\.org$" next)))
+      (when (file-directory-p base)
+        (delete-directory base t)))))
+
 ;;; Test prompt builder output contains Source URL as first line of Summary
 
 (ert-deftest sem-url-capture-test-prompt-builder-source-url ()
@@ -211,15 +250,19 @@ and asserts the saved file contains the restored sensitive block text."
 
           ;; Mock sem-llm-request to immediately call callback with tokenized response
           ;; The callback receives (response info context), where context has :security-blocks
-           (cl-letf (((symbol-function 'sem-llm-request)
-                     (lambda (user-prompt system-prompt callback context &optional _tier)
-                        ;; Merge the security-blocks into the context for the callback
-                        (let ((context-with-blocks (plist-put context :security-blocks security-blocks)))
-                          (funcall callback llm-response-with-token (list :status "success") context-with-blocks))))
-                    ((symbol-function 'sem-url-capture--fetch-url)
-                     (lambda (_ &optional _timeout) (list :content "Test article content")))
-                    ((symbol-function 'sem-url-capture--get-umbrella-nodes)
-                     (lambda () nil))
+            (cl-letf (((symbol-function 'sem-llm-request)
+                      (lambda (user-prompt system-prompt callback context &optional _tier)
+                         ;; Merge the security-blocks into the context for the callback
+                         (let ((context-with-blocks (plist-put context :security-blocks security-blocks)))
+                           (funcall callback llm-response-with-token (list :status "success") context-with-blocks))))
+                     ((symbol-function 'sem-paths-resolve)
+                      (lambda ()
+                        (list :repository-root (file-name-as-directory test-org-roam-dir)
+                              :notes-root (file-name-as-directory test-org-roam-dir))))
+                     ((symbol-function 'sem-url-capture--fetch-url)
+                      (lambda (_ &optional _timeout) (list :content "Test article content")))
+                     ((symbol-function 'sem-url-capture--get-umbrella-nodes)
+                      (lambda () nil))
                     ((symbol-function 'org-roam-db-sync)
                      (lambda () nil)))
 

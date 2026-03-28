@@ -22,6 +22,12 @@
 
 (require 'cl-lib)
 
+(let ((sem-init--this-dir (file-name-directory (or load-file-name buffer-file-name))))
+  (when sem-init--this-dir
+    (add-to-list 'load-path sem-init--this-dir)))
+
+(require 'sem-paths)
+
 (defconst sem-init--required-invariants
   '(env-validated
     package-deps-loaded
@@ -146,7 +152,14 @@ Model is read from OPENROUTER_MODEL at call time."
 
 (defun sem-init--set-paths ()
   "Set all hardcoded paths as global variables."
-  (setq org-roam-directory (expand-file-name "/data/org-roam/"))
+  (let* ((resolved-paths (sem-paths-resolve))
+         (repository-root (plist-get resolved-paths :repository-root))
+         (notes-root (plist-get resolved-paths :notes-root)))
+    (setq org-roam-directory notes-root)
+    (setq org-roam-db-location (sem-paths-join repository-root "org-roam.db"))
+    (message "SEM: Path contract resolved repo-root=%s notes-root=%s"
+             repository-root
+             notes-root))
   (setq elfeed-db-directory (expand-file-name "/data/elfeed/"))
   (setq rmh-elfeed-org-files '("/data/feeds.org"))
   (message "SEM: Paths configured"))
@@ -169,13 +182,15 @@ Disables lock files, local variables, and configures org-babel safety."
   "Initialize git repo for org-roam if not already present.
 Creates /data/org-roam/.git/ if absent and writes .gitignore.
 This is pre-wiring for future github-integration."
-  (let ((git-dir (expand-file-name ".git" org-roam-directory)))
+  (let* ((resolved-paths (sem-paths-resolve))
+         (repository-root (plist-get resolved-paths :repository-root))
+         (git-dir (expand-file-name ".git" repository-root)))
     (unless (file-directory-p git-dir)
-      (message "SEM: Initializing git repo in %s" org-roam-directory)
-      (make-directory org-roam-directory t)
-      (call-process "git" nil nil nil "init" org-roam-directory)
+      (message "SEM: Initializing git repo in %s" repository-root)
+      (make-directory repository-root t)
+      (call-process "git" nil nil nil "init" repository-root)
       ;; Write .gitignore
-      (let ((gitignore-path (expand-file-name ".gitignore" org-roam-directory)))
+      (let ((gitignore-path (expand-file-name ".gitignore" repository-root)))
         (with-temp-file gitignore-path
           (insert "# org-roam database files\n")
           (insert "org-roam.db\n")
@@ -212,7 +227,11 @@ Attempts to load existing DB. On error, wipes and recreates."
 Always deletes existing DB and calls org-roam-db-sync.
 Handles missing /data/org-roam/ gracefully."
   (require 'org-roam)
-  (let* ((db-path (expand-file-name "org-roam.db" org-roam-directory))
+  (let* ((resolved-paths (sem-paths-resolve))
+         (repository-root (plist-get resolved-paths :repository-root))
+         (notes-root (plist-get resolved-paths :notes-root))
+         (db-path (expand-file-name (or org-roam-db-location
+                                        (sem-paths-join repository-root "org-roam.db"))))
          (shm-path (concat db-path "-shm"))
          (wal-path (concat db-path "-wal")))
     ;; Delete old DB files if they exist
@@ -220,7 +239,7 @@ Handles missing /data/org-roam/ gracefully."
       (when (file-exists-p path)
         (delete-file path)))
     ;; Create directory if needed
-    (make-directory org-roam-directory t)
+    (make-directory notes-root t)
     ;; Sync database
     (condition-case err
         (progn

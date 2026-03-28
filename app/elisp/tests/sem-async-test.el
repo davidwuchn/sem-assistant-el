@@ -182,7 +182,7 @@ Called with RESULT and CONTEXT."
 (ert-deftest sem-async-test-url-capture-callback ()
   "Test that URL capture callback receives filepath on success."
   (sem-async-test--reset)
-  (let ((mock-filepath "/data/org-roam/20240101120000-test.org"))
+  (let ((mock-filepath "/data/org-roam/org-files/20240101120000-test.org"))
     ;; Mock dependencies
     (cl-letf (((symbol-function 'sem-url-capture--fetch-url)
                (lambda (_url &optional _timeout) (list :content "Mock content")))

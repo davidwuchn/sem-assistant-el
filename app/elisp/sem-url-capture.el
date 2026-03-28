@@ -23,6 +23,7 @@
 (require 'org-id)
 (require 'sem-core)
 (require 'sem-llm)
+(require 'sem-paths)
 (require 'sem-prompts)
 (require 'sem-security)
 
@@ -242,7 +243,21 @@ Generates a new org-roam ID and includes it in the expected format section."
             "- <Key point 3>\n\n"
             "* Notes\n"
             "<Detailed notes with links to umbrella nodes if relevant>\n\n"
-            "Generate the complete org-roam node following this format.")))
+             "Generate the complete org-roam node following this format.")))
+
+(defun sem-url-capture--next-node-filepath (slug)
+  "Return a new, non-existing org-roam node filepath for SLUG.
+The returned path is always under the resolved notes root."
+  (let* ((notes-root (plist-get (sem-paths-resolve) :notes-root))
+         (timestamp (format-time-string "%Y%m%d%H%M%S"))
+         (base-name (format "%s-%s" timestamp slug))
+         (candidate (expand-file-name (format "%s.org" base-name) notes-root))
+         (suffix 1))
+    (while (file-exists-p candidate)
+      (setq candidate
+            (expand-file-name (format "%s-%d.org" base-name suffix) notes-root))
+      (setq suffix (1+ suffix)))
+    candidate))
 
 ;;; Validation and Save
 
@@ -256,7 +271,7 @@ Validation steps:
 2. Strip hallucinated markdown code blocks
 3. Validate presence of :PROPERTIES:, :ID:, and #+title:
 4. Extract title and generate slug
-5. Write to org-roam-directory with timestamp-slug.org name
+5. Write to notes root with timestamp-slug.org name
 6. Invoke org-roam-db-sync
 7. Kill temporary buffer
 
@@ -295,14 +310,13 @@ Returns the filepath on success, nil on validation failure."
             (if (re-search-forward "^#\\+title:\\s-+\\(.+\\)$" nil t)
                 (let* ((title (match-string 1))
                        (slug (sem-url-capture--make-slug title))
-                       (timestamp (format-time-string "%Y%m%d%H%M%S"))
-                       (filename (format "%s-%s.org" timestamp slug))
-                       (fpath (expand-file-name filename org-roam-directory))
+                       (fpath (sem-url-capture--next-node-filepath slug))
                        (content (buffer-string)))
 
-                  ;; Write to org-roam-directory
-                  (with-temp-file fpath
-                    (insert content))
+                  ;; Write only to new files (never overwrite existing notes).
+                  (with-temp-buffer
+                    (insert content)
+                    (write-region (point-min) (point-max) fpath nil 'silent nil 'excl))
 
                   ;; Sync database
                   (org-roam-db-sync)

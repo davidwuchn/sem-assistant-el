@@ -1,10 +1,4 @@
-# Specification: readme-accuracy
-
-## Purpose
-
-Define requirements that keep `README.md` aligned with current repository behavior, commands, and operator guidance.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: README content matches current repository behavior
 The README SHALL remain aligned with current code paths, executable commands, and documented operational behavior, and SHALL remove or correct stale references.
