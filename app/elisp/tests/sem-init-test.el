@@ -119,11 +119,11 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
   "Test dependency load failures signal and block readiness path." 
   (cl-letf (((symbol-function 'require)
              (lambda (feature &rest _)
-               (if (eq feature 'websocket)
-                   (error "missing websocket")
-                 feature)))
-            ((symbol-function 'message)
-             (lambda (&rest _) nil)))
+                (if (eq feature 'gptel)
+                    (error "missing gptel")
+                  feature)))
+             ((symbol-function 'message)
+              (lambda (&rest _) nil)))
     (should-error (sem-init--load-package-dependencies))))
 
 (ert-deftest sem-init-test-validate-env-succeeds-with-valid-timezone ()

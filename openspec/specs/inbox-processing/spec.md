@@ -48,7 +48,7 @@ The system SHALL NOT write to `/data/inbox-mobile.org` at any time except during
 - **THEN** output is written to the batch temp file and later merged into `/data/tasks.org`, never to `inbox-mobile.org`
 
 ### Requirement: Processed node identity tracked via content hashes
-The system SHALL track processed headlines using `/data/.sem-cursor.el` containing content hashes. A headline SHALL be marked as processed only after successful output is written.
+The system SHALL track processed headlines using `/data/.sem-cursor.el` containing content hashes. A headline SHALL be marked as processed only after successful output is written. The hash input format SHALL be a structured JSON array encoding of title, space-joined tags, and body, computed as `(secure-hash 'sha256 (json-encode (vector title tags-str body)))`.
 
 #### Scenario: Hash recorded after successful processing
 - **WHEN** a headline is successfully processed and output is written
@@ -57,6 +57,10 @@ The system SHALL track processed headlines using `/data/.sem-cursor.el` containi
 #### Scenario: Already-processed headlines are skipped
 - **WHEN** inbox processing encounters a headline whose hash exists in `.sem-cursor.el`
 - **THEN** the headline is skipped without calling the LLM
+
+#### Scenario: Hash input uses unambiguous structured encoding
+- **WHEN** computing a content hash for cursor identity
+- **THEN** the hash input is `(json-encode (vector title tags-str body))` instead of delimiter-joined strings
 
 ### Requirement: LLM API errors trigger retry on next run
 The system SHALL NOT mark a node as processed when the LLM API returns an error (429 rate limit, timeout). The system SHALL also NOT mark a `:link:` node as processed when URL capture fails due to timeout. These nodes SHALL be retried on the next cron run under existing retry controls.
@@ -147,7 +151,7 @@ The function `sem-router--parse-headlines` SHALL use `org-element-parse-buffer` 
 
 #### Scenario: Hash includes body in computation
 - **WHEN** computing the hash for a headline
-- **THEN** the formula is `(secure-hash 'sha256 (concat title "|" (or tags-str "") "|" (or body "")))`
+- **THEN** the formula is `(secure-hash 'sha256 (json-encode (vector title (or tags-str "") (or body ""))))`
 
 #### Scenario: Debug preview bounds use numeric positions
 - **WHEN** `sem-router--parse-headlines` emits debug preview logging

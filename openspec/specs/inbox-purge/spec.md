@@ -34,11 +34,11 @@ The system SHALL NOT write to `/data/inbox-mobile.org` at any time other than th
 - **THEN** `/data/inbox-mobile.org` is never written to by the daemon
 
 ### Requirement: Purge hash computation matches router format
-The system SHALL compute headline hashes in `sem-core-purge-inbox` using exactly the same format as `sem-router--parse-headlines`. The hash input SHALL be `(concat org-element-title "|" space-joined-tags "|" body)` where `space-joined-tags` is the space-separated list of tags (without colons).
+The system SHALL compute headline hashes in `sem-core-purge-inbox` using exactly the same format as `sem-router--parse-headlines`. The hash input SHALL be `(json-encode (vector title space-joined-tags body))`, and the stored digest SHALL be computed as `(secure-hash 'sha256 <that-json-string>)`.
 
 #### Scenario: Hash matches router computation
 - **WHEN** `sem-core-purge-inbox` computes a hash for comparison
-- **THEN** it uses `(concat title "|" space-joined-tags "|" body)` format
+- **THEN** it uses `(secure-hash 'sha256 (json-encode (vector title space-joined-tags body)))`
 - **AND** this matches the hash stored by `sem-router--parse-headlines`
 
 #### Scenario: Tags are space-joined without colons
@@ -47,7 +47,7 @@ The system SHALL compute headline hashes in `sem-core-purge-inbox` using exactly
 
 #### Scenario: Body is included in hash
 - **WHEN** a headline has body content
-- **THEN** the body text is appended to the hash input after the tags
+- **THEN** the body text is included as the third element of the JSON vector used for hashing
 
 ### Requirement: Unprocessed headlines retained
 The system SHALL retain headlines that have not been processed (hashes not in `.sem-cursor.el`). Only processed headlines SHALL be removed. The implementation SHALL preserve the full subtree of each unprocessed headline (title line + all body lines until the next top-level `* ` headline or EOF). The temp-file write MUST use region-based or org-element-based copy — writing only the title string is FORBIDDEN.

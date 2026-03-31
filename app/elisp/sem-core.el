@@ -11,6 +11,7 @@
 
 (require 'org)
 (require 'cl-lib)
+(require 'json)
 (require 'sem-time)
 
 ;;; Constants
@@ -91,35 +92,32 @@ TOKENS is optional approximate input character count divided by 4.
 
 Format: - [HH:MM:SS] [MODULE] [EVENT-TYPE] [STATUS] tokens=NNN | message"
   (cl-block sem-core-log
-    (ignore-errors
-      ;; Check if log file initialized successfully before proceeding
-      (let ((ensure-result (sem-core--ensure-log-headings)))
-        (unless ensure-result
-          (cl-return-from sem-core-log nil)))
+    ;; Check if log file initialized successfully before proceeding
+    (let ((ensure-result (sem-core--ensure-log-headings)))
+      (unless ensure-result
+        (condition-case _fallback-err
+            (message "SEM-STDERR: Failed to initialize %s [%s/%s/%s]"
+                     sem-core-log-file module event-type status)
+          (error nil))
+        (cl-return-from sem-core-log nil)))
 
-      (let* ((now (current-time))
+    (condition-case err
+        (let* ((now (current-time))
                (timestamp (sem-time-format-string "%H:%M:%S" now))
-               (day (sem-time-format-string "%Y-%m-%d" now))
                (log-file sem-core-log-file)
                (tokens-str (if tokens (format " tokens=%d |" tokens) " |"))
-               ;; Truncate message to 200 chars and remove newlines
-               (clean-message (substring (replace-regexp-in-string "\n" " " (or message "")) 0 (min 200 (length (or message ""))))))
-
-          (with-temp-buffer
-            (insert-file-contents log-file)
-
-            ;; Find the day heading and append log entry
-            (goto-char (point-min))
-            (if (re-search-forward (format "^\\*\\*\\* %s$" day) nil t)
-                (progn
-                  (end-of-line)
-                  (insert "\n- [" timestamp "] [" module "] [" event-type "] [" status "]" tokens-str " " clean-message))
-              ;; Day heading not found, create it under the month
-              (goto-char (point-max))
-              (insert "*** " day "\n")
-              (insert "- [" timestamp "] [" module "] [" event-type "] [" status "]" tokens-str " " clean-message))
-
-            (write-region (point-min) (point-max) log-file nil 'silent))))))
+                ;; Truncate message to 200 chars and remove newlines
+                (clean-message (substring (replace-regexp-in-string "\n" " " (or message ""))
+                                          0
+                                          (min 200 (length (or message "")))))
+               (line (concat "- [" timestamp "] [" module "] [" event-type "] [" status "]"
+                             tokens-str " " clean-message "\n")))
+          (write-region line nil log-file t 'silent))
+      (error
+       (condition-case _fallback-err
+           (message "SEM-STDERR: Failed to write %s [%s/%s/%s]: %s"
+                    sem-core-log-file module event-type status (error-message-string err))
+         (error nil))))))
   ; Never crash on logging errors
 
 (defun sem-core-log-error (module event-type error-msg input &optional raw-output)
@@ -132,7 +130,7 @@ RAW-OUTPUT is the raw LLM response, or nil if LLM was not called.
 
 This calls `sem-core-log' with STATUS=FAIL or STATUS=DLQ, and appends
 detailed error info to errors.org."
-  (condition-case _err
+  (condition-case err
       (progn
         ;; Log to sem-log.org with FAIL status
         (sem-core-log module event-type (if raw-output "DLQ" "FAIL") (or error-msg "Unknown error") nil)
@@ -141,7 +139,8 @@ detailed error info to errors.org."
         (let* ((now (current-time))
                (timestamp (sem-time-format-string "%Y-%m-%d %H:%M:%S" now))
                (errors-file sem-core-errors-file)
-               (created (sem-time-format-string "[%Y-%m-%d %H:%M:%S]" now)))
+               (created (sem-time-format-string "[%Y-%m-%d %H:%M:%S]" now))
+               (deadline (sem-time-format-string "<%Y-%m-%d %a %H:%M>" now)))
 
           (make-directory (file-name-directory errors-file) t)
 
@@ -151,7 +150,8 @@ detailed error info to errors.org."
 
             ;; Insert error entry
             (goto-char (point-max))
-            (insert (format "* [%s] [%s] [%s] FAIL\n" timestamp module event-type))
+            (insert (format "* TODO [%s] [%s] [%s] FAIL\n" timestamp module event-type))
+            (insert (format "DEADLINE: %s\n" deadline))
             (insert ":PROPERTIES:\n")
             (insert ":CREATED: " created "\n")
             (insert ":END:\n")
@@ -162,7 +162,12 @@ detailed error info to errors.org."
             (insert (or raw-output "N/A") "\n\n")
 
             (write-region (point-min) (point-max) errors-file nil 'silent))))
-    (t nil)))  ; Never crash on logging errors
+    (error
+     (condition-case _fallback-err
+         (message "SEM-STDERR: Failed to write %s [%s/%s]: %s"
+                  sem-core-errors-file module event-type (error-message-string err))
+       (error nil))
+     nil)))  ; Never crash on logging errors
 
 ;;; Messages Persistence
 
@@ -339,12 +344,22 @@ Uses atomic write via temp file and rename."
       (insert "\n)\n"))
     (rename-file tmp-file cursor-file t)))
 
+(defun sem-core--purge-cursor-to-active-hashes (active-hashes)
+  "Rewrite cursor file to ACTIVE-HASHES only.
+ACTIVE-HASHES is a list of retained inbox headline hashes."
+  (let ((cursor-alist (mapcar (lambda (hash) (cons hash t))
+                              (delete-dups (copy-sequence (or active-hashes '()))))))
+    (sem-core--write-cursor cursor-alist)))
+
 (defun sem-core--compute-headline-hash (headline)
   "Compute a content hash for HEADLINE.
 Uses the headline title and properties for deterministic hashing."
   (let ((title (or (plist-get headline :title) ""))
-        (tags (or (string-join (plist-get headline :tags) ":") "")))
-    (secure-hash 'sha256 (concat title "|" tags))))
+        (tags-str (if (plist-get headline :tags)
+                      (string-join (plist-get headline :tags) " ")
+                    ""))
+        (body (or (plist-get headline :body) "")))
+    (secure-hash 'sha256 (json-encode (vector title tags-str body)))))
 
 (defun sem-core--mark-processed (hash)
   "Mark a headline HASH as processed in the cursor file.
@@ -394,6 +409,10 @@ Uses atomic write via temp file and rename."
         (insert "\n  (\"" (car entry) "\" . " (number-to-string (cdr entry)) ")"))
       (insert "\n)\n"))
     (rename-file tmp-file retries-file t)))
+
+(defun sem-core--purge-retries ()
+  "Reset retries tracking file to an empty alist."
+  (sem-core--write-retries '()))
 
 (defun sem-core--get-retry-count (hash)
   "Get the retry count for HASH.
@@ -497,27 +516,21 @@ Initializes batch state for tracking callbacks and triggering planning step."
   "Atomic purge of processed headlines from inbox-mobile.org.
 Only runs at 4AM window. Uses temp file + rename-file for atomicity.
 Hash computation matches sem-router--parse-headlines format:
-(concat title \"|\" space-joined-tags \"|\" body)"
+(json-encode (vector title space-joined-tags body))."
   (condition-case err
       (let* ((inbox-file sem-core-inbox-file)
              (tmp-file (concat inbox-file ".purge.tmp"))
-             (cursor (sem-core--read-cursor))
+             (keep-hashes '())
              (purged-count 0)
              (hour (string-to-number (sem-time-format-string "%H"))))
-        ;; Check if we're in the 4AM window (04:00-04:59)
         (cond
-         ;; Not 4AM - skip purge
          ((/= hour 4)
           (sem-core-log "purge" "PURGE" "SKIP" "Not in 4AM window")
           (message "SEM: Purge only runs at 4AM, current hour: %d" hour))
-         ;; 4AM but file doesn't exist - skip
          ((not (file-exists-p inbox-file))
           (sem-core-log "purge" "PURGE" "SKIP" "inbox-mobile.org does not exist")
-          (message "SEM: inbox-mobile.org does not exist, nothing to purge"))
-         ;; 4AM and file exists - do purge
+          (message "SEM: inbox-mobile.org does not exist, skipping inbox purge"))
          (t
-          ;; Read inbox and filter out processed headlines
-          ;; Use org-element parsing for consistent body extraction with sem-router
           (require 'sem-router)
           (let ((keep-headlines '()))
             (with-temp-buffer
@@ -532,24 +545,47 @@ Hash computation matches sem-router--parse-headlines format:
                            (tags-str (if tags (string-join tags " ") ""))
                            (body-str (or body ""))
                            (hash (secure-hash 'sha256
-                                              (concat title "|" tags-str "|" body-str))))
+                                              (json-encode (vector title tags-str body-str)))))
                       (if (sem-core--is-processed hash)
                           (setq purged-count (1+ purged-count))
-                        ;; Keep the headline subtree in the inbox
                         (let ((begin (org-element-property :begin headline-element))
                               (end (org-element-property :end headline-element)))
-                          (push (buffer-substring-no-properties begin end)
-                                keep-headlines)))))))
-            ;; Write purged content to temp file - preserve full subtrees
-            (with-temp-file tmp-file
-              (dolist (subtree (nreverse keep-headlines))
-                (insert subtree)
-                (insert "\n"))))
-            ;; Atomic rename
+                          (push hash keep-hashes)
+                          (push (buffer-substring-no-properties begin end) keep-headlines)))))))
+              (with-temp-file tmp-file
+                (dolist (subtree (nreverse keep-headlines))
+                  (insert subtree)
+                  (insert "\n"))))
             (rename-file tmp-file inbox-file t)
-            (sem-core-log "purge" "PURGE" "OK" (format "Removed %d nodes from inbox-mobile.org" purged-count))
-            (message "SEM: Purged %d processed headlines" purged-count)))))
-    (error (message "SEM: Purge error: %s" (error-message-string err)))))
+            (sem-core-log "purge" "PURGE" "OK"
+                          (format "Removed %d nodes from inbox-mobile.org" purged-count))
+            (message "SEM: Purged %d processed headlines" purged-count))))
+
+        (when (= hour 4)
+          (condition-case purge-cursor-err
+              (progn
+                (sem-core--purge-cursor-to-active-hashes keep-hashes)
+                (sem-core-log "purge" "PURGE" "OK"
+                              (format "Cursor rebuilt with %d active hashes" (length keep-hashes))))
+            (error
+             (sem-core-log-error "purge" "PURGE"
+                                 (format "Cursor purge failed: %s"
+                                         (error-message-string purge-cursor-err))
+                                 nil
+                                 nil)))
+
+          (condition-case purge-retries-err
+              (progn
+                (sem-core--purge-retries)
+                (sem-core-log "purge" "PURGE" "OK" "Retries reset to empty alist"))
+            (error
+             (sem-core-log-error "purge" "PURGE"
+                                 (format "Retries purge failed: %s"
+                                         (error-message-string purge-retries-err))
+                                 nil
+                                 nil)))))
+    (error
+     (message "SEM: Purge error: %s" (error-message-string err)))))
 
 (provide 'sem-core)
 ;;; sem-core.el ends here

@@ -108,7 +108,7 @@ to `OPENROUTER_MODEL'. The returned :models list is deduplicated."
   "Load build-time-installed package dependencies with `require'.
 Signals an error when any required dependency fails to load."
   (let ((failed '()))
-    (dolist (pkg '(gptel elfeed elfeed-org org-roam websocket))
+    (dolist (pkg '(gptel elfeed elfeed-org org-roam))
       (condition-case err
           (require pkg)
         (error

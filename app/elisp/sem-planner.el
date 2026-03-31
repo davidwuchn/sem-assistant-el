@@ -75,26 +75,34 @@ Returns (year month day hour minute second) or nil if parsing fails.
 Handles both timestamp objects (from planning line) and strings (from property drawer)."
   (cond
    ((consp ts)
-    (list (org-element-property :year-start ts)
-          (org-element-property :month-start ts)
-          (org-element-property :day-start ts)
-          (org-element-property :hour-start ts)
-          (org-element-property :minute-start ts)
-          (org-element-property :hour-end ts)
-          (org-element-property :minute-end ts)))
+    (let* ((start-hour (or (org-element-property :hour-start ts) 0))
+           (start-minute (or (org-element-property :minute-start ts) 0))
+           (end-total (min (+ (* start-hour 60) start-minute 30)
+                           (+ (* 23 60) 59))))
+      (list (org-element-property :year-start ts)
+            (org-element-property :month-start ts)
+            (org-element-property :day-start ts)
+            start-hour
+            start-minute
+            (or (org-element-property :hour-end ts) (/ end-total 60))
+            (or (org-element-property :minute-end ts) (% end-total 60)))))
    ((stringp ts)
     (when (string-match
            (concat "<\\([0-9]+\\)-\\([0-9]+\\)-\\([0-9]+\\)"
-                   "\\s-+\\([0-9]+\\):\\([0-9]+\\)"
+                   "\\(?:\\s-+[A-Za-z]\\{3\\}\\)?\\s-+\\([0-9]+\\):\\([0-9]+\\)"
                    "\\(?:-\\([0-9]+\\):\\([0-9]+\\)\\)?>")
-           ts)
-      (list (string-to-number (match-string 1 ts))
-            (string-to-number (match-string 2 ts))
-            (string-to-number (match-string 3 ts))
-            (string-to-number (match-string 4 ts))
-            (string-to-number (match-string 5 ts))
-            (if (match-string 6 ts) (string-to-number (match-string 6 ts)) 23)
-            (if (match-string 7 ts) (string-to-number (match-string 7 ts)) 59))))
+            ts)
+      (let* ((start-hour (string-to-number (match-string 4 ts)))
+             (start-minute (string-to-number (match-string 5 ts)))
+             (end-total (min (+ (* start-hour 60) start-minute 30)
+                             (+ (* 23 60) 59))))
+        (list (string-to-number (match-string 1 ts))
+              (string-to-number (match-string 2 ts))
+              (string-to-number (match-string 3 ts))
+              start-hour
+              start-minute
+              (if (match-string 6 ts) (string-to-number (match-string 6 ts)) (/ end-total 60))
+              (if (match-string 7 ts) (string-to-number (match-string 7 ts)) (% end-total 60))))))
    (t nil)))
 
 (defun sem-planner--read-temp-file (&optional batch-id)
@@ -164,8 +172,8 @@ Returns (START . END) in epoch seconds or nil when parsing fails."
              (day (nth 2 parts))
              (hour-start (or (nth 3 parts) 0))
              (minute-start (or (nth 4 parts) 0))
-             (hour-end (or (nth 5 parts) 23))
-             (minute-end (or (nth 6 parts) 59))
+             (hour-end (nth 5 parts))
+             (minute-end (nth 6 parts))
              (client-timezone (sem-time-client-timezone))
              (start (float-time (encode-time 0 minute-start hour-start day month year client-timezone)))
              (end (float-time (encode-time 0 minute-end hour-end day month year client-timezone))))

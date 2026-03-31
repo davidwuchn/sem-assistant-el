@@ -14,4 +14,3 @@
 (depends-on "elfeed")
 (depends-on "elfeed-org")
 (depends-on "org-roam")
-(depends-on "websocket")

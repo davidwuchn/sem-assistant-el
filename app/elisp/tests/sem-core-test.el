@@ -42,6 +42,75 @@
             (should (re-search-forward "- \\[.*\\] \\[rss\\] \\[RSS-DIGEST\\] \\[OK\\] tokens=1250 | Digest generated" nil t))))
       (sem-mock-cleanup-temp-file test-file))))
 
+(ert-deftest sem-core-test-log-unwritable-file-emits-stderr-fallback ()
+  "Test sem-core-log emits SEM-STDERR fallback and does not signal."
+  (let ((stderr-message nil))
+    (cl-letf (((symbol-function 'sem-core--ensure-log-headings)
+               (lambda () t))
+              ((symbol-function 'write-region)
+               (lambda (&rest _)
+                 (error "simulated append failure")))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (setq stderr-message (apply #'format fmt args)))))
+      (condition-case _err
+          (progn
+            (sem-core-log "core" "STARTUP" "OK" "hello")
+            (should t))
+        (error
+         (should nil)))
+      (should stderr-message)
+      (should (string-match-p "^SEM-STDERR:" stderr-message)))))
+
+(ert-deftest sem-core-test-log-appends-single-line-after-heading-ensure ()
+  "Test sem-core-log appends one formatted line via write-region append mode."
+  (let ((captured-content nil)
+        (captured-append nil)
+        (captured-file nil))
+    (cl-letf (((symbol-function 'sem-core--ensure-log-headings)
+               (lambda () t))
+              ((symbol-function 'write-region)
+               (lambda (start _end filename &optional append _visit)
+                 (setq captured-content start)
+                 (setq captured-file filename)
+                 (setq captured-append append)
+                 nil)))
+      (let ((sem-core-log-file "/tmp/sem-log-test.org"))
+        (sem-core-log "core" "STARTUP" "OK" "Daemon started" 42))
+      (should (stringp captured-content))
+      (should (eq captured-append t))
+      (should (string= captured-file "/tmp/sem-log-test.org"))
+      (should (string-suffix-p "\n" captured-content))
+      (should (string-match-p "\\[core\\] \\[STARTUP\\] \\[OK\\]" captured-content))
+      (should (string-match-p "tokens=42" captured-content))
+      (should (string-match-p "Daemon started" captured-content)))))
+
+(ert-deftest sem-core-test-log-error-org-entry-format ()
+  "Test sem-core-log-error writes TODO + DEADLINE + required sections."
+  (let ((errors-file (make-temp-file "sem-errors-test-"))
+        (captured-status nil))
+    (unwind-protect
+        (let ((sem-core-errors-file errors-file))
+          (cl-letf (((symbol-function 'sem-core-log)
+                     (lambda (_module _event status _message &optional _tokens)
+                       (setq captured-status status))))
+            (sem-core-log-error "router" "INBOX-ITEM" "Boom" "input text" "raw output"))
+          (should (string= captured-status "DLQ"))
+          (with-temp-buffer
+            (insert-file-contents errors-file)
+            (goto-char (point-min))
+            (should (re-search-forward "^\\* TODO \\[.*\\] \\[router\\] \\[INBOX-ITEM\\] FAIL$" nil t))
+            (should (re-search-forward "^DEADLINE: <[0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [A-Za-z]\\{3\\} [0-9]\\{2\\}:[0-9]\\{2\\}>$" nil t))
+            (should (re-search-forward "^:PROPERTIES:$" nil t))
+            (should (re-search-forward "^:CREATED: \\[.*\\]$" nil t))
+            (should (re-search-forward "^:END:$" nil t))
+            (should (re-search-forward "^Error: Boom$" nil t))
+            (should (re-search-forward "^\\*\\* Input$" nil t))
+            (should (re-search-forward "^input text$" nil t))
+            (should (re-search-forward "^\\*\\* Raw LLM Output$" nil t))
+            (should (re-search-forward "^raw output$" nil t))))
+      (sem-mock-cleanup-temp-file errors-file))))
+
 ;;; Tests for cursor read/write round-trip
 
 (ert-deftest sem-core-test-cursor-roundtrip ()
@@ -78,35 +147,31 @@
     (should-not (string= (sem-core--compute-headline-hash headline1)
                          (sem-core--compute-headline-hash headline2)))))
 
-;;; Test hash computation matches router format (title|space-joined-tags|body)
+;;; Test hash computation matches router format (JSON vector)
 
 (ert-deftest sem-core-test-hash-space-joined-tags ()
   "Test that hash computation uses space-joined tags (no colons).
-Hash format: title|space-joined-tags|body"
+Hash format: (json-encode (vector title tags body))"
   (let* ((title "Test headline :tag1:tag2:")
-         (tags '("tag1" "tag2"))
-         (body "")
-         ;; Expected hash input: "Test headline :tag1:tag2:|tag1 tag2|"
-         (expected-hash-input (concat title "|" (string-join tags " ") "|" body))
-         (expected-hash (secure-hash 'sha256 expected-hash-input)))
-    ;; Verify the hash input format
-    (should (string= expected-hash-input "Test headline :tag1:tag2:|tag1 tag2|"))
+          (tags '("tag1" "tag2"))
+          (body "")
+          (expected-hash-input (json-encode (vector title (string-join tags " ") body)))
+          (expected-hash (secure-hash 'sha256 expected-hash-input)))
     ;; The hash should be deterministic
     (should (string= expected-hash
-                     (secure-hash 'sha256 "Test headline :tag1:tag2:|tag1 tag2|")))))
+                     (secure-hash 'sha256 (json-encode (vector title "tag1 tag2" "")))))))
 
 (ert-deftest sem-core-test-hash-includes-body ()
   "Test that hash computation includes body content.
-Hash format: title|space-joined-tags|body"
+Hash format: (json-encode (vector title tags body))"
   (let* ((title "Test headline :task:")
-         (tags '("task"))
-         (body "This is the body content\nwith multiple lines")
-         ;; Expected hash input: "Test headline :task:|task|This is the body content\nwith multiple lines"
-         (expected-hash-input (concat title "|" (string-join tags " ") "|" body))
-         (hash1 (secure-hash 'sha256 expected-hash-input)))
+          (tags '("task"))
+          (body "This is the body content\nwith multiple lines")
+          (expected-hash-input (json-encode (vector title (string-join tags " ") body)))
+          (hash1 (secure-hash 'sha256 expected-hash-input)))
     ;; Different body should produce different hash
     (let* ((body2 "Different body content")
-           (hash2 (secure-hash 'sha256 (concat title "|" (string-join tags " ") "|" body2))))
+           (hash2 (secure-hash 'sha256 (json-encode (vector title (string-join tags " ") body2)))))
       (should-not (string= hash1 hash2)))
     ;; Same input should produce same hash
     (let ((hash1-again (secure-hash 'sha256 expected-hash-input)))
@@ -114,15 +179,21 @@ Hash format: title|space-joined-tags|body"
 
 (ert-deftest sem-core-test-hash-empty-body ()
   "Test that hash computation works with empty body.
-Hash format: title|space-joined-tags|body (body can be empty)"
+Hash format: JSON vector (body can be empty)."
   (let* ((title "Test headline :link:")
-         (tags '("link"))
-         (body "")
-         ;; Expected hash input: "Test headline :link:|link|"
-         (expected-hash-input (concat title "|" (string-join tags " ") "|" body)))
-    (should (string= expected-hash-input "Test headline :link:|link|"))
+          (tags '("link"))
+          (body "")
+          (expected-hash-input (json-encode (vector title (string-join tags " ") body))))
     ;; Should not error with empty body
     (should (secure-hash 'sha256 expected-hash-input))))
+
+(ert-deftest sem-core-test-hash-delimiter-collision-resistant ()
+  "Test JSON-based hash is collision-resistant against delimiter tricks."
+  (let* ((headline-a (list :title "a|b" :tags '("c") :body ""))
+         (headline-b (list :title "a" :tags '("b|c") :body ""))
+         (hash-a (sem-core--compute-headline-hash headline-a))
+         (hash-b (sem-core--compute-headline-hash headline-b)))
+    (should-not (string= hash-a hash-b))))
 
 ;;; Test cleanup
 
@@ -447,12 +518,14 @@ The function should catch errors and return nil without signaling."
   "Test that sem-core-purge-inbox preserves full headline subtrees.
 Creates inbox with processed and unprocessed headlines (each with body lines),
 runs purge, and asserts the unprocessed headline's body is present.
-Hash format: title|space-joined-tags|body (using sem-router--extract-headline-body)"
+Hash format: JSON vector of title/tags/body (using sem-router--extract-headline-body)."
   (let ((test-inbox (make-temp-file "inbox-test-"))
-        (test-cursor (make-temp-file "cursor-test-")))
+        (test-cursor (make-temp-file "cursor-test-"))
+        (test-retries (make-temp-file "retries-test-")))
     (unwind-protect
         (let ((sem-core-inbox-file test-inbox)
-              (sem-core-cursor-file test-cursor))
+              (sem-core-cursor-file test-cursor)
+              (sem-core-retries-file test-retries))
           ;; Create inbox with two headlines, each with body lines
           (with-temp-file test-inbox
             (insert "* Processed headline :link:\n")
@@ -478,8 +551,8 @@ Hash format: title|space-joined-tags|body (using sem-router--extract-headline-bo
                                (body (sem-router--extract-headline-body headline-element))
                                (tags-str (if tags (string-join tags " ") ""))
                                (body-str (or body "")))
-                          (setq processed-hash (secure-hash 'sha256
-                                                           (concat title "|" tags-str "|" body-str)))))))))
+                           (setq processed-hash (secure-hash 'sha256
+                                                            (json-encode (vector title tags-str body-str))))))))))
             (should processed-hash)
             (sem-core--mark-processed processed-hash))
 
@@ -501,16 +574,19 @@ Hash format: title|space-joined-tags|body (using sem-router--extract-headline-bo
               (should (string-match-p "Body line 2 for unprocessed" content))
               (should (string-match-p "Body line 3 for unprocessed" content)))))
       (sem-mock-cleanup-temp-file test-inbox)
-      (sem-mock-cleanup-temp-file test-cursor)))))
+      (sem-mock-cleanup-temp-file test-cursor)
+      (sem-mock-cleanup-temp-file test-retries)))))
 
 (ert-deftest sem-core-test-purge-atomic-rename ()
   "Test that sem-core-purge-inbox uses atomic rename.
-Hash format: title|space-joined-tags|body (using sem-router--extract-headline-body)"
+Hash format: JSON vector of title/tags/body (using sem-router--extract-headline-body)."
   (let ((test-inbox (make-temp-file "inbox-test-"))
-        (test-cursor (make-temp-file "cursor-test-")))
+        (test-cursor (make-temp-file "cursor-test-"))
+        (test-retries (make-temp-file "retries-test-")))
     (unwind-protect
         (let ((sem-core-inbox-file test-inbox)
-              (sem-core-cursor-file test-cursor))
+              (sem-core-cursor-file test-cursor)
+              (sem-core-retries-file test-retries))
           ;; Create inbox with one processed headline (no body)
           (with-temp-file test-inbox
             (insert "* Processed headline :link:\n"))
@@ -530,8 +606,8 @@ Hash format: title|space-joined-tags|body (using sem-router--extract-headline-bo
                                (body (sem-router--extract-headline-body headline-element))
                                (tags-str (if tags (string-join tags " ") ""))
                                (body-str (or body "")))
-                          (setq processed-hash (secure-hash 'sha256
-                                                           (concat title "|" tags-str "|" body-str)))))))))
+                           (setq processed-hash (secure-hash 'sha256
+                                                            (json-encode (vector title tags-str body-str))))))))))
             (should processed-hash)
             (sem-core--mark-processed processed-hash))
 
@@ -548,7 +624,157 @@ Hash format: title|space-joined-tags|body (using sem-router--extract-headline-bo
             (should (or (string-blank-p (buffer-string))
                         (string= (buffer-string) "")))))
       (sem-mock-cleanup-temp-file test-inbox)
-      (sem-mock-cleanup-temp-file test-cursor)))))
+      (sem-mock-cleanup-temp-file test-cursor)
+      (sem-mock-cleanup-temp-file test-retries)))))
+
+(ert-deftest sem-core-test-purge-rebuilds-cursor-from-retained-headlines ()
+  "Test 4AM purge rebuilds cursor with only retained headline hashes."
+  (let ((test-inbox (make-temp-file "inbox-test-"))
+        (test-cursor (make-temp-file "cursor-test-"))
+        (test-retries (make-temp-file "retries-test-")))
+    (unwind-protect
+        (let ((sem-core-inbox-file test-inbox)
+              (sem-core-cursor-file test-cursor)
+              (sem-core-retries-file test-retries)
+              (processed-hash nil)
+              (retained-hash nil))
+          (with-temp-file test-inbox
+            (insert "* Processed headline :link:\n")
+            (insert "Body processed\n")
+            (insert "* Retained headline :task:\n")
+            (insert "Body retained\n"))
+          (with-temp-buffer
+            (insert-file-contents test-inbox)
+            (org-mode)
+            (let ((ast (org-element-parse-buffer)))
+              (org-element-map ast 'headline
+                (lambda (headline-element)
+                  (let* ((title (org-element-property :raw-value headline-element))
+                         (tags (org-element-property :tags headline-element))
+                         (body (sem-router--extract-headline-body headline-element))
+                         (tags-str (if tags (string-join tags " ") ""))
+                         (body-str (or body ""))
+                         (hash (secure-hash 'sha256
+                                            (json-encode (vector title tags-str body-str)))))
+                    (if (string= title "Processed headline")
+                        (setq processed-hash hash)
+                      (setq retained-hash hash)))))))
+          (should processed-hash)
+          (should retained-hash)
+          (sem-core--write-cursor `((,processed-hash . t) ("stale" . t)))
+          (sem-core--write-retries '(("old" . 2)))
+          (sem-core--mark-processed processed-hash)
+          (cl-letf (((symbol-function 'sem-time-format-string)
+                     (lambda (format &optional _time)
+                       (if (string= format "%H") "04" "2000-01-01"))))
+            (sem-core-purge-inbox))
+          (let ((cursor (sem-core--read-cursor))
+                (retries (sem-core--read-retries)))
+            (should (assoc retained-hash cursor))
+            (should-not (assoc processed-hash cursor))
+            (should-not (assoc "stale" cursor))
+            (should (null retries))))
+      (sem-mock-cleanup-temp-file test-inbox)
+      (sem-mock-cleanup-temp-file test-cursor)
+      (sem-mock-cleanup-temp-file test-retries))))
+
+(ert-deftest sem-core-test-purge-skips-cursor-and-retries-outside-4am ()
+  "Test cursor/retries purge does not run outside 4AM window."
+  (let ((test-inbox (make-temp-file "inbox-test-"))
+        (test-cursor (make-temp-file "cursor-test-"))
+        (test-retries (make-temp-file "retries-test-"))
+        (cursor-called nil)
+        (retries-called nil))
+    (unwind-protect
+        (let ((sem-core-inbox-file test-inbox)
+              (sem-core-cursor-file test-cursor)
+              (sem-core-retries-file test-retries))
+          (with-temp-file test-inbox
+            (insert "* Keep me :task:\nBody\n"))
+          (cl-letf (((symbol-function 'sem-time-format-string)
+                     (lambda (format &optional _time)
+                       (if (string= format "%H") "03" "2000-01-01")))
+                    ((symbol-function 'sem-core--purge-cursor-to-active-hashes)
+                     (lambda (&rest _)
+                       (setq cursor-called t)))
+                    ((symbol-function 'sem-core--purge-retries)
+                     (lambda ()
+                       (setq retries-called t))))
+            (sem-core-purge-inbox))
+          (should-not cursor-called)
+          (should-not retries-called))
+      (sem-mock-cleanup-temp-file test-inbox)
+      (sem-mock-cleanup-temp-file test-cursor)
+      (sem-mock-cleanup-temp-file test-retries))))
+
+(ert-deftest sem-core-test-purge-missing-inbox-still-purges-cursor-and-retries ()
+  "Test missing inbox triggers empty cursor and retries reset at 4AM."
+  (let ((test-dir (make-temp-file "sem-core-purge-missing-" t))
+        (test-cursor (make-temp-file "cursor-test-"))
+        (test-retries (make-temp-file "retries-test-")))
+    (unwind-protect
+        (let ((sem-core-inbox-file (expand-file-name "missing-inbox.org" test-dir))
+              (sem-core-cursor-file test-cursor)
+              (sem-core-retries-file test-retries))
+          (sem-core--write-cursor '(("stale1" . t) ("stale2" . t)))
+          (sem-core--write-retries '(("retry1" . 3)))
+          (cl-letf (((symbol-function 'sem-time-format-string)
+                     (lambda (format &optional _time)
+                       (if (string= format "%H") "04" "2000-01-01"))))
+            (sem-core-purge-inbox))
+          (should (null (sem-core--read-cursor)))
+          (should (null (sem-core--read-retries))))
+      (delete-directory test-dir t)
+      (sem-mock-cleanup-temp-file test-cursor)
+      (sem-mock-cleanup-temp-file test-retries))))
+
+(ert-deftest sem-core-test-purge-isolates-cursor-failure-and-resets-retries ()
+  "Test cursor purge failure does not block retries purge or inbox purge."
+  (let ((test-inbox (make-temp-file "inbox-test-"))
+        (test-cursor (make-temp-file "cursor-test-"))
+        (test-retries (make-temp-file "retries-test-"))
+        (cursor-error-logged nil))
+    (unwind-protect
+        (let ((sem-core-inbox-file test-inbox)
+              (sem-core-cursor-file test-cursor)
+              (sem-core-retries-file test-retries)
+              (processed-hash nil))
+          (with-temp-file test-inbox
+            (insert "* Processed headline :link:\nBody processed\n"))
+          (with-temp-buffer
+            (insert-file-contents test-inbox)
+            (org-mode)
+            (let ((ast (org-element-parse-buffer)))
+              (org-element-map ast 'headline
+                (lambda (headline-element)
+                  (let* ((title (org-element-property :raw-value headline-element))
+                         (tags (org-element-property :tags headline-element))
+                         (body (sem-router--extract-headline-body headline-element))
+                         (tags-str (if tags (string-join tags " ") ""))
+                         (body-str (or body "")))
+                    (setq processed-hash
+                          (secure-hash 'sha256 (json-encode (vector title tags-str body-str)))))))))
+          (sem-core--mark-processed processed-hash)
+          (sem-core--write-retries '(("retry1" . 2)))
+          (cl-letf (((symbol-function 'sem-time-format-string)
+                     (lambda (format &optional _time)
+                       (if (string= format "%H") "04" "2000-01-01")))
+                    ((symbol-function 'sem-core--purge-cursor-to-active-hashes)
+                     (lambda (_)
+                       (error "simulated cursor purge failure")))
+                    ((symbol-function 'sem-core-log-error)
+                     (lambda (_module _event error-msg _input &optional _raw)
+                        (when (string-match-p "Cursor purge failed" error-msg)
+                          (setq cursor-error-logged t)))))
+            (sem-core-purge-inbox))
+          (with-temp-buffer
+            (insert-file-contents test-inbox)
+            (should (string-blank-p (buffer-string))))
+          (should cursor-error-logged)
+          (should (null (sem-core--read-retries))))
+      (sem-mock-cleanup-temp-file test-inbox)
+      (sem-mock-cleanup-temp-file test-cursor)
+      (sem-mock-cleanup-temp-file test-retries))))
 
 (provide 'sem-core-test)
 ;;; sem-core-test.el ends here

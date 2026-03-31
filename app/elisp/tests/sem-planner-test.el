@@ -366,6 +366,24 @@ ID: b96db7b3-e2cd-4983-ba79-5dd26a6d5215 | (unscheduled)"))
                    '(("33333333-3333-3333-3333-333333333333" . "<2026-03-24 12:00-13:00>")
                      ("55555555-5555-5555-5555-555555555555" . nil))))))
 
+(ert-deftest sem-planner-test-no-end-time-does-not-overlap-distant-same-day-task ()
+  "Test no-end-time timestamp defaults to 30 minutes, not full-day overlap."
+  (let* ((task-a "<2026-04-01 Wed 09:00>")
+         (task-b "<2026-04-01 Wed 14:00>")
+         (windows (list (list :id "existing"
+                              :title "Existing"
+                              :range (sem-planner--timestamp-to-epoch-range task-a)))))
+    (should-not (sem-planner--overlapping-window task-b windows))))
+
+(ert-deftest sem-planner-test-no-end-time-overlaps-within-thirty-minutes ()
+  "Test no-end-time timestamp overlaps another task within 30 minutes."
+  (let* ((task-a "<2026-04-01 Wed 09:00>")
+         (task-b "<2026-04-01 Wed 09:15>")
+         (windows (list (list :id "existing"
+                              :title "Existing"
+                              :range (sem-planner--timestamp-to-epoch-range task-a)))))
+    (should (sem-planner--overlapping-window task-b windows))))
+
 ;;; Atomic Update Tests
 
 (ert-deftest sem-planner-test-atomic-update-creates-file-if-nonexistent ()
