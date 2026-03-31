@@ -11,6 +11,8 @@
 (require 'gptel)
 (require 'org-roam)
 
+(setenv "CLIENT_TIMEZONE" (or (getenv "CLIENT_TIMEZONE") "Etc/UTC"))
+
 ;;; Mock Data
 
 (defconst sem-mock-valid-org-response

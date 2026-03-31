@@ -52,6 +52,7 @@ If your host only provides legacy `docker-compose`, substitute `docker-compose` 
    Edit `.env` and set:
    - `OPENROUTER_KEY=your-api-key-here`
    - `OPENROUTER_MODEL=your-preferred-model` (e.g., `anthropic/claude-sonnet-4-5`)
+   - `CLIENT_TIMEZONE=Europe/Belgrade` (required IANA timezone used for runtime scheduling semantics)
    - Optional: `OPENROUTER_WEAK_MODEL=your-lower-cost-model` for Pass 1 `:task:` normalization
    - `WEBDAV_PASSWORD=ChangeMeStrongPassword2026` (replace with your own strong value)
 
@@ -107,6 +108,7 @@ If your host only provides legacy `docker-compose`, substitute `docker-compose` 
 
 - **`OPENROUTER_KEY` missing/empty**: LLM requests fail; set it in `.env` from `.env.example` and restart.
 - **`OPENROUTER_MODEL` missing/empty**: request routing fails; set a valid model ID in `.env` and restart.
+- **`CLIENT_TIMEZONE` missing/invalid**: startup fails fast before cron and inbox processing; set a valid IANA zone (for example `Europe/Belgrade`) and restart.
 - **`docker compose` not found**: install Docker Compose plugin, or use legacy `docker-compose` binary if already installed.
 - **WebDAV cert files unavailable**: production `webdav` start can fail before certificates exist; complete certbot issuance first.
 - **Port 80 in use during certbot flow**: stop conflicting services before running `certbot` profile.
@@ -236,6 +238,8 @@ Headlines that start with `http://` or `https://` are automatically treated as l
 | 9:30 AM | RSS Digest | Generate daily digest from last 24 hours |
 | Every 15 min | Daemon Watchdog | Probe daemon responsiveness and trigger container restart on failure |
 | Every 6 hours | GitHub Sync | Sync `/data/org-roam` to remote repository |
+
+All schedule times in this table are interpreted in `CLIENT_TIMEZONE`.
 
 ### WARNING: Orgzly Sync Timing
 
@@ -393,7 +397,7 @@ The SEM Assistant can automatically sync your org-roam notes to a GitHub reposit
 
 ### How It Works
 
-- Sync runs every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
+- Sync runs every 6 hours (00:00, 06:00, 12:00, 18:00 in `CLIENT_TIMEZONE`)
 - Git sync runs from `/data/org-roam` repository root and includes `org-files/` note changes
 - Commits all changes with timestamp: `Sync org-roam: YYYY-MM-DD HH:MM:SS`
 - Skips if no changes detected
@@ -509,6 +513,7 @@ Configure Orgzly to sync via HTTPS:
 - `SEM_WATCHDOG_STARTUP_GRACE_SEC` - Startup grace period in seconds (default: `180`)
 - `OPENROUTER_WEAK_MODEL` - Optional weak-tier model for Pass 1 `:task:` normalization; unset/empty falls back to `OPENROUTER_MODEL`
 - `SEM_TASK_API_MAX_RETRIES` - Optional cap for task LLM API-failure retries (default: `3`)
+- `CLIENT_TIMEZONE` - Required IANA timezone controlling cron timing, Pass 1/Pass 2 runtime datetime context, purge 4:00 AM window, RSS digest date labels, and sem-log/day-log rollover boundaries
 
 ### Model Tier Rollout / Rollback
 

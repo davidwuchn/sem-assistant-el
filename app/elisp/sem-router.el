@@ -11,6 +11,7 @@
 (require 'org)
 (require 'sem-core)
 (require 'sem-prompts)
+(require 'sem-time)
 
 ;;; Constants
 
@@ -243,7 +244,8 @@ INJECTED-ID is the pre-generated UUID string to embed verbatim.
 
 Returns a plist with keys :user-prompt and :system-prompt."
   (let* ((output-language (or (getenv "OUTPUT_LANGUAGE") "English"))
-         (current-datetime (format-time-string "%Y-%m-%dT%H:%M:%SZ" (current-time) t))
+         (client-timezone (sem-time-client-timezone))
+         (current-datetime (sem-time-format-iso-local (current-time)))
          (language-instruction (format "\n\nOUTPUT LANGUAGE: Write your entire response in %s. Do not use any other language."
                                        output-language))
          (rules-text (if (fboundp 'sem-rules-read)
@@ -269,7 +271,7 @@ HEADLINE: * %s %s"
                    (if tags
                        (format ":%s:" (string-join tags ":"))
                      ""))
-           (format "\nCURRENT DATETIME (UTC): %s" current-datetime)
+           (format "\nCURRENT DATETIME (%s): %s" client-timezone current-datetime)
            (when sanitized-body
              (format "\n\nBODY:\n%s" sanitized-body))
            (format "\n\nUse this EXACT :ID: value in your output: %s

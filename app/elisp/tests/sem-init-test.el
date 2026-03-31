@@ -41,10 +41,11 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
             (cl-flet ((sem-init--load-modules
                        ()
                        "Load all SEM modules in dependency order."
-                       (let ((load-path (cons (file-name-directory load-file-name) load-path)))
-                         (require 'sem-core)
-                         (require 'sem-security)
-                         (require 'sem-llm)
+                        (let ((load-path (cons (file-name-directory load-file-name) load-path)))
+                          (require 'sem-core)
+                          (require 'sem-time)
+                          (require 'sem-security)
+                          (require 'sem-llm)
                          (require 'sem-rss)
                          (require 'sem-prompts)
                          (require 'sem-rules)
@@ -58,10 +59,11 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
               (sem-init--load-modules)
 
               ;; Verify sem-git-sync was required
-              (should (member 'sem-git-sync required-modules))
+       (should (member 'sem-git-sync required-modules))
+       (should (member 'sem-time required-modules))
 
-              ;; Verify sem-git-sync-org-roam is fbound after load
-              (should (fboundp 'sem-git-sync-org-roam)))))
+       ;; Verify sem-git-sync-org-roam is fbound after load
+       (should (fboundp 'sem-git-sync-org-roam)))))
 
       ;; Cleanup: restore original functions
       (fset 'require original-require)
@@ -123,6 +125,48 @@ that sem-git-sync is among them and that sem-git-sync-org-roam is fbound."
             ((symbol-function 'message)
              (lambda (&rest _) nil)))
     (should-error (sem-init--load-package-dependencies))))
+
+(ert-deftest sem-init-test-validate-env-succeeds-with-valid-timezone ()
+  "Test environment validation succeeds when CLIENT_TIMEZONE is valid."
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (cond
+                ((string= name "OPENROUTER_KEY") "key")
+                ((string= name "OPENROUTER_MODEL") "model")
+                (t nil))))
+            ((symbol-function 'sem-time-client-timezone)
+             (lambda () "Etc/UTC"))
+            ((symbol-function 'message)
+             (lambda (&rest _) nil)))
+    (should (null (sem-init--validate-env)))))
+
+(ert-deftest sem-init-test-validate-env-fails-when-timezone-missing ()
+  "Test environment validation fails when CLIENT_TIMEZONE is missing."
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (cond
+                ((string= name "OPENROUTER_KEY") "key")
+                ((string= name "OPENROUTER_MODEL") "model")
+                (t nil))))
+            ((symbol-function 'sem-time-client-timezone)
+             (lambda ()
+               (error "SEM: CLIENT_TIMEZONE environment variable is not set or empty"))))
+    (should-error (sem-init--validate-env)
+                  :type 'error)))
+
+(ert-deftest sem-init-test-validate-env-fails-when-timezone-invalid ()
+  "Test environment validation fails when CLIENT_TIMEZONE is invalid."
+  (cl-letf (((symbol-function 'getenv)
+             (lambda (name)
+               (cond
+                ((string= name "OPENROUTER_KEY") "key")
+                ((string= name "OPENROUTER_MODEL") "model")
+                (t nil))))
+            ((symbol-function 'sem-time-client-timezone)
+             (lambda ()
+               (error "SEM: CLIENT_TIMEZONE is invalid or unavailable in runtime tzdata: Bad/Zone"))))
+    (should-error (sem-init--validate-env)
+                  :type 'error)))
 
 (ert-deftest sem-init-test-set-paths-decouples-notes-and-repo-roots ()
   "Test startup path config sets notes root separately from repository root."

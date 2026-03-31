@@ -12,6 +12,7 @@
 ;; Load the module under test
 ;; Note: The test runner sets up load-path, so we use require
 (require 'sem-prompts)
+(require 'sem-time)
 (require 'sem-core)
 (require 'sem-router)
 
@@ -251,7 +252,7 @@ When last-flush-date matches current date, buffer should not be erased."
   (unwind-protect
       (progn
         ;; Set last-flush-date to today (so dates match)
-        (setq sem-core--last-flush-date (format-time-string "%Y-%m-%d" nil t))
+        (setq sem-core--last-flush-date (sem-time-format-string "%Y-%m-%d"))
         ;; Mock functions
         (cl-letf (((symbol-function 'write-region)
                    (lambda (&rest _) nil))
@@ -323,8 +324,8 @@ The function should catch errors and return nil without signaling."
                        nil))
                     ((symbol-function 'make-directory)
                      (lambda (&rest _) nil))
-                    ((symbol-function 'format-time-string)
-                     (lambda (format &optional _time _utc)
+                    ((symbol-function 'sem-time-format-string)
+                     (lambda (format &optional _time)
                        (if (string= format "%Y-%m-%d")
                            fixed-date
                          "00:00:00"))))
@@ -354,8 +355,8 @@ The function should catch errors and return nil without signaling."
                        nil))
                     ((symbol-function 'make-directory)
                      (lambda (&rest _) nil))
-                    ((symbol-function 'format-time-string)
-                     (lambda (format &optional _time _utc)
+                    ((symbol-function 'sem-time-format-string)
+                     (lambda (format &optional _time)
                        (if (string= format "%Y-%m-%d")
                            fixed-date
                          "00:00:00"))))
@@ -392,8 +393,8 @@ The function should catch errors and return nil without signaling."
                          nil)))
                     ((symbol-function 'make-directory)
                      (lambda (&rest _) nil))
-                    ((symbol-function 'format-time-string)
-                     (lambda (format &optional _time _utc)
+                    ((symbol-function 'sem-time-format-string)
+                     (lambda (format &optional _time)
                        (if (string= format "%Y-%m-%d")
                            fixed-date
                          "00:00:00"))))
@@ -413,9 +414,9 @@ The function should catch errors and return nil without signaling."
       (setq sem-core--last-flushed-messages-hash-date nil))))
 
 (ert-deftest sem-core-test-messages-flush-date-rollover-dedup-independent ()
-  "Test new UTC day first snapshot is eligible independently for dedup."
+  "Test new client-local day first snapshot is eligible independently for dedup."
   (let ((write-count 0)
-        (today (format-time-string "%Y-%m-%d" nil t)))
+        (today (sem-time-format-string "%Y-%m-%d")))
     (unwind-protect
         (progn
           (setq sem-core--last-flush-date today)
@@ -483,9 +484,9 @@ Hash format: title|space-joined-tags|body (using sem-router--extract-headline-bo
             (sem-core--mark-processed processed-hash))
 
           ;; Run purge at 4AM (mock the hour)
-          (cl-letf (((symbol-function 'format-time-string)
+          (cl-letf (((symbol-function 'sem-time-format-string)
                      (lambda (format &optional time)
-                       (if (string= format "%H") "04" (format-time-string format time)))))
+                       (if (string= format "%H") "04" "2000-01-01"))))
             (sem-core-purge-inbox))
 
           ;; Verify unprocessed headline body is preserved
@@ -535,9 +536,9 @@ Hash format: title|space-joined-tags|body (using sem-router--extract-headline-bo
             (sem-core--mark-processed processed-hash))
 
           ;; Run purge at 4AM
-          (cl-letf (((symbol-function 'format-time-string)
+          (cl-letf (((symbol-function 'sem-time-format-string)
                      (lambda (format &optional time)
-                       (if (string= format "%H") "04" (format-time-string format time)))))
+                       (if (string= format "%H") "04" "2000-01-01"))))
             (sem-core-purge-inbox))
 
           ;; File should exist and be empty (or just whitespace)

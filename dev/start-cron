@@ -5,6 +5,20 @@
 # Set correct permissions on cron directories (cron requires this)
 chmod -R go-w /etc/cron.d
 
+if [ -z "${CLIENT_TIMEZONE:-}" ]; then
+  echo "SEM: STARTUP ERROR: CLIENT_TIMEZONE is not set"
+  exit 1
+fi
+
+cron_tmp="$(mktemp)"
+{
+  printf 'CRON_TZ=%s\n' "$CLIENT_TIMEZONE"
+  printf 'TZ=%s\n' "$CLIENT_TIMEZONE"
+  cat /etc/cron.d/sem-cron
+} > "$cron_tmp"
+mv "$cron_tmp" /etc/cron.d/sem-cron
+chmod 0744 /etc/cron.d/sem-cron
+
 # Start cron daemon in background
 if command -v service >/dev/null 2>&1; then
   service cron start

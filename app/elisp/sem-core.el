@@ -11,6 +11,7 @@
 
 (require 'org)
 (require 'cl-lib)
+(require 'sem-time)
 
 ;;; Constants
 
@@ -38,10 +39,10 @@ Returns t on success, nil on failure."
   (condition-case _err
       (progn
         (let* ((now (current-time))
-               (year (format-time-string "%Y" now))
-               (month (format-time-string "%m" now))
-               (month-name (format-time-string "%B" now))
-               (day (format-time-string "%Y-%m-%d" now))
+               (year (sem-time-format-string "%Y" now))
+               (month (sem-time-format-string "%m" now))
+               (month-name (sem-time-format-string "%B" now))
+               (day (sem-time-format-string "%Y-%m-%d" now))
                (log-file sem-core-log-file))
 
           ;; Ensure directory exists
@@ -97,8 +98,8 @@ Format: - [HH:MM:SS] [MODULE] [EVENT-TYPE] [STATUS] tokens=NNN | message"
           (cl-return-from sem-core-log nil)))
 
       (let* ((now (current-time))
-               (timestamp (format-time-string "%H:%M:%S" now))
-               (day (format-time-string "%Y-%m-%d" now))
+               (timestamp (sem-time-format-string "%H:%M:%S" now))
+               (day (sem-time-format-string "%Y-%m-%d" now))
                (log-file sem-core-log-file)
                (tokens-str (if tokens (format " tokens=%d |" tokens) " |"))
                ;; Truncate message to 200 chars and remove newlines
@@ -138,9 +139,9 @@ detailed error info to errors.org."
 
         ;; Append to errors.org
         (let* ((now (current-time))
-               (timestamp (format-time-string "%Y-%m-%d %H:%M:%S" now))
+               (timestamp (sem-time-format-string "%Y-%m-%d %H:%M:%S" now))
                (errors-file sem-core-errors-file)
-               (created (format-time-string "[%Y-%m-%d %H:%M:%S]" now)))
+               (created (sem-time-format-string "[%Y-%m-%d %H:%M:%S]" now)))
 
           (make-directory (file-name-directory errors-file) t)
 
@@ -176,7 +177,7 @@ Module-level variable that resets on daemon restart.")
 Used by `sem-core--flush-messages-daily' to skip duplicate appends.")
 
 (defvar sem-core--last-flushed-messages-hash-date nil
-  "UTC date (YYYY-MM-DD) associated with last flushed messages hash.
+  "Client-local date (YYYY-MM-DD) associated with last flushed messages hash.
 Used to keep hash dedup independent across daily log rollovers.")
 
 (defvar sem-core--batch-id 0
@@ -270,8 +271,7 @@ Called via post-command-hook after every emacsclient invocation.
 Wrapped in condition-case to never crash the daemon."
   (condition-case _err
       (let* ((now (current-time))
-             ;; Use UTC time consistent with existing code
-             (today (format-time-string "%Y-%m-%d" now t))
+             (today (sem-time-format-string "%Y-%m-%d" now))
              (log-dir "/var/log/sem")
              (log-path (format "%s/messages-%s.log" log-dir today)))
 
@@ -286,11 +286,11 @@ Wrapped in condition-case to never crash the daemon."
         (let ((content (with-current-buffer "*Messages*"
                          (buffer-string))))
 
-          (let ((current-hash (secure-hash 'sha256 content)))
-            ;; Skip unchanged snapshots only within the same UTC day.
+            (let ((current-hash (secure-hash 'sha256 content)))
+            ;; Skip unchanged snapshots only within the same client-local day.
             (unless (and sem-core--last-flushed-messages-hash
-                         (string= today (or sem-core--last-flushed-messages-hash-date ""))
-                         (string= current-hash sem-core--last-flushed-messages-hash))
+                          (string= today (or sem-core--last-flushed-messages-hash-date ""))
+                          (string= current-hash sem-core--last-flushed-messages-hash))
 
               ;; Ensure log directory exists
               (make-directory log-dir t)
@@ -503,7 +503,7 @@ Hash computation matches sem-router--parse-headlines format:
              (tmp-file (concat inbox-file ".purge.tmp"))
              (cursor (sem-core--read-cursor))
              (purged-count 0)
-             (hour (string-to-number (format-time-string "%H"))))
+             (hour (string-to-number (sem-time-format-string "%H"))))
         ;; Check if we're in the 4AM window (04:00-04:59)
         (cond
          ;; Not 4AM - skip purge

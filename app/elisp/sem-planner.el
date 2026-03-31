@@ -12,6 +12,7 @@
 (require 'sem-rules)
 (require 'sem-prompts)
 (require 'sem-llm)
+(require 'sem-time)
 
 (defconst sem-planner-tasks-file "/data/tasks.org"
   "Path to the tasks file.")
@@ -109,8 +110,8 @@ Returns nil if file doesn't exist or is empty."
            (string-trim (buffer-string)))))))
 
 (defun sem-planner--format-runtime-iso (time)
-  "Format TIME as an ISO 8601 UTC datetime string."
-  (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
+  "Format TIME as an ISO-8601 datetime string in CLIENT_TIMEZONE."
+  (sem-time-format-iso-local time))
 
 (defun sem-planner--parse-task-state (existing-index id scheduled)
   "Return task state symbol for ID and SCHEDULED.
@@ -155,7 +156,7 @@ Each element is a plist with keys :id, :title, :scheduled, and :priority."
 
 (defun sem-planner--timestamp-to-epoch-range (scheduled)
   "Convert SCHEDULED timestamp to epoch range as cons cell.
-Returns (START . END) in UTC seconds or nil when parsing fails."
+Returns (START . END) in epoch seconds or nil when parsing fails."
   (let ((parts (sem-planner--parse-timestamp scheduled)))
     (when parts
       (let* ((year (nth 0 parts))
@@ -165,8 +166,9 @@ Returns (START . END) in UTC seconds or nil when parsing fails."
              (minute-start (or (nth 4 parts) 0))
              (hour-end (or (nth 5 parts) 23))
              (minute-end (or (nth 6 parts) 59))
-             (start (float-time (encode-time 0 minute-start hour-start day month year t)))
-             (end (float-time (encode-time 0 minute-end hour-end day month year t))))
+             (client-timezone (sem-time-client-timezone))
+             (start (float-time (encode-time 0 minute-start hour-start day month year client-timezone)))
+             (end (float-time (encode-time 0 minute-end hour-end day month year client-timezone))))
         (cons start end)))))
 
 (defun sem-planner--occupied-windows (snapshot)
@@ -475,7 +477,7 @@ RUNTIME-NOW is the current run datetime and RUNTIME-MIN-START is RUNTIME-NOW + 1
     (concat
      "You are a Task Scheduling assistant.\n\n"
      (format "OUTPUT LANGUAGE: Write your entire response in %s.\n\n" output-language)
-     "=== RUNTIME SCHEDULING BOUNDS (UTC) ===\n"
+     (format "=== RUNTIME SCHEDULING BOUNDS (%s) ===\n" (sem-time-client-timezone))
      (format "runtime_now: %s\n" runtime-now)
      (format "runtime_min_start: %s\n" runtime-min-start)
      "Rules:\n"

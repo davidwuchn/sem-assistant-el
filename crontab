@@ -1,6 +1,6 @@
 # SEM Assistant Elisp Daemon Crontab
 # Install with: COPY crontab /etc/cron.d/sem-cron
-# All times are in container timezone (UTC by default)
+# Timezone environment lines are injected at container startup by dev/start-cron.
 
 # Inbox processing - every 30 minutes
 */30 * * * *	root	emacsclient -s sem-server -e "(sem-core-process-inbox)"

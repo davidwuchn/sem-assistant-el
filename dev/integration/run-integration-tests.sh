@@ -43,6 +43,9 @@ export WEBDAV_PORT=16065
 # Test-specific model name
 export OPENROUTER_MODEL="qwen/qwen3.5-35b-a3b"
 
+# Test-specific runtime timezone required by startup validation.
+export CLIENT_TIMEZONE="${CLIENT_TIMEZONE:-Etc/UTC}"
+
 # Poll configuration
 DAEMON_POLL_INTERVAL=3
 DAEMON_MAX_ATTEMPTS=30
@@ -81,6 +84,7 @@ RUN_DIR=""
 
 echo "=== SEM Integration Test Suite ==="
 echo "Mode: $INTEGRATION_MODE"
+echo "CLIENT_TIMEZONE: ${CLIENT_TIMEZONE}"
 
 if [[ "$INTEGRATION_MODE" == "$PAID_INBOX_MODE" ]]; then
     # Paid inbox/LLM path keeps existing behavior and still requires OPENROUTER_KEY.

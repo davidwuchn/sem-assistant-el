@@ -27,6 +27,7 @@
     (add-to-list 'load-path sem-init--this-dir)))
 
 (require 'sem-paths)
+(require 'sem-time)
 
 (defconst sem-init--required-invariants
   '(env-validated
@@ -72,13 +73,14 @@ This probe is side-effect free and safe for frequent watchdog/startup checks."
 
 (defun sem-init--validate-env ()
   "Validate required environment variables.
-Signal an error if OPENROUTER_KEY or OPENROUTER_MODEL is unset or empty."
+Signal an error when required env vars are unset or invalid."
   (let ((key (getenv "OPENROUTER_KEY"))
-        (model (getenv "OPENROUTER_MODEL")))
+         (model (getenv "OPENROUTER_MODEL")))
     (when (or (null key) (string-empty-p key))
       (error "SEM: OPENROUTER_KEY environment variable is not set or empty"))
     (when (or (null model) (string-empty-p model))
       (error "SEM: OPENROUTER_MODEL environment variable is not set or empty"))
+    (sem-time-client-timezone)
     (message "SEM: Environment variables validated successfully")))
 
 (defun sem-init--resolve-openrouter-models ()
@@ -261,8 +263,9 @@ Handles missing /data/org-roam/ gracefully."
 sem-core must load first as it defines sem-core-log.
 sem-prompts must load before sem-router and sem-url-capture."
   (let ((load-path (cons (file-name-directory load-file-name) load-path)))
-    (require 'sem-core)
-    (require 'sem-security)
+     (require 'sem-core)
+     (require 'sem-time)
+     (require 'sem-security)
     (require 'sem-llm)
     (require 'sem-rss)
     (require 'sem-prompts)

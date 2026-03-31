@@ -16,7 +16,7 @@ All modules SHALL write structured log entries to `/data/sem-log.org` via `sem-c
 - **THEN** it displays as a valid Org file with proper headings
 
 ### Requirement: Log file structure
-The system SHALL use the following exact structure for `/data/sem-log.org`:
+The system SHALL use the following exact structure for `/data/sem-log.org`, and date headings SHALL be partitioned by client-timezone day boundaries:
 
 ```
 * YYYY
@@ -39,7 +39,7 @@ The system SHALL use the following exact structure for `/data/sem-log.org`:
 
 ### Requirement: Log entry field definitions
 Each log entry SHALL use the following exact field format:
-- `HH:MM:SS`: 24-hour local time of the daemon container (UTC)
+- `HH:MM:SS`: 24-hour local time in `CLIENT_TIMEZONE`
 - `MODULE`: one of `core`, `router`, `rss`, `url-capture`, `security`, `llm`, `elfeed`, `purge`, `init`
 - `EVENT-TYPE`: one of `INBOX-ITEM`, `URL-CAPTURE`, `RSS-DIGEST`, `ARXIV-DIGEST`, `ELFEED-UPDATE`, `PURGE`, `STARTUP`, `ERROR`
 - `STATUS`: one of `OK`, `RETRY`, `DLQ`, `SKIP`, `FAIL`
@@ -65,6 +65,14 @@ Each log entry SHALL use the following exact field format:
 #### Scenario: Tokens field omitted when no LLM
 - **WHEN** no LLM call is made
 - **THEN** `tokens=` is omitted from the log entry
+
+#### Scenario: Log timestamp uses client timezone
+- **WHEN** `sem-core-log` formats `HH:MM:SS`
+- **THEN** the time value reflects `CLIENT_TIMEZONE` local time
+
+#### Scenario: Day rollover follows client timezone
+- **WHEN** local midnight is crossed in `CLIENT_TIMEZONE`
+- **THEN** subsequent entries are written under the new `*** YYYY-MM-DD` heading for that client-local date
 
 ### Requirement: sem-core-log creates headings as needed
 The `sem-core-log` function SHALL create `/data/sem-log.org` and all required heading levels if they do not exist. Each call SHALL append exactly one list item under the correct `*** YYYY-MM-DD` heading.

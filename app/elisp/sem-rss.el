@@ -14,6 +14,7 @@
 (require 'elfeed-org)
 (require 'sem-core)
 (require 'sem-llm)
+(require 'sem-time)
 
 ;;; Configuration (from environment variables)
 
@@ -241,13 +242,13 @@ On malformed LLM output: log to errors.org, do not write file.
 On API error: log to errors.org with RETRY status, do not write file.
 
 Returns immediately (async). The CALLBACK is invoked when complete."
-  (let* ((days-int (truncate days))
-         ;; Compute date range
-         (from-date (time-subtract (current-time) (days-to-time days-int)))
-         (to-date (current-time))
-         (from-org (format-time-string "[%Y-%m-%d %a]" from-date))
-         (to-org (format-time-string "[%Y-%m-%d %a]" to-date))
-         (system-prompt "You are a helpful Technical Editor assistant. You output ONLY raw Org-mode text. Never use markdown code fences or any wrapper syntax. Never include reasoning or commentary outside of the requested Org-mode structure. Start your response directly with the first Org-mode heading."))
+      (let* ((days-int (truncate days))
+          ;; Compute date range
+          (from-date (time-subtract (current-time) (days-to-time days-int)))
+          (to-date (current-time))
+          (from-org (sem-time-format-string "[%Y-%m-%d %a]" from-date))
+          (to-org (sem-time-format-string "[%Y-%m-%d %a]" to-date))
+          (system-prompt "You are a helpful Technical Editor assistant. You output ONLY raw Org-mode text. Never use markdown code fences or any wrapper syntax. Never include reasoning or commentary outside of the requested Org-mode structure. Start your response directly with the first Org-mode heading."))
 
     ;; Use sem-llm-request instead of direct gptel-request
     (require 'sem-llm)
@@ -264,14 +265,14 @@ Handles API errors (RETRY) and malformed output (DLQ)."
                              (success nil))
                          (cond
                           ;; Success - write to file
-                          ((and response (not (string-empty-p response)))
-                           (with-temp-file target
-                             (insert "#+TITLE: " title ": " (format-time-string "%Y-%m-%d") "\n")
-                             (insert "#+FROM: " from "\n")
-                             (insert "#+TO: " to "\n")
-                             (insert "#+DATE: " (format-time-string "[%Y-%m-%d %a]") "\n")
-                             (insert "#+STARTUP: showall\n\n")
-                             (insert response))
+                           ((and response (not (string-empty-p response)))
+                            (with-temp-file target
+                              (insert "#+TITLE: " title ": " (sem-time-format-string "%Y-%m-%d") "\n")
+                              (insert "#+FROM: " from "\n")
+                              (insert "#+TO: " to "\n")
+                              (insert "#+DATE: " (sem-time-format-string "[%Y-%m-%d %a]") "\n")
+                              (insert "#+STARTUP: showall\n\n")
+                              (insert response))
                            (sem-core-log "rss" digest-type "OK"
                                          (format "Digest written to %s" target)
                                          nil)
@@ -316,11 +317,11 @@ This is the cron entry point callable via `emacsclient -e`."
         ;; Ensure output directory exists
         (make-directory sem-rss-dir t)
 
-        ;; Generate filenames
-        (let* ((date-str (format-time-string "%Y-%m-%d"))
-               (general-file (expand-file-name (concat date-str ".org") sem-rss-dir))
-               (arxiv-file (expand-file-name (concat date-str "-arxiv.org") sem-rss-dir))
-               (days 1))  ; Always 24-hour lookback
+         ;; Generate filenames
+         (let* ((date-str (sem-time-format-string "%Y-%m-%d"))
+                (general-file (expand-file-name (concat date-str ".org") sem-rss-dir))
+                (arxiv-file (expand-file-name (concat date-str "-arxiv.org") sem-rss-dir))
+                (days 1))  ; Always 24-hour lookback
 
           ;; Check if files already exist
           (if (file-exists-p general-file)

@@ -255,19 +255,22 @@ Some description here")
 
 (ert-deftest sem-planner-test-build-pass2-prompt-includes-runtime-bounds-and-strict-rule ()
   "Test that Pass 2 prompt includes runtime bounds and strict greater-than semantics."
-  (let ((prompt (sem-planner--build-pass2-prompt
-                 "Tasks to schedule:\n- ID: abc | TAG:work | PRIORITY:none | STATE:newly-generated | (unscheduled)\n"
-                 "(No existing tasks)"
-                 "- OCCUPIED: <2026-03-24 Tue 16:00-17:00> | SOURCE_ID:existing-123"
-                 ""
-                 "2026-03-24T12:00:00Z"
-                 "2026-03-24T13:00:00Z")))
-    (should (string-match-p "runtime_now: 2026-03-24T12:00:00Z" prompt))
-    (should (string-match-p "runtime_min_start: 2026-03-24T13:00:00Z" prompt))
-    (should (string-match-p "strictly greater than runtime_min_start" prompt))
-    (should (string-match-p "SCHEDULED equal to runtime_min_start is NOT allowed" prompt))
-    (should (string-match-p "Avoid overlap with pre-existing occupied windows by default" prompt))
-    (should (string-match-p "PRE-EXISTING OCCUPIED WINDOWS" prompt))))
+  (cl-letf (((symbol-function 'sem-time-client-timezone)
+             (lambda () "Europe/Belgrade")))
+    (let ((prompt (sem-planner--build-pass2-prompt
+                   "Tasks to schedule:\n- ID: abc | TAG:work | PRIORITY:none | STATE:newly-generated | (unscheduled)\n"
+                   "(No existing tasks)"
+                   "- OCCUPIED: <2026-03-24 Tue 16:00-17:00> | SOURCE_ID:existing-123"
+                   ""
+                   "2026-03-24T12:00:00+0100"
+                   "2026-03-24T13:00:00+0100")))
+      (should (string-match-p "RUNTIME SCHEDULING BOUNDS (Europe/Belgrade)" prompt))
+      (should (string-match-p "runtime_now: 2026-03-24T12:00:00\\+0100" prompt))
+      (should (string-match-p "runtime_min_start: 2026-03-24T13:00:00\\+0100" prompt))
+      (should (string-match-p "strictly greater than runtime_min_start" prompt))
+      (should (string-match-p "SCHEDULED equal to runtime_min_start is NOT allowed" prompt))
+      (should (string-match-p "Avoid overlap with pre-existing occupied windows by default" prompt))
+      (should (string-match-p "PRE-EXISTING OCCUPIED WINDOWS" prompt)))))
 
 (ert-deftest sem-planner-test-run-with-retry-uses-medium-tier ()
   "Test Pass 2 planner requests sem-llm medium tier intent."

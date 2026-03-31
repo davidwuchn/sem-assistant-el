@@ -23,7 +23,7 @@ The system SHALL have a crontab file committed to the repository. The Dockerfile
 - **THEN** a container rebuild is required
 
 ### Requirement: Complete schedule defined
-The system SHALL implement the following complete schedule with no gaps or overlaps:
+The system SHALL implement the following complete schedule with no gaps or overlaps, and cron schedule interpretation SHALL use the configured client timezone from `CLIENT_TIMEZONE` rather than implicit VPS/container-local timezone.
 
 ```
 */30 * * * *  root  emacsclient -e "(sem-core-process-inbox)"
@@ -36,25 +36,30 @@ The system SHALL implement the following complete schedule with no gaps or overl
 */15 * * * *  root  /usr/local/bin/sem-daemon-watchdog
 ```
 
-#### Scenario: Inbox processing every 30 minutes
-- **WHEN** every 30th minute of every hour
+#### Scenario: Inbox processing every 30 minutes in client timezone
+- **WHEN** every 30th minute of every hour arrives in `CLIENT_TIMEZONE`
 - **THEN** `sem-core-process-inbox` is called
 
-#### Scenario: Purge at 4AM
-- **WHEN** 4:00 AM arrives
+#### Scenario: Purge at 4AM in client timezone
+- **WHEN** 4:00 AM arrives in `CLIENT_TIMEZONE`
 - **THEN** `sem-core-purge-inbox` is called
 
-#### Scenario: Elfeed update 5-8AM
-- **WHEN** 5:00, 6:00, 7:00, 8:00 AM arrive
+#### Scenario: Elfeed update 5-8AM in client timezone
+- **WHEN** 5:00, 6:00, 7:00, 8:00 AM arrive in `CLIENT_TIMEZONE`
 - **THEN** `elfeed-update` is called each hour
 
-#### Scenario: RSS digest at 9:30AM
-- **WHEN** 9:30 AM arrives
+#### Scenario: RSS digest at 9:30AM in client timezone
+- **WHEN** 9:30 AM arrives in `CLIENT_TIMEZONE`
 - **THEN** `sem-rss-generate-morning-digest` is called
 
-#### Scenario: Watchdog executes every 15 minutes
-- **WHEN** every 15th minute of every hour
+#### Scenario: Watchdog executes every 15 minutes in client timezone
+- **WHEN** every 15th minute of every hour arrives in `CLIENT_TIMEZONE`
 - **THEN** `sem-daemon-watchdog` is called
+
+#### Scenario: Cron timezone comes from CLIENT_TIMEZONE
+- **WHEN** the container loads cron configuration for daemon schedules
+- **THEN** cron evaluates schedule expressions in `CLIENT_TIMEZONE`
+- **AND** schedule timing does not depend on implicit host/container default timezone
 
 ### Requirement: Watchdog cron job is operational-only
 The cron schedule SHALL treat the daemon liveness watchdog as an operational supervision job. The watchdog cron entry MUST NOT invoke inbox processing, purge, RSS generation, or git synchronization workflows.
