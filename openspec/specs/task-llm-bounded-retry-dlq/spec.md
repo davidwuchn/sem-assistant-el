@@ -25,9 +25,21 @@ When task LLM API-failure retries are exhausted, the task SHALL be routed to DLQ
 - **AND** task status is recorded as terminal failure for API-failure handling
 
 ### Requirement: Malformed-output handling remains distinct from API-failure handling
-Malformed LLM output handling MUST remain a separate path from API-failure handling and MUST NOT be treated as an API-failure retry event unless an API failure also occurred.
+Malformed LLM output handling and malformed task input detected during preflight-sensitive sanitization MUST remain separate paths from API-failure handling and MUST be treated as terminal security failures. Malformed-sensitive preflight failures MUST NOT increment API-failure retry state and MUST NOT trigger retry scheduling.
 
 #### Scenario: Malformed output does not increment API-failure retry state
 - **WHEN** the LLM call succeeds but returns malformed output
 - **THEN** the system handles the result through malformed-output logic
 - **AND** API-failure retry state is not incremented for that event
+
+#### Scenario: Malformed-sensitive preflight does not increment API retry state
+- **WHEN** task preflight-sensitive sanitization fails with malformed delimiters
+- **THEN** API-failure retry state is unchanged
+
+#### Scenario: Malformed-sensitive preflight routes directly to DLQ
+- **WHEN** task preflight-sensitive sanitization fails with malformed delimiters
+- **THEN** the task is routed to DLQ terminal handling without retry
+
+#### Scenario: Transient provider failures still use bounded retries
+- **WHEN** a task LLM request fails due to provider/API error after successful preflight
+- **THEN** bounded API-failure retry behavior remains in effect

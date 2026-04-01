@@ -30,6 +30,11 @@
   #+end_sensitive
   and sent the pdf to the vendor portal.
 
+* TODO Malformed sensitive block should go to DLQ :task:
+  This fixture intentionally has malformed sensitive markup and must never reach LLM.
+  #+begin_sensitive leak-inline-value
+  Follow-up text remains in the same item.
+
 * TODO ping ops about INC-7781 maybe wendsday?? important!! :task:
   Keep identifier INC-7781 and callback number +1-800-555-0199 in the normalized output.
   This fixture is intentionally date-agnostic; unscheduled output is acceptable.

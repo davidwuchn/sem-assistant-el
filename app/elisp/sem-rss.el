@@ -5,6 +5,7 @@
 ;; This module generates daily RSS/arXiv digests via LLM.
 ;; Ported from tools-rss.el with all interactive patterns stripped.
 ;; Configuration is via environment variables, not defcustom.
+;; Digest output is operator-facing, so URLs are defanged before write.
 
 ;;; Code:
 
@@ -14,6 +15,7 @@
 (require 'elfeed-org)
 (require 'sem-core)
 (require 'sem-llm)
+(require 'sem-security)
 (require 'sem-time)
 
 ;;; Configuration (from environment variables)
@@ -266,17 +268,19 @@ Handles API errors (RETRY) and malformed output (DLQ)."
                          (cond
                           ;; Success - write to file
                            ((and response (not (string-empty-p response)))
-                            (with-temp-file target
-                              (insert "#+TITLE: " title ": " (sem-time-format-string "%Y-%m-%d") "\n")
-                              (insert "#+FROM: " from "\n")
-                              (insert "#+TO: " to "\n")
-                              (insert "#+DATE: " (sem-time-format-string "[%Y-%m-%d %a]") "\n")
-                              (insert "#+STARTUP: showall\n\n")
-                              (insert response))
-                           (sem-core-log "rss" digest-type "OK"
-                                         (format "Digest written to %s" target)
-                                         nil)
-                           (setq success t))
+                            (let ((sanitized-response
+                                   (sem-security-sanitize-urls response)))
+                             (with-temp-file target
+                               (insert "#+TITLE: " title ": " (sem-time-format-string "%Y-%m-%d") "\n")
+                               (insert "#+FROM: " from "\n")
+                               (insert "#+TO: " to "\n")
+                               (insert "#+DATE: " (sem-time-format-string "[%Y-%m-%d %a]") "\n")
+                               (insert "#+STARTUP: showall\n\n")
+                               (insert sanitized-response)))
+                            (sem-core-log "rss" digest-type "OK"
+                                          (format "Digest written to %s" target)
+                                          nil)
+                            (setq success t))
                           ;; API error - log RETRY, do not write file
                           ((plist-get info :error)
                            (sem-core-log-error "rss" digest-type
@@ -307,9 +311,12 @@ Handles API errors (RETRY) and malformed output (DLQ)."
 (defun sem-rss-generate-morning-digest ()
   "Generate both general and arXiv morning digests.
 This is the cron entry point callable via `emacsclient -e`."
-  (condition-case err
-      (progn
-        (sem-core-log "rss" "RSS-DIGEST" "OK" "Morning digest generation started")
+  (sem-core-run-cron-guarded
+   "rss-morning-digest" "rss" "RSS-DIGEST"
+   (lambda ()
+     (condition-case err
+         (progn
+           (sem-core-log "rss" "RSS-DIGEST" "OK" "Morning digest generation started")
 
         ;; Ensure prompt templates are loaded (lazy loading)
         (sem-rss--ensure-prompts-loaded)
@@ -357,13 +364,13 @@ This is the cron entry point callable via `emacsclient -e`."
                                         "Arxiv Digest"
                                         days))))))
 
-        (sem-core-log "rss" "RSS-DIGEST" "OK" "Morning digest generation completed"))
-    (error
-     (sem-core-log-error "rss" "RSS-DIGEST"
-                         (error-message-string err)
-                         nil
-                         nil)
-     (message "SEM: RSS digest error: %s" (error-message-string err))))
+           (sem-core-log "rss" "RSS-DIGEST" "OK" "Morning digest generation completed"))
+       (error
+        (sem-core-log-error "rss" "RSS-DIGEST"
+                            (error-message-string err)
+                            nil
+                            nil)
+        (message "SEM: RSS digest error: %s" (error-message-string err))))))
 
 (provide 'sem-rss)
 ;;; sem-rss.el ends here

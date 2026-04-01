@@ -186,28 +186,58 @@ Asserts that sem-security-sanitize-for-llm is called and tokens are used."
       (should (not (null blocks)))
       (should (assoc "<<SENSITIVE_1>>" blocks)))))
 
-(ert-deftest sem-url-capture-test-security-urls-defanged ()
-  "Test that LLM response passed to validate-and-save has URLs defanged (hxxp://).
-Asserts that sem-security-sanitize-urls replaces http:// with hxxp://."
-  (let ((response "Check out https://example.com and http://test.org/path"))
-    (let ((sanitized (sem-security-sanitize-urls response)))
-      ;; https should become hxxps
-      (should (string-match-p "hxxps://example\\.com" sanitized))
-      ;; http should become hxxp
-      (should (string-match-p "hxxp://test\\.org/path" sanitized))
-      ;; Original URLs should NOT be present
-      (should-not (string-match-p "https://example\\.com" sanitized))
-      (should-not (string-match-p "http://test\\.org/path" sanitized)))))
+(ert-deftest sem-url-capture-test-malformed-sensitive-preflight-fails-before-llm ()
+  "Test malformed sensitive content fails preflight and skips LLM call."
+  (let ((llm-called nil)
+        (callback-called nil)
+        (callback-context nil)
+        (dlq-log-seen nil)
+        (security-log-seen nil))
+    (cl-letf (((symbol-function 'sem-url-capture--fetch-url)
+               (lambda (_url &optional _timeout)
+                 (list :content "prefix #+begin_sensitive inline secret")))
+              ((symbol-function 'sem-security-sanitize-for-llm)
+               (lambda (_text)
+                 (error "Malformed sensitive marker: markers must be on standalone lines")))
+              ((symbol-function 'sem-llm-request)
+               (lambda (&rest _)
+                 (setq llm-called t)
+                 nil))
+              ((symbol-function 'sem-core-log)
+               (lambda (_module _event status message &optional _raw)
+                 (when (and (string= status "DLQ")
+                            (string-match-p "Security preflight failed" message))
+                   (setq dlq-log-seen t))))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (module _event _error _input _raw metadata)
+                 (when (and (string= module "security")
+                            (equal metadata (list :priority "[#A]" :tags '("security"))))
+                   (setq security-log-seen t)))))
+      (should-not
+       (sem-url-capture-process
+        "https://example.com/malformed"
+        (lambda (_filepath context)
+          (setq callback-called t)
+          (setq callback-context context))))
+      (should callback-called)
+      (should (eq (plist-get callback-context :failure-kind) 'security-malformed))
+      (should-not llm-called)
+      (should dlq-log-seen)
+      (should security-log-seen))))
 
-(ert-deftest sem-url-capture-test-security-urls-defanged-in-context ()
-  "Test URL defanging in a realistic org-roam node context."
-  (let ((response ":PROPERTIES:\n:ID: test-id\n:END:\n#+title: Test\n* Summary\nSource: [[https://example.com][Link]]\n* Notes\nSee http://test.org for more."))
-    (let ((sanitized (sem-security-sanitize-urls response)))
-      (should (string-match-p "hxxps://example\\.com" sanitized))
-      (should (string-match-p "hxxp://test\\.org" sanitized))
-      ;; Org structure should be preserved
-      (should (string-match-p "^:PROPERTIES:" sanitized))
-      (should (string-match-p "^#\\+title: Test" sanitized)))))
+(ert-deftest sem-url-capture-test-validate-and-save-rejects-defanged-url-fields ()
+  "Test defanged URL forms are rejected in persisted url-capture artifacts."
+  (let ((response ":PROPERTIES:\n:ID: test-id\n:END:\n#+title: Test\n#+ROAM_REFS: hxxps://example.com/test\n#+filetags: :article:\n\n* Summary\nSource: [[hxxps://example.com/test][hxxps://example.com/test]]\nBody"))
+    (cl-letf (((symbol-function 'org-roam-db-sync)
+               (lambda () nil)))
+      (should-not (sem-url-capture--validate-and-save response "https://example.com/test")))))
+
+(ert-deftest sem-url-capture-test-validate-and-save-requires-matching-canonical-source ()
+  "Test `#+ROAM_REFS` and Summary Source line must match canonical URL."
+  (let ((response ":PROPERTIES:\n:ID: test-id\n:END:\n#+title: Test\n#+ROAM_REFS: https://example.com/a\n#+filetags: :article:\n\n* Summary\nSource: [[https://example.com/b][https://example.com/b]]\nBody"))
+    (cl-letf (((symbol-function 'org-roam-db-sync)
+               (lambda () nil)))
+      (should-not (sem-url-capture--validate-and-save response "https://example.com/a")))))
 
 ;;; Tests for sensitive content restoration (Task 4.5-4.6)
 

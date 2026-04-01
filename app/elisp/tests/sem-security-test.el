@@ -122,54 +122,39 @@ Org-roam output should NOT call this function (policy check)."
 supersecret123
 for access" restored))))))
 
-;;; Tests for expansion detection
+;;; Strict malformed marker handling
 
-(ert-deftest sem-security-test-expansion-detection ()
-  "Test that sem-security-verify-tokens-present detects token expansion."
-  (let ((blocks-alist (list
-                       (cons "<<SENSITIVE_1>>" (concat "#+begin_sensitive" (string ?\n) "supersecret123" (string ?\n) "#+end_sensitive"))
-                       (cons "<<SENSITIVE_2>>" (concat "#+begin_sensitive" (string ?\n) "sk-live-abc123xyz789" (string ?\n) "#+end_sensitive")))))
-    ;; Test case 1: No expansion - tokens present, no secret content
-    (let* ((llm-output "Password: <<SENSITIVE_1>> and API key: <<SENSITIVE_2>>")
-           (verification (sem-security-verify-tokens-present llm-output blocks-alist))
-           (missing (cdr (assoc 'missing verification)))
-           (expanded (cdr (assoc 'expanded verification))))
-      (progn
-        (should (null missing))
-        (should (null expanded))))
-    ;; Test case 2: Token missing - secret appeared instead of token
-    ;; Note: The function checks if full block content appears, not just secret.
-    ;; Since the LLM output has "supersecret123" (not the full block with markers),
-    ;; it is NOT detected as expansion of the block. Instead, the token
-    ;; is marked as missing because it was not preserved in the output.
-    (let* ((llm-output "Password: supersecret123 and API key: <<SENSITIVE_2>>")
-           (verification (sem-security-verify-tokens-present llm-output blocks-alist))
-           (missing (cdr (assoc 'missing verification)))
-           (expanded (cdr (assoc 'expanded verification))))
-      (progn
-        (should (= (length missing) 1))
-        (should (string= (car missing) "<<SENSITIVE_1>>"))
-        (should (null expanded))))
-    ;; Test case 3: Missing tokens (acceptable - LLM didn't use them)
-    (let* ((llm-output "Password: <<SENSITIVE_1>>")
-           (verification (sem-security-verify-tokens-present llm-output blocks-alist))
-           (missing (cdr (assoc 'missing verification)))
-           (expanded (cdr (assoc 'expanded verification))))
-      (progn
-        (should (= (length missing) 1))
-        (should (string= (car missing) "<<SENSITIVE_2>>"))
-        (should (null expanded))))
-    ;; Test case 4: Full block expansion detected
-    ;; When the full block with markers appears in output, it is detected as expansion.
-    ;; Token <<SENSITIVE_2>> is in output, so it's not missing.
-    (let* ((llm-output (concat "Password: #+begin_sensitive\nsupersecret123\n#+end_sensitive and API key: <<SENSITIVE_2>>"))
-           (verification (sem-security-verify-tokens-present llm-output blocks-alist))
-           (missing (cdr (assoc 'missing verification)))
-           (expanded (cdr (assoc 'expanded verification))))
-      (progn
-        (should (null missing))
-        (should (= (length expanded) 1))
-        (should (string= (car expanded) "<<SENSITIVE_1>>"))))))
+(ert-deftest sem-security-test-missing-end-marker-signals-error ()
+  "Test missing end marker signals strict malformed-block error."
+  (let ((original "before\n#+begin_sensitive\nsecret\nafter"))
+    (should-error (sem-security-sanitize-for-llm original)
+                  :type 'error)))
+
+(ert-deftest sem-security-test-end-without-begin-signals-error ()
+  "Test end marker without begin signals strict malformed-block error."
+  (let ((original "before\n#+end_sensitive\nafter"))
+    (should-error (sem-security-sanitize-for-llm original)
+                  :type 'error)))
+
+(ert-deftest sem-security-test-inline-marker-signals-error ()
+  "Test inline sensitive marker text is rejected."
+  (let ((original "Note #+begin_sensitive should be standalone."))
+    (should-error (sem-security-sanitize-for-llm original)
+                  :type 'error)))
+
+(ert-deftest sem-security-test-nested-begin-marker-signals-error ()
+  "Test nested sensitive blocks are rejected."
+  (let ((original "#+begin_sensitive\none\n#+begin_sensitive\ntwo\n#+end_sensitive\n#+end_sensitive"))
+    (should-error (sem-security-sanitize-for-llm original)
+                  :type 'error)))
+
+(ert-deftest sem-security-test-uppercase-markers-are-accepted ()
+  "Test case-insensitive markers are accepted and tokenized."
+  (let* ((original "A\n#+BEGIN_SENSITIVE\nToken\n#+END_SENSITIVE\nB")
+         (result (sem-security-sanitize-for-llm original))
+         (tokenized (car result)))
+    (should (string-match-p "<<SENSITIVE_1>>" tokenized))
+    (should-not (string-match-p "Token" tokenized))))
 
 (provide 'sem-security-test)
 ;;; sem-security-test.el ends here

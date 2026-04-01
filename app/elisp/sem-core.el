@@ -31,6 +31,344 @@
 (defconst sem-core-inbox-file "/data/inbox-mobile.org"
   "Path to the inbox file synced by Orgzly.")
 
+(defvar sem-core-cron-guard-dir (format "/tmp/data/cron-guards/%s" (emacs-pid))
+  "Directory containing per-job cron overlap guard lock files.")
+
+(defvar sem-core-cron-guard-default-policy 'skip
+  "Default overlap policy for cron-guarded jobs.
+Supported values are `skip' and `serialize'.")
+
+(defvar sem-core-cron-guard-default-stale-ttl-seconds 3600
+  "Default stale lock TTL in seconds for cron-guarded jobs.")
+
+(defvar sem-core-cron-guard-serialize-poll-seconds 2
+  "Polling interval in seconds used by `serialize' overlap policy.")
+
+(defvar sem-core-cron-guard-max-serialize-wait-seconds 5
+  "Maximum wait time in seconds for `serialize' overlap policy.")
+
+(defconst sem-core-cron-guard-job-config
+  '(("inbox-processing" :policy skip :stale-ttl-seconds 5400)
+    ("inbox-purge" :policy skip :stale-ttl-seconds 5400)
+    ("rss-morning-digest" :policy skip :stale-ttl-seconds 7200)
+    ("git-sync-org-roam" :policy serialize :stale-ttl-seconds 3600)
+    ("git-sync-org-roam-prepull" :policy skip :stale-ttl-seconds 900))
+  "Per-job cron overlap policy and stale-lock TTL settings.")
+
+(defun sem-core--cron-guard-config (guard-key)
+  "Return effective overlap guard config plist for GUARD-KEY." 
+  (let ((configured (cdr (assoc guard-key sem-core-cron-guard-job-config))))
+    (list :policy (or (plist-get configured :policy)
+                      sem-core-cron-guard-default-policy)
+          :stale-ttl-seconds (or (plist-get configured :stale-ttl-seconds)
+                                 sem-core-cron-guard-default-stale-ttl-seconds))))
+
+(defun sem-core--cron-guard-lock-file (guard-key)
+  "Return lock file path for GUARD-KEY."
+  (expand-file-name (format "%s.lock" guard-key) sem-core-cron-guard-dir))
+
+(defun sem-core--cron-guard-holder-metadata (guard-key policy)
+  "Build holder metadata alist for GUARD-KEY and POLICY."
+  (let* ((now (float-time))
+         (pid (emacs-pid))
+         (host (system-name))
+         (nonce (secure-hash 'sha256 (format "%s|%s|%s|%s" guard-key pid now (random))))
+         (holder-id (format "%s:%s:%s" host pid nonce)))
+    `((guard-key . ,guard-key)
+      (policy . ,(symbol-name policy))
+      (pid . ,pid)
+      (host . ,host)
+      (holder-id . ,holder-id)
+      (created-at . ,now)
+      (updated-at . ,now))))
+
+(defun sem-core--cron-guard-write-lock-atomic (lock-file metadata &optional must-be-new)
+  "Write METADATA to LOCK-FILE atomically.
+When MUST-BE-NEW is non-nil, fail if LOCK-FILE already exists."
+  (let* ((tmp-file (concat lock-file ".tmp"))
+         (serialized (concat (prin1-to-string metadata) "\n")))
+    (make-directory (file-name-directory lock-file) t)
+    (with-temp-file tmp-file
+      (insert serialized))
+    (if must-be-new
+        (condition-case _err
+            (progn
+              (write-region serialized nil lock-file nil 'silent nil 'excl)
+              (delete-file tmp-file)
+              t)
+          (file-already-exists
+           (ignore-errors (delete-file tmp-file))
+           nil)
+          (error
+           (ignore-errors (delete-file tmp-file))
+           nil))
+      (condition-case _err
+          (progn
+            (rename-file tmp-file lock-file t)
+            t)
+        (error
+         (ignore-errors (delete-file tmp-file))
+         nil)))))
+
+(defun sem-core--cron-guard-read-lock (lock-file)
+  "Read and return lock metadata alist from LOCK-FILE, or nil." 
+  (when (file-exists-p lock-file)
+    (with-temp-buffer
+      (condition-case _err
+          (progn
+            (insert-file-contents lock-file)
+            (goto-char (point-min))
+            (let ((content (read (current-buffer))))
+              (when (listp content)
+                content)))
+        (error nil)))))
+
+(defun sem-core--cron-guard-lock-age (metadata lock-file now-float)
+  "Return lock age evaluation plist for METADATA at LOCK-FILE.
+NOW-FLOAT is the current timestamp as float seconds." 
+  (let ((created-at (cdr (assoc 'created-at metadata))))
+    (cond
+     ((numberp created-at)
+      (if (< created-at now-float)
+          (list :age-seconds (- now-float created-at)
+                :uncertain nil
+                :reason "from-created-at")
+        (list :age-seconds nil
+              :uncertain t
+              :reason "future-created-at")))
+     (t
+      (let* ((attrs (ignore-errors (file-attributes lock-file 'string)))
+             (mtime (and (consp attrs) (nth 5 attrs))))
+        (if (and (listp mtime) (>= now-float (float-time mtime)))
+            (list :age-seconds (- now-float (float-time mtime))
+                  :uncertain nil
+                  :reason "from-mtime")
+          (list :age-seconds nil
+                :uncertain t
+                :reason "mtime-unavailable")))))))
+
+(defun sem-core--cron-guard-holder-liveness (metadata)
+  "Return holder liveness plist derived from METADATA." 
+  (let ((pid (cdr (assoc 'pid metadata)))
+        (host (cdr (assoc 'host metadata))))
+    (cond
+     ((not (and (integerp pid) (> pid 0)))
+      (list :alive nil :certain nil :reason "missing-pid"))
+     ((and (stringp host) (not (string= host (system-name))))
+      (list :alive nil :certain nil :reason "foreign-host"))
+     (t
+      (condition-case _err
+          (progn
+            (signal-process pid 0)
+            (list :alive t :certain t :reason "holder-process-alive"))
+        (error
+         (list :alive nil :certain t :reason "holder-process-dead")))))))
+
+(defun sem-core--cron-guard-log (module event-type status payload)
+  "Emit structured guard log with MODULE, EVENT-TYPE, STATUS, and PAYLOAD." 
+  (condition-case _err
+      (sem-core-log module event-type status (json-encode payload) nil)
+    (error nil)))
+
+(defun sem-core--cron-guard-release (lock-file holder-id module event-type guard-key policy)
+  "Release LOCK-FILE for HOLDER-ID.
+Logs release outcome using MODULE, EVENT-TYPE, GUARD-KEY, and POLICY." 
+  (let ((metadata (sem-core--cron-guard-read-lock lock-file)))
+    (if (and metadata
+             (string= holder-id (or (cdr (assoc 'holder-id metadata)) "")))
+        (condition-case _err
+            (progn
+              (delete-file lock-file)
+              (sem-core--cron-guard-log
+               module event-type "OK"
+               `((guard_action . "release")
+                 (guard_key . ,guard-key)
+                 (policy . ,(symbol-name policy))
+                 (decision . "released")))
+              t)
+          (error
+           (sem-core--cron-guard-log
+            module event-type "FAIL"
+            `((guard_action . "release")
+              (guard_key . ,guard-key)
+              (policy . ,(symbol-name policy))
+              (decision . "release_failed")))
+           nil))
+      (progn
+        (sem-core--cron-guard-log
+         module event-type "SKIP"
+         `((guard_action . "release")
+           (guard_key . ,guard-key)
+           (policy . ,(symbol-name policy))
+           (decision . "release_skipped_not_holder")))
+        nil))))
+
+(defun sem-core--cron-guard-acquire (guard-key module event-type policy stale-ttl-seconds)
+  "Attempt to acquire overlap guard for GUARD-KEY.
+Returns plist with :decision, :holder-id, :age-seconds, and :reason."
+  (let* ((lock-file (sem-core--cron-guard-lock-file guard-key))
+         (holder (sem-core--cron-guard-holder-metadata guard-key policy))
+         (holder-id (cdr (assoc 'holder-id holder)))
+         (now-float (float-time)))
+    (if (condition-case _err
+            (progn
+              (make-directory sem-core-cron-guard-dir t)
+              t)
+          (error nil))
+        (if (sem-core--cron-guard-write-lock-atomic lock-file holder t)
+            (list :decision 'acquire
+                  :holder-id holder-id
+                  :age-seconds 0
+                  :reason "fresh-lock")
+          (let ((metadata (sem-core--cron-guard-read-lock lock-file)))
+            (if (null metadata)
+                (list :decision 'skip
+                      :holder-id nil
+                      :age-seconds nil
+                      :reason "lock-unreadable-fail-closed")
+              (let* ((age-info (sem-core--cron-guard-lock-age metadata lock-file now-float))
+                     (age-seconds (plist-get age-info :age-seconds))
+                     (age-uncertain (plist-get age-info :uncertain))
+                     (age-reason (plist-get age-info :reason)))
+                (cond
+                 (age-uncertain
+                  (list :decision 'skip
+                        :holder-id nil
+                        :age-seconds nil
+                        :reason (format "uncertain-age-%s-fail-closed" age-reason)))
+                 ((< age-seconds stale-ttl-seconds)
+                  (list :decision 'skip
+                        :holder-id nil
+                        :age-seconds age-seconds
+                        :reason "active-lock"))
+                 (t
+                  (sem-core--cron-guard-log
+                   module event-type "OK"
+                   `((guard_action . "reclaim_attempt")
+                     (guard_key . ,guard-key)
+                     (policy . ,(symbol-name policy))
+                     (lock_age_seconds . ,age-seconds)
+                     (reason . "stale-lock-candidate")))
+                  (let* ((liveness (sem-core--cron-guard-holder-liveness metadata))
+                         (alive (plist-get liveness :alive))
+                         (certain (plist-get liveness :certain))
+                         (liveness-reason (plist-get liveness :reason)))
+                    (cond
+                     (alive
+                      (list :decision 'skip
+                            :holder-id nil
+                            :age-seconds age-seconds
+                            :reason "stale-candidate-holder-still-alive"))
+                     ((not certain)
+                      (list :decision 'skip
+                            :holder-id nil
+                            :age-seconds age-seconds
+                            :reason (format "stale-candidate-liveness-uncertain-%s" liveness-reason)))
+                     ((not (sem-core--cron-guard-write-lock-atomic lock-file holder nil))
+                      (list :decision 'skip
+                            :holder-id nil
+                            :age-seconds age-seconds
+                            :reason "stale-reclaim-write-failed"))
+                     (t
+                      (let* ((post-write (sem-core--cron-guard-read-lock lock-file))
+                             (post-holder-id (cdr (assoc 'holder-id post-write))))
+                        (if (and (stringp post-holder-id)
+                                 (string= post-holder-id holder-id))
+                            (list :decision 'reclaim
+                                  :holder-id holder-id
+                                  :age-seconds age-seconds
+                                  :reason "stale-reclaimed")
+                          (list :decision 'skip
+                                :holder-id nil
+                                :age-seconds age-seconds
+                                :reason "stale-reclaim-race-lost"))))))))))))
+        (list :decision 'skip
+              :holder-id nil
+              :age-seconds nil
+              :reason "guard-dir-unavailable"))))
+
+(defun sem-core-run-cron-guarded (guard-key module event-type thunk)
+  "Run THUNK under a cron overlap guard identified by GUARD-KEY.
+MODULE and EVENT-TYPE define the operational log channel.
+Returns THUNK result on execution, or nil when skipped/deferred." 
+  (cl-block sem-core-run-cron-guarded
+    (let* ((config (sem-core--cron-guard-config guard-key))
+           (policy (plist-get config :policy))
+           (stale-ttl-seconds (plist-get config :stale-ttl-seconds))
+           (lock-file (sem-core--cron-guard-lock-file guard-key))
+           (poll-seconds (max 0.1 (or sem-core-cron-guard-serialize-poll-seconds 2)))
+           (max-wait (max 0 (or sem-core-cron-guard-max-serialize-wait-seconds 600)))
+           (max-attempts (max 1 (ceiling (/ (max 1.0 max-wait) poll-seconds))))
+           (waited 0)
+           (attempts 0)
+           (acquired nil)
+           (holder-id nil)
+           (result nil))
+      (while (not acquired)
+        (setq attempts (1+ attempts))
+        (let* ((acquire-result
+                (sem-core--cron-guard-acquire guard-key module event-type policy stale-ttl-seconds))
+               (decision (plist-get acquire-result :decision))
+               (reason (plist-get acquire-result :reason))
+               (age-seconds (plist-get acquire-result :age-seconds)))
+          (cond
+           ((memq decision '(acquire reclaim))
+            (setq acquired t)
+            (setq holder-id (plist-get acquire-result :holder-id))
+            (sem-core--cron-guard-log
+             module event-type "OK"
+             `((guard_action . "acquire")
+               (guard_key . ,guard-key)
+               (policy . ,(symbol-name policy))
+               (decision . ,(if (eq decision 'reclaim) "reclaim_success" "acquired"))
+               (lock_age_seconds . ,age-seconds)
+               (reason . ,reason))))
+           ((eq policy 'skip)
+            (sem-core--cron-guard-log
+             module event-type "SKIP"
+             `((guard_action . "acquire")
+               (guard_key . ,guard-key)
+               (policy . ,(symbol-name policy))
+               (decision . "skip")
+               (lock_age_seconds . ,age-seconds)
+               (reason . ,reason)))
+            (cl-return-from sem-core-run-cron-guarded nil))
+           (t
+            (if (or (string-match-p
+                     "\\`\\(uncertain-age\\|lock-unreadable\\|stale-candidate-liveness-uncertain\\)"
+                     (or reason ""))
+                    (>= waited max-wait)
+                    (>= attempts max-attempts))
+                (progn
+                  (sem-core--cron-guard-log
+                   module event-type "SKIP"
+                   `((guard_action . "defer")
+                     (guard_key . ,guard-key)
+                     (policy . ,(symbol-name policy))
+                     (decision . ,(if (string-match-p
+                                       "\\`\\(uncertain-age\\|lock-unreadable\\|stale-candidate-liveness-uncertain\\)"
+                                       (or reason ""))
+                                      "serialize-fail-closed"
+                                    "serialize-timeout"))
+                     (lock_age_seconds . ,age-seconds)
+                     (reason . ,reason)))
+                  (cl-return-from sem-core-run-cron-guarded nil))
+              (sem-core--cron-guard-log
+               module event-type "RETRY"
+               `((guard_action . "defer")
+                 (guard_key . ,guard-key)
+                 (policy . ,(symbol-name policy))
+                 (decision . "serialize-wait")
+                  (lock_age_seconds . ,age-seconds)
+                  (reason . ,reason)))
+              (sleep-for poll-seconds)
+              (setq waited (+ waited poll-seconds)))))))
+      (unwind-protect
+          (setq result (funcall thunk))
+        (when (and acquired holder-id)
+          (sem-core--cron-guard-release lock-file holder-id module event-type guard-key policy)))
+      result)))
+
 ;;; Structured Logging
 
 (defun sem-core--ensure-log-headings ()
@@ -120,13 +458,16 @@ Format: - [HH:MM:SS] [MODULE] [EVENT-TYPE] [STATUS] tokens=NNN | message"
          (error nil))))))
   ; Never crash on logging errors
 
-(defun sem-core-log-error (module event-type error-msg input &optional raw-output)
+(defun sem-core-log-error (module event-type error-msg input &optional raw-output metadata)
   "Append an error entry to both `sem-core-log-file' and `sem-core-errors-file'.
 
 MODULE, EVENT-TYPE as in `sem-core-log'.
 ERROR-MSG is the error description.
 INPUT is the original input text or URL that caused the failure.
 RAW-OUTPUT is the raw LLM response, or nil if LLM was not called.
+METADATA is an optional plist supporting:
+- :priority Org headline priority token string (for example [#A])
+- :tags list of Org tag strings (for example security and dlq)
 
 This calls `sem-core-log' with STATUS=FAIL or STATUS=DLQ, and appends
 detailed error info to errors.org."
@@ -137,10 +478,13 @@ detailed error info to errors.org."
 
         ;; Append to errors.org
         (let* ((now (current-time))
-               (timestamp (sem-time-format-string "%Y-%m-%d %H:%M:%S" now))
-               (errors-file sem-core-errors-file)
-               (created (sem-time-format-string "[%Y-%m-%d %H:%M:%S]" now))
-               (deadline (sem-time-format-string "<%Y-%m-%d %a %H:%M>" now)))
+                (timestamp (sem-time-format-string "%Y-%m-%d %H:%M:%S" now))
+                (errors-file sem-core-errors-file)
+                (created (sem-time-format-string "[%Y-%m-%d %H:%M:%S]" now))
+                (deadline (sem-time-format-string "<%Y-%m-%d %a %H:%M>" now))
+                (priority (plist-get metadata :priority))
+                (tags (plist-get metadata :tags))
+                (tags-suffix (if tags (format " :%s:" (mapconcat #'identity tags ":")) "")))
 
           (make-directory (file-name-directory errors-file) t)
 
@@ -150,7 +494,12 @@ detailed error info to errors.org."
 
             ;; Insert error entry
             (goto-char (point-max))
-            (insert (format "* TODO [%s] [%s] [%s] FAIL\n" timestamp module event-type))
+            (insert (format "* TODO %s[%s] [%s] [%s] FAIL%s\n"
+                            (if priority (format "%s " priority) "")
+                            timestamp
+                            module
+                            event-type
+                            tags-suffix))
             (insert (format "DEADLINE: %s\n" deadline))
             (insert ":PROPERTIES:\n")
             (insert ":CREATED: " created "\n")
@@ -488,27 +837,30 @@ Never crashes - errors are silently ignored."
 Reads unprocessed headlines from inbox-mobile.org and routes them
 to the appropriate handler (url-capture or LLM task generation).
 Initializes batch state for tracking callbacks and triggering planning step."
-  (condition-case err
-      (progn
-        (message "SEM: sem-core-process-inbox called")
-        (sem-core--cleanup-stale-temp-files)
-        (setq sem-core--batch-id (1+ sem-core--batch-id))
-        (setq sem-core--pending-callbacks 0)
-        (sem-core--start-batch-watchdog sem-core--batch-id)
-        (when (fboundp 'sem-router-process-inbox)
-          (message "SEM: Calling sem-router-process-inbox...")
-          (sem-router-process-inbox sem-core--batch-id)
-          (message "SEM: sem-router-process-inbox returned"))
-        (when (= sem-core--pending-callbacks 0)
-          (sem-core--cancel-batch-watchdog)
-          (message "SEM: No pending callbacks, firing planning step immediately (batch %d)"
-                   sem-core--batch-id)
-          (when (fboundp 'sem-planner-run-planning-step)
-            (sem-planner-run-planning-step sem-core--batch-id)))
-        (message "SEM: sem-core-process-inbox done"))
-    (error
-     (sem-core-log-error "core" "INBOX-ITEM" (error-message-string err) nil)
-     (message "SEM: Inbox processing error: %s" (error-message-string err)))))
+  (sem-core-run-cron-guarded
+   "inbox-processing" "core" "INBOX-ITEM"
+   (lambda ()
+     (condition-case err
+         (progn
+           (message "SEM: sem-core-process-inbox called")
+           (sem-core--cleanup-stale-temp-files)
+           (setq sem-core--batch-id (1+ sem-core--batch-id))
+           (setq sem-core--pending-callbacks 0)
+           (sem-core--start-batch-watchdog sem-core--batch-id)
+           (when (fboundp 'sem-router-process-inbox)
+             (message "SEM: Calling sem-router-process-inbox...")
+             (sem-router-process-inbox sem-core--batch-id)
+             (message "SEM: sem-router-process-inbox returned"))
+           (when (= sem-core--pending-callbacks 0)
+             (sem-core--cancel-batch-watchdog)
+             (message "SEM: No pending callbacks, firing planning step immediately (batch %d)"
+                      sem-core--batch-id)
+             (when (fboundp 'sem-planner-run-planning-step)
+               (sem-planner-run-planning-step sem-core--batch-id)))
+           (message "SEM: sem-core-process-inbox done"))
+       (error
+        (sem-core-log-error "core" "INBOX-ITEM" (error-message-string err) nil)
+        (message "SEM: Inbox processing error: %s" (error-message-string err)))))))
 
 ;;; Inbox Purge
 
@@ -517,75 +869,78 @@ Initializes batch state for tracking callbacks and triggering planning step."
 Only runs at 4AM window. Uses temp file + rename-file for atomicity.
 Hash computation matches sem-router--parse-headlines format:
 (json-encode (vector title space-joined-tags body))."
-  (condition-case err
-      (let* ((inbox-file sem-core-inbox-file)
-             (tmp-file (concat inbox-file ".purge.tmp"))
-             (keep-hashes '())
-             (purged-count 0)
-             (hour (string-to-number (sem-time-format-string "%H"))))
-        (cond
-         ((/= hour 4)
-          (sem-core-log "purge" "PURGE" "SKIP" "Not in 4AM window")
-          (message "SEM: Purge only runs at 4AM, current hour: %d" hour))
-         ((not (file-exists-p inbox-file))
-          (sem-core-log "purge" "PURGE" "SKIP" "inbox-mobile.org does not exist")
-          (message "SEM: inbox-mobile.org does not exist, skipping inbox purge"))
-         (t
-          (require 'sem-router)
-          (let ((keep-headlines '()))
-            (with-temp-buffer
-              (insert-file-contents inbox-file)
-              (org-mode)
-              (let ((ast (org-element-parse-buffer)))
-                (org-element-map ast 'headline
-                  (lambda (headline-element)
-                    (let* ((title (org-element-property :raw-value headline-element))
-                           (tags (org-element-property :tags headline-element))
-                           (body (sem-router--extract-headline-body headline-element))
-                           (tags-str (if tags (string-join tags " ") ""))
-                           (body-str (or body ""))
-                           (hash (secure-hash 'sha256
-                                              (json-encode (vector title tags-str body-str)))))
-                      (if (sem-core--is-processed hash)
-                          (setq purged-count (1+ purged-count))
-                        (let ((begin (org-element-property :begin headline-element))
-                              (end (org-element-property :end headline-element)))
-                          (push hash keep-hashes)
-                          (push (buffer-substring-no-properties begin end) keep-headlines)))))))
-              (with-temp-file tmp-file
-                (dolist (subtree (nreverse keep-headlines))
-                  (insert subtree)
-                  (insert "\n"))))
-            (rename-file tmp-file inbox-file t)
-            (sem-core-log "purge" "PURGE" "OK"
-                          (format "Removed %d nodes from inbox-mobile.org" purged-count))
-            (message "SEM: Purged %d processed headlines" purged-count))))
+  (sem-core-run-cron-guarded
+   "inbox-purge" "purge" "PURGE"
+   (lambda ()
+     (condition-case err
+         (let* ((inbox-file sem-core-inbox-file)
+                (tmp-file (concat inbox-file ".purge.tmp"))
+                (keep-hashes '())
+                (purged-count 0)
+                (hour (string-to-number (sem-time-format-string "%H"))))
+           (cond
+            ((/= hour 4)
+             (sem-core-log "purge" "PURGE" "SKIP" "Not in 4AM window")
+             (message "SEM: Purge only runs at 4AM, current hour: %d" hour))
+            ((not (file-exists-p inbox-file))
+             (sem-core-log "purge" "PURGE" "SKIP" "inbox-mobile.org does not exist")
+             (message "SEM: inbox-mobile.org does not exist, skipping inbox purge"))
+            (t
+             (require 'sem-router)
+             (let ((keep-headlines '()))
+               (with-temp-buffer
+                 (insert-file-contents inbox-file)
+                 (org-mode)
+                 (let ((ast (org-element-parse-buffer)))
+                   (org-element-map ast 'headline
+                     (lambda (headline-element)
+                       (let* ((title (org-element-property :raw-value headline-element))
+                              (tags (org-element-property :tags headline-element))
+                              (body (sem-router--extract-headline-body headline-element))
+                              (tags-str (if tags (string-join tags " ") ""))
+                              (body-str (or body ""))
+                              (hash (secure-hash 'sha256
+                                                 (json-encode (vector title tags-str body-str)))))
+                         (if (sem-core--is-processed hash)
+                             (setq purged-count (1+ purged-count))
+                           (let ((begin (org-element-property :begin headline-element))
+                                 (end (org-element-property :end headline-element)))
+                             (push hash keep-hashes)
+                             (push (buffer-substring-no-properties begin end) keep-headlines)))))))
+                 (with-temp-file tmp-file
+                   (dolist (subtree (nreverse keep-headlines))
+                     (insert subtree)
+                     (insert "\n"))))
+               (rename-file tmp-file inbox-file t)
+               (sem-core-log "purge" "PURGE" "OK"
+                             (format "Removed %d nodes from inbox-mobile.org" purged-count))
+               (message "SEM: Purged %d processed headlines" purged-count))))
 
-        (when (= hour 4)
-          (condition-case purge-cursor-err
-              (progn
-                (sem-core--purge-cursor-to-active-hashes keep-hashes)
-                (sem-core-log "purge" "PURGE" "OK"
-                              (format "Cursor rebuilt with %d active hashes" (length keep-hashes))))
-            (error
-             (sem-core-log-error "purge" "PURGE"
-                                 (format "Cursor purge failed: %s"
-                                         (error-message-string purge-cursor-err))
-                                 nil
-                                 nil)))
+           (when (= hour 4)
+             (condition-case purge-cursor-err
+                 (progn
+                   (sem-core--purge-cursor-to-active-hashes keep-hashes)
+                   (sem-core-log "purge" "PURGE" "OK"
+                                 (format "Cursor rebuilt with %d active hashes" (length keep-hashes))))
+               (error
+                (sem-core-log-error "purge" "PURGE"
+                                    (format "Cursor purge failed: %s"
+                                            (error-message-string purge-cursor-err))
+                                    nil
+                                    nil)))
 
-          (condition-case purge-retries-err
-              (progn
-                (sem-core--purge-retries)
-                (sem-core-log "purge" "PURGE" "OK" "Retries reset to empty alist"))
-            (error
-             (sem-core-log-error "purge" "PURGE"
-                                 (format "Retries purge failed: %s"
-                                         (error-message-string purge-retries-err))
-                                 nil
-                                 nil)))))
-    (error
-     (message "SEM: Purge error: %s" (error-message-string err)))))
+             (condition-case purge-retries-err
+                 (progn
+                   (sem-core--purge-retries)
+                   (sem-core-log "purge" "PURGE" "OK" "Retries reset to empty alist"))
+               (error
+                (sem-core-log-error "purge" "PURGE"
+                                    (format "Retries purge failed: %s"
+                                            (error-message-string purge-retries-err))
+                                    nil
+                                    nil)))))
+       (error
+        (message "SEM: Purge error: %s" (error-message-string err)))))))
 
 (provide 'sem-core)
 ;;; sem-core.el ends here

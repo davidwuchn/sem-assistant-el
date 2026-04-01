@@ -10,6 +10,7 @@
 (require 'ert)
 (require 'gptel)
 (require 'org-roam)
+(require 'cl-lib)
 
 (setenv "CLIENT_TIMEZONE" (or (getenv "CLIENT_TIMEZONE") "Etc/UTC"))
 
@@ -162,6 +163,40 @@ Returns the file path. Caller is responsible for cleanup."
   "Cleanup temporary FILE if it exists."
   (when (and file (file-exists-p file))
     (delete-file file)))
+
+(defun sem-mock-setup-test-data-paths ()
+  "Redirect core runtime file paths to a temporary test directory.
+Returns a plist snapshot used by `sem-mock-teardown-test-data-paths'."
+  (let* ((dir (make-temp-file "sem-test-data-" t))
+         (tracked-vars
+          '(sem-core-log-file
+            sem-core-errors-file
+            sem-core-cursor-file
+            sem-core-retries-file
+            sem-core-inbox-file
+            sem-core-cron-guard-dir))
+         (snapshot
+          (mapcar (lambda (sym)
+                    (cons sym (if (boundp sym) (symbol-value sym) :unbound)))
+                  tracked-vars)))
+    (setq sem-core-log-file (expand-file-name "sem-log.org" dir))
+    (setq sem-core-errors-file (expand-file-name "errors.org" dir))
+    (setq sem-core-cursor-file (expand-file-name ".sem-cursor.el" dir))
+    (setq sem-core-retries-file (expand-file-name ".sem-retries.el" dir))
+    (setq sem-core-inbox-file (expand-file-name "inbox-mobile.org" dir))
+    (setq sem-core-cron-guard-dir (expand-file-name "cron-guards" dir))
+    (list :dir dir :snapshot snapshot)))
+
+(defun sem-mock-teardown-test-data-paths (state)
+  "Restore runtime file path variables and clean temporary files from STATE."
+  (let ((dir (plist-get state :dir))
+        (snapshot (plist-get state :snapshot)))
+    (dolist (entry snapshot)
+      (if (eq (cdr entry) :unbound)
+          (makunbound (car entry))
+        (set (car entry) (cdr entry))))
+    (when (and (stringp dir) (file-directory-p dir))
+      (delete-directory dir t))))
 
 (provide 'sem-mock)
 ;;; sem-mock.el ends here

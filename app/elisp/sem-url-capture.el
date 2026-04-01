@@ -14,6 +14,9 @@
 ;; 5. Request LLM to generate org-roam node content
 ;; 6. Validate and save the generated content
 ;;
+;; URL contract: persisted org-roam output keeps canonical `http://`/`https://`
+;; URLs and never applies URL defanging.
+;;
 ;; Entry point: sem-url-capture-process (callable from sem-router.el)
 
 ;;; Code:
@@ -278,7 +281,8 @@ Validation steps:
 Returns the filepath on success, nil on validation failure."
   (cl-block sem-url-capture--validate-and-save
     (let ((temp-buf (generate-new-buffer " *url-capture-validate*"))
-          (filepath nil))
+          (filepath nil)
+          (title-value nil))
       (unwind-protect
         (progn
           ;; Write response to temporary buffer
@@ -291,24 +295,76 @@ Returns the filepath on success, nil on validation failure."
               (replace-match ""))
             (goto-char (point-min))
 
-            ;; Validate required elements
+            ;; Validate required elements and canonical URL contract.
             (let ((has-properties (re-search-forward "^:PROPERTIES:" nil t))
                   (has-id (re-search-forward "^:ID:" nil t))
-                  (has-title (progn
-                               (goto-char (point-min))
-                               (re-search-forward "^#\\+title:\\s-+" nil t))))
+                  (has-title nil)
+                  (roam-ref-url nil)
+                  (source-url-a nil)
+                  (source-url-b nil))
+              (goto-char (point-min))
+              (while (and (not has-title) (not (eobp)))
+                (let ((line (string-trim-right
+                             (buffer-substring-no-properties
+                              (line-beginning-position)
+                              (line-end-position)))))
+                  (when (string-prefix-p "#+title:" line)
+                    (let ((candidate (string-trim (substring line (length "#+title:")))))
+                      (unless (string-empty-p candidate)
+                        (setq has-title t)
+                        (setq title-value candidate))))
+                  (forward-line 1)))
               (unless (and has-properties has-id has-title)
                 (sem-core-log-error "url-capture" "URL-CAPTURE"
                                     (format "Missing required elements: props=%s, id=%s, title=%s"
                                             has-properties has-id has-title)
                                     llm-response
                                     llm-response)
+                (cl-return-from sem-url-capture--validate-and-save nil))
+              (goto-char (point-min))
+              (while (and (not roam-ref-url) (not (eobp)))
+                (let ((line (string-trim-right
+                             (buffer-substring-no-properties
+                              (line-beginning-position)
+                              (line-end-position)))))
+                  (when (string-prefix-p "#+ROAM_REFS:" line)
+                    (let* ((refs-tail (string-trim (substring line (length "#+ROAM_REFS:"))))
+                           (refs (split-string refs-tail "[ \t]+" t)))
+                      (setq roam-ref-url (car refs))))
+                  (forward-line 1)))
+              (goto-char (point-min))
+              (while (and (not source-url-a) (not (eobp)))
+                (let ((line (string-trim-right
+                             (buffer-substring-no-properties
+                              (line-beginning-position)
+                              (line-end-position)))))
+                  (if (string= line "* Summary")
+                      (progn
+                        (forward-line 1)
+                        (let ((source-line (string-trim-right
+                                            (buffer-substring-no-properties
+                                             (line-beginning-position)
+                                             (line-end-position)))))
+                          (when (string-match "^Source: \\[\\[\\([^]]+\\)\\]\\[\\([^]]+\\)\\]\\]" source-line)
+                            (setq source-url-a (match-string 1 source-line))
+                            (setq source-url-b (match-string 2 source-line)))))
+                    (forward-line 1))))
+              (unless (and roam-ref-url
+                           source-url-a
+                           source-url-b
+                           (string= source-url-a source-url-b)
+                           (string= source-url-a roam-ref-url)
+                           (string-match-p "^https?://" roam-ref-url)
+                           (not (string-match-p "^hxxps?://" roam-ref-url)))
+                (sem-core-log-error "url-capture" "URL-CAPTURE"
+                                    "Invalid URL contract: require canonical matching ROAM_REFS and Summary Source link"
+                                    url
+                                    llm-response)
                 (cl-return-from sem-url-capture--validate-and-save nil)))
 
             ;; Extract title for slug generation
-            (goto-char (point-min))
-            (if (re-search-forward "^#\\+title:\\s-+\\(.+\\)$" nil t)
-                (let* ((title (match-string 1))
+            (if title-value
+                (let* ((title title-value)
                        (slug (sem-url-capture--make-slug title))
                        (fpath (sem-url-capture--next-node-filepath slug))
                        (content (buffer-string)))
@@ -380,16 +436,35 @@ If no callback is provided, processing still happens asynchronously."
                (fetch-kind (plist-get fetch-result :kind)))
           (if raw-content
               (let* ((sanitized (sem-url-capture--sanitize-text raw-content))
-                      ;; Apply security masking: sanitize sensitive blocks before LLM
-                      (security-result (sem-security-sanitize-for-llm sanitized))
-                      (tokenized-text (car security-result))
-                      (security-blocks (cadr security-result))
-                      (umbrella-nodes (sem-url-capture--get-umbrella-nodes))
-                      (system-prompt (sem-url-capture--build-system-prompt))
-                      (user-prompt (sem-url-capture--build-user-prompt url tokenized-text umbrella-nodes))
-                      (completed nil)
-                      (timeout-timer nil)
-                      (llm-remaining-seconds (sem-url-capture--remaining-seconds deadline)))
+                     (security-result nil)
+                     (tokenized-text nil)
+                     (security-blocks nil))
+
+                ;; Apply security masking: sanitize sensitive blocks before LLM.
+                (condition-case sanitize-err
+                    (progn
+                      (setq security-result (sem-security-sanitize-for-llm sanitized))
+                      (setq tokenized-text (car security-result))
+                      (setq security-blocks (cadr security-result)))
+                  (error
+                   (sem-core-log "url-capture" "URL-CAPTURE" "DLQ"
+                                 (format "Security preflight failed, moved to DLQ: %s" url)
+                                 nil)
+                   (sem-core-log-error "security" "URL-CAPTURE"
+                                       (error-message-string sanitize-err)
+                                       sanitized
+                                       nil
+                                       (list :priority "[#A]" :tags '("security")))
+                   (when callback
+                     (funcall callback nil (list :url url :failure-kind 'security-malformed)))
+                   (cl-return-from sem-url-capture-process nil)))
+
+                (let* ((umbrella-nodes (sem-url-capture--get-umbrella-nodes))
+                       (system-prompt (sem-url-capture--build-system-prompt))
+                       (user-prompt (sem-url-capture--build-user-prompt url tokenized-text umbrella-nodes))
+                       (completed nil)
+                       (timeout-timer nil)
+                       (llm-remaining-seconds (sem-url-capture--remaining-seconds deadline)))
 
                 (when (<= llm-remaining-seconds 0)
                   (sem-url-capture--log-timeout-fail url "orchestration")
@@ -443,8 +518,8 @@ Calls sem-url-capture--validate-and-save with restored sensitive content."
                                   (list :security-blocks security-blocks :url url)
                                   'medium)
 
-                ;; Return immediately - processing continues asynchronously
-                t)
+                  ;; Return immediately - processing continues asynchronously
+                  t))
             (progn
               (if (eq fetch-kind 'timeout)
                   (sem-url-capture--log-timeout-fail url "fetch")

@@ -111,6 +111,24 @@
             (should (re-search-forward "^raw output$" nil t))))
       (sem-mock-cleanup-temp-file errors-file))))
 
+(ert-deftest sem-core-test-log-error-supports-priority-and-tags-metadata ()
+  "Test sem-core-log-error supports optional priority and tag metadata."
+  (let ((errors-file (make-temp-file "sem-errors-test-")))
+    (unwind-protect
+        (let ((sem-core-errors-file errors-file))
+          (cl-letf (((symbol-function 'sem-core-log)
+                     (lambda (&rest _) nil)))
+            (sem-core-log-error "security" "INBOX-ITEM"
+                                "Malformed sensitive block"
+                                "raw input"
+                                nil
+                                (list :priority "[#A]" :tags '("security"))))
+          (with-temp-buffer
+            (insert-file-contents errors-file)
+            (goto-char (point-min))
+            (should (re-search-forward "^\\* TODO \\[#A\\] \\[[-0-9: ]+\\] \\[security\\] \\[INBOX-ITEM\\] FAIL :security:$" nil t))))
+      (sem-mock-cleanup-temp-file errors-file))))
+
 ;;; Tests for cursor read/write round-trip
 
 (ert-deftest sem-core-test-cursor-roundtrip ()
@@ -258,8 +276,115 @@ Hash format: JSON vector (body can be empty)."
               ((symbol-function 'sem-core-log)
                (lambda (&rest _) nil)))
       (sem-core--batch-watchdog-fired 11)
-      (should (= sem-core--pending-callbacks 0))
-      (should (= captured-batch 11)))))
+       (should (= sem-core--pending-callbacks 0))
+       (should (= captured-batch 11)))))
+
+(ert-deftest sem-core-test-cron-guard-same-key-overlap-is-suppressed ()
+  "Test same guard key overlap uses deterministic suppression for skip policy."
+  (let ((guard-dir (make-temp-file "sem-guard-test-" t))
+        (outer-ran nil)
+        (inner-ran nil))
+    (unwind-protect
+        (let ((sem-core-cron-guard-dir guard-dir)
+              (sem-core-cron-guard-job-config
+               '(("same-key" :policy skip :stale-ttl-seconds 60))))
+          (cl-letf (((symbol-function 'sem-core-log)
+                     (lambda (&rest _) nil)))
+            (sem-core-run-cron-guarded
+             "same-key" "core" "INBOX-ITEM"
+             (lambda ()
+               (setq outer-ran t)
+               (sem-core-run-cron-guarded
+                "same-key" "core" "INBOX-ITEM"
+                (lambda ()
+                  (setq inner-ran t)
+                  t))
+               t))))
+      (delete-directory guard-dir t))
+    (should outer-ran)
+    (should-not inner-ran)))
+
+(ert-deftest sem-core-test-cron-guard-different-keys-run-independently ()
+  "Test different guard keys can execute while another key is held."
+  (let ((guard-dir (make-temp-file "sem-guard-test-" t))
+        (first-ran nil)
+        (second-ran nil))
+    (unwind-protect
+        (let ((sem-core-cron-guard-dir guard-dir)
+              (sem-core-cron-guard-job-config
+               '(("job-a" :policy skip :stale-ttl-seconds 60)
+                 ("job-b" :policy skip :stale-ttl-seconds 60))))
+          (cl-letf (((symbol-function 'sem-core-log)
+                     (lambda (&rest _) nil)))
+            (sem-core-run-cron-guarded
+             "job-a" "core" "INBOX-ITEM"
+             (lambda ()
+               (setq first-ran t)
+               (sem-core-run-cron-guarded
+                "job-b" "core" "INBOX-ITEM"
+                (lambda ()
+                  (setq second-ran t)
+                  t))
+               t))))
+      (delete-directory guard-dir t))
+    (should first-ran)
+    (should second-ran)))
+
+(ert-deftest sem-core-test-cron-guard-stale-reclaim-and-uncertain-age-fail-closed ()
+  "Test stale lock reclaim succeeds and uncertain age suppresses execution."
+  (let ((guard-dir (make-temp-file "sem-guard-test-" t))
+        (stale-ran nil)
+        (future-ran nil)
+        (stale-file nil)
+        (future-file nil)
+        (now (float-time)))
+    (unwind-protect
+        (let ((sem-core-cron-guard-dir guard-dir)
+              (sem-core-cron-guard-job-config
+               '(("stale-job" :policy skip :stale-ttl-seconds 60)
+                 ("future-job" :policy skip :stale-ttl-seconds 60))))
+          (setq stale-file (sem-core--cron-guard-lock-file "stale-job"))
+          (setq future-file (sem-core--cron-guard-lock-file "future-job"))
+          (sem-core--cron-guard-write-lock-atomic
+           stale-file
+           `((guard-key . "stale-job")
+             (policy . "skip")
+             (pid . 99999999)
+             (host . ,(system-name))
+             (holder-id . "old-holder")
+             (created-at . ,(- now 3600))
+             (updated-at . ,(- now 3600)))
+           nil)
+          (sem-core--cron-guard-write-lock-atomic
+           future-file
+           `((guard-key . "future-job")
+             (policy . "skip")
+             (pid . 99999999)
+             (host . ,(system-name))
+             (holder-id . "future-holder")
+             (created-at . ,(+ now 3600))
+             (updated-at . ,(+ now 3600)))
+           nil)
+          (cl-letf (((symbol-function 'sem-core-log)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'sem-core--cron-guard-holder-liveness)
+                     (lambda (metadata)
+                       (if (equal (cdr (assoc 'guard-key metadata)) "stale-job")
+                           (list :alive nil :certain t :reason "test-holder-dead")
+                         (list :alive nil :certain nil :reason "test-holder-uncertain")))) )
+            (sem-core-run-cron-guarded
+             "stale-job" "core" "INBOX-ITEM"
+             (lambda ()
+               (setq stale-ran t)
+               t))
+            (sem-core-run-cron-guarded
+             "future-job" "core" "INBOX-ITEM"
+             (lambda ()
+               (setq future-ran t)
+               t))))
+      (delete-directory guard-dir t))
+    (should stale-ran)
+    (should-not future-ran)))
 
 ;;; Daily Log Rotation Tests (Task 4.2.1-4.2.5)
 

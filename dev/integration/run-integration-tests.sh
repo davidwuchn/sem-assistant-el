@@ -55,7 +55,10 @@ TASKS_MAX_ATTEMPTS=48
 # Derived counts for polling and assertions
 EXPECTED_NEW_TASK_COUNT=$(grep -c '^\* TODO .*:task:' "$TEST_INBOX" 2>/dev/null || echo "0")
 EXPECTED_PREEXISTING_TASK_COUNT=$(grep -c '^\* TODO ' "$PREEXISTING_TASKS_FIXTURE" 2>/dev/null || echo "0")
-EXPECTED_TASK_COUNT=$((EXPECTED_NEW_TASK_COUNT + EXPECTED_PREEXISTING_TASK_COUNT))
+MALFORMED_SENSITIVE_TASK_TITLE="Malformed sensitive block should go to DLQ"
+MALFORMED_SENSITIVE_FIXTURE_SNIPPET="This fixture intentionally has malformed sensitive markup and must never reach LLM."
+EXPECTED_MALFORMED_SENSITIVE_DLQ_COUNT=1
+EXPECTED_TASK_COUNT=$((EXPECTED_NEW_TASK_COUNT + EXPECTED_PREEXISTING_TASK_COUNT - EXPECTED_MALFORMED_SENSITIVE_DLQ_COUNT))
 
 # Assertion constants
 RUNTIME_TIMEZONE="UTC"
@@ -72,6 +75,7 @@ ASSERTION_RESULT_KEYS=(
     "ASSERTION_5B_RESULT"
     "ASSERTION_6_RESULT"
     "ASSERTION_7_RESULT"
+    "ASSERTION_8_RESULT"
 )
 
 # Test status
@@ -1015,7 +1019,7 @@ run_assertions() {
         local keyword_failed=false
         
         for keyword in "${KEYWORDS[@]}"; do
-            if grep -q "$keyword" "$RUN_DIR/tasks.org" 2>/dev/null; then
+            if grep -Fqi "$keyword" "$RUN_DIR/tasks.org" 2>/dev/null; then
                 echo "PASS: Found '$keyword'"
             else
                 echo "FAIL: Missing keyword '$keyword'"
@@ -1562,9 +1566,63 @@ PY
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
 
+    # Assertion 8: Malformed sensitive block is rejected and tracked as security DLQ
+    echo "Assertion 8: Malformed sensitive block DLQ/security tracking..."
+    {
+        echo "=== Assertion 8: Malformed Sensitive Block DLQ/Security Tracking ==="
+
+        local malformed_in_tasks
+        malformed_in_tasks="false"
+        if grep -Fq "$MALFORMED_SENSITIVE_TASK_TITLE" "$RUN_DIR/tasks.org" 2>/dev/null; then
+            malformed_in_tasks="true"
+        fi
+
+        if [[ "$malformed_in_tasks" == "true" ]]; then
+            echo "FAIL: malformed sensitive fixture leaked into tasks.org"
+            echo "ASSERTION_8_RESULT:FAIL"
+        else
+            local errors_has_fixture_evidence errors_has_security_tag errors_has_priority logs_has_dlq
+            errors_has_fixture_evidence="false"
+            errors_has_security_tag="false"
+            errors_has_priority="false"
+            logs_has_dlq="false"
+
+            if grep -Fq "$MALFORMED_SENSITIVE_TASK_TITLE" "$RUN_DIR/errors.org" 2>/dev/null || \
+               grep -Fq "$MALFORMED_SENSITIVE_FIXTURE_SNIPPET" "$RUN_DIR/errors.org" 2>/dev/null; then
+                errors_has_fixture_evidence="true"
+            fi
+            if grep -Eq ':security:' "$RUN_DIR/errors.org" 2>/dev/null; then
+                errors_has_security_tag="true"
+            fi
+            if grep -Eq '^\* TODO \[#A\] ' "$RUN_DIR/errors.org" 2>/dev/null; then
+                errors_has_priority="true"
+            fi
+            if grep -Fq "Security preflight failed, moved to DLQ" "$RUN_DIR/sem-log.org" 2>/dev/null; then
+                logs_has_dlq="true"
+            fi
+
+            echo "errors.org contains malformed fixture evidence: $errors_has_fixture_evidence"
+            echo "errors.org contains :security: tag: $errors_has_security_tag"
+            echo "errors.org contains [#A] priority entry: $errors_has_priority"
+            echo "sem-log.org contains DLQ preflight log: $logs_has_dlq"
+
+            if [[ "$errors_has_fixture_evidence" == "true" &&
+                  "$errors_has_security_tag" == "true" &&
+                  "$errors_has_priority" == "true" &&
+                  "$logs_has_dlq" == "true" ]]; then
+                echo "PASS: malformed sensitive fixture is rejected and tracked in security DLQ logs"
+                echo "ASSERTION_8_RESULT:PASS"
+            else
+                echo "FAIL: malformed sensitive fixture security DLQ assertions failed"
+                echo "ASSERTION_8_RESULT:FAIL"
+            fi
+        fi
+        echo ""
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
+
     # Final result - read from temp file (avoids subshell variable loss issue)
     echo "=== Final Result ==="
-    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion5 final_assertion5a final_assertion5b final_assertion6 final_assertion7
+    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion5 final_assertion5a final_assertion5b final_assertion6 final_assertion7 final_assertion8
     final_assertion1=$(grep "ASSERTION_1_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion2=$(grep "ASSERTION_2_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion3=$(grep "ASSERTION_3_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
@@ -1574,6 +1632,7 @@ PY
     final_assertion5b=$(grep "ASSERTION_5B_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion6=$(grep "ASSERTION_6_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion7=$(grep "ASSERTION_7_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion8=$(grep "ASSERTION_8_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
 
     for assertion_key in "${ASSERTION_RESULT_KEYS[@]}"; do
         if ! grep -q "${assertion_key}:" "$RUN_DIR/assertion-results.txt"; then
@@ -1589,6 +1648,7 @@ PY
           "$final_assertion5a" == "PASS" &&
           "$final_assertion5b" == "PASS" &&
           "$final_assertion7" == "PASS" &&
+          "$final_assertion8" == "PASS" &&
           "$TEST_STATUS" == "PASS" &&
           ( "$final_assertion6" == "PASS" || "$final_assertion6" == "WARN" || "$final_assertion6" == "SKIP" ) ]]; then
         echo "ALL ASSERTIONS PASSED"
@@ -1605,6 +1665,7 @@ PY
     echo "  Assertion 5b (Order verification): $final_assertion5b"
     echo "  Assertion 6 (SCHEDULED preferences): $final_assertion6"
     echo "  Assertion 7 (URL-capture trusted output): $final_assertion7"
+    echo "  Assertion 8 (Malformed sensitive DLQ/security): $final_assertion8"
     exit 1
 }
 

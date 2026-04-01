@@ -111,39 +111,57 @@
 
 ;;; Org-Roam Sync Tests
 
+(defmacro sem-git-sync-test--with-isolated-guard (&rest body)
+  "Run BODY with an isolated cron-guard directory." 
+  (declare (indent 0))
+  `(let ((guard-dir (make-temp-file "sem-git-guard-" t))
+         (sem-core-cron-guard-dir nil))
+     (unwind-protect
+         (let ((sem-core-cron-guard-dir guard-dir)
+               (sem-core-cron-guard-serialize-poll-seconds 0.1)
+               (sem-core-cron-guard-max-serialize-wait-seconds 1)
+               (sem-git-sync-use-cron-guard nil))
+           ,@body)
+       (when (file-directory-p guard-dir)
+         (delete-directory guard-dir t)))))
+
 (ert-deftest sem-git-sync-test-org-roam-returns-nil-on-missing-dir ()
   "Test that org-roam sync returns nil when directory does not exist."
-  (cl-letf (((symbol-function 'file-directory-p)
-             (lambda (_) nil)))
-    (should (null (sem-git-sync-org-roam)))))
+  (sem-git-sync-test--with-isolated-guard
+    (cl-letf (((symbol-function 'file-directory-p)
+               (lambda (_) nil)))
+      (should (null (sem-git-sync-org-roam))))))
 
 (ert-deftest sem-git-sync-test-org-roam-returns-t-on-no-changes ()
   "Test that org-roam sync returns t when there are no changes to commit."
-  (cl-letf (((symbol-function 'file-directory-p)
-             (lambda (_) t))
-            ((symbol-function 'sem-git-sync--sync-state)
-             (lambda ()
-               (list :ok t :dirty nil :ahead 0 :behind 0 :sync-needed nil))))
-    (should (eq t (sem-git-sync-org-roam)))))
+  (sem-git-sync-test--with-isolated-guard
+    (cl-letf (((symbol-function 'file-directory-p)
+               (lambda (_) t))
+              ((symbol-function 'sem-git-sync--sync-state)
+               (lambda ()
+                 (list :ok t :dirty nil :ahead 0 :behind 0 :sync-needed nil))))
+      (should (eq t (sem-git-sync-org-roam))))))
 
 (ert-deftest sem-git-sync-test-org-roam-cl-return-from-no-signal ()
-  "Regression test: cl-return-from should not signal 'Return from unknown block' error."
+  "Regression test: cl-return-from should not signal 'Return from unknown block' error." 
   (let ((error-signaled nil))
-    (cl-letf (((symbol-function 'file-directory-p)
-               (lambda (_) nil)))
-      (condition-case err
-          (sem-git-sync-org-roam)
-        (error
-         (when (string-match-p "Return from unknown block" (error-message-string err))
-           (setq error-signaled t)))))
+    (sem-git-sync-test--with-isolated-guard
+      (cl-letf (((symbol-function 'file-directory-p)
+                 (lambda (_) nil)))
+        (condition-case err
+            (sem-git-sync-org-roam)
+          (error
+           (when (string-match-p "Return from unknown block" (error-message-string err))
+             (setq error-signaled t))))))
     (should-not error-signaled)))
 
 (ert-deftest sem-git-sync-test-ahead-clean-tree-is-sync-needed ()
   "Test ahead-with-clean-tree still performs pull and push." 
   (let ((pull-called nil)
         (push-called nil))
-    (cl-letf (((symbol-function 'file-directory-p)
-               (lambda (_) t))
+    (sem-git-sync-test--with-isolated-guard
+      (cl-letf (((symbol-function 'file-directory-p)
+                (lambda (_) t))
               ((symbol-function 'sem-git-sync--run-command)
                (lambda (program args &optional _dir)
                  (if (and (string= program "git")
@@ -171,15 +189,16 @@
                (lambda (_remote)
                  (setq push-called t)
                  t)))
-      (should (eq t (sem-git-sync-org-roam)))
-      (should pull-called)
-      (should push-called))))
+        (should (eq t (sem-git-sync-org-roam)))
+        (should pull-called)
+        (should push-called)))))
 
 (ert-deftest sem-git-sync-test-mandatory-pull-before-push-order ()
   "Test sync calls pull before push on sync-needed runs."
   (let ((events '()))
-    (cl-letf (((symbol-function 'file-directory-p)
-               (lambda (_) t))
+    (sem-git-sync-test--with-isolated-guard
+      (cl-letf (((symbol-function 'file-directory-p)
+                (lambda (_) t))
               ((symbol-function 'sem-git-sync--run-command)
                (lambda (program args &optional _dir)
                  (if (and (string= program "git")
@@ -202,8 +221,8 @@
                (lambda (_remote)
                  (push 'push events)
                  t)))
-      (should (eq t (sem-git-sync-org-roam)))
-      (should (equal (nreverse events) '(pull push))))))
+        (should (eq t (sem-git-sync-org-roam)))
+        (should (equal (nreverse events) '(pull push)))))))
 
 (ert-deftest sem-git-sync-test-pull-failure-stops-before-push ()
   "Test sync aborts push when pull reconciliation fails."
@@ -237,8 +256,9 @@
   "Test failed push does not converge to permanent skip when still ahead."
   (let ((pull-count 0)
         (push-count 0))
-    (cl-letf (((symbol-function 'file-directory-p)
-               (lambda (_) t))
+    (sem-git-sync-test--with-isolated-guard
+      (cl-letf (((symbol-function 'file-directory-p)
+                (lambda (_) t))
               ((symbol-function 'sem-git-sync--run-command)
                (lambda (program args &optional _dir)
                  (if (and (string= program "git")
@@ -261,10 +281,10 @@
                (lambda (_remote)
                  (setq push-count (1+ push-count))
                  nil)))
-      (should-not (sem-git-sync-org-roam))
-      (should-not (sem-git-sync-org-roam))
-      (should (= pull-count 2))
-      (should (= push-count 2)))))
+        (should-not (sem-git-sync-org-roam))
+        (should-not (sem-git-sync-org-roam))
+        (should (= pull-count 2))
+        (should (= push-count 2))))))
 
 (ert-deftest sem-git-sync-test-failure-classification-pull-and-push ()
   "Test pull/push logs include explicit conflict/auth/network classification." 
@@ -291,8 +311,9 @@
         (commit-called nil)
         (push-called nil)
         (state-calls 0))
-    (cl-letf (((symbol-function 'file-directory-p)
-               (lambda (_) t))
+    (sem-git-sync-test--with-isolated-guard
+      (cl-letf (((symbol-function 'file-directory-p)
+                (lambda (_) t))
               ((symbol-function 'sem-git-sync--run-command)
                (lambda (program args &optional _dir)
                  (cond
@@ -321,17 +342,18 @@
                (lambda () '(t . nil)))
               ((symbol-function 'sem-git-sync--teardown-ssh)
                (lambda (_spawned) nil)))
-      (should (eq t (sem-git-sync-org-roam-prepull)))
-      (should pull-called)
-      (should-not commit-called)
-      (should-not push-called)
-      (should (= state-calls 1)))))
+        (should (eq t (sem-git-sync-org-roam-prepull)))
+        (should pull-called)
+        (should-not commit-called)
+        (should-not push-called)
+        (should (= state-calls 1))))))
 
 (ert-deftest sem-git-sync-test-prepull-failure-classification-network ()
   "Test pre-pull failure logs explicit network classification."
   (let ((logged-messages '()))
-    (cl-letf (((symbol-function 'file-directory-p)
-               (lambda (_) t))
+    (sem-git-sync-test--with-isolated-guard
+      (cl-letf (((symbol-function 'file-directory-p)
+                (lambda (_) t))
               ((symbol-function 'sem-git-sync--run-command)
                (lambda (program args &optional _dir)
                  (cond
@@ -353,10 +375,10 @@
               ((symbol-function 'sem-core-log)
                (lambda (_module _event _status message &optional _tokens)
                  (push message logged-messages))))
-      (should-not (sem-git-sync-org-roam-prepull))
-      (should (cl-some (lambda (msg)
-                         (string-match-p "Pre-pull failed (network)" msg))
-                       logged-messages)))))
+        (should-not (sem-git-sync-org-roam-prepull))
+        (should (cl-some (lambda (msg)
+                           (string-match-p "Pre-pull failed (network)" msg))
+                         logged-messages))))))
 
 ;;; SSH Agent Reuse Tests (Task 4.1.1-4.1.6)
 

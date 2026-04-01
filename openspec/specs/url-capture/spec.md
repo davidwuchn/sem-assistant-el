@@ -5,7 +5,7 @@ This capability defines the URL capture pipeline that fetches articles via trafi
 ## ADDED Requirements
 
 ### Requirement: URL sanitization not applied to org-roam output
-The system SHALL NOT apply URL sanitization (defanging) to url-capture org-roam output. org-roam requires real URLs for proper link resolution and backlink functionality.
+The system SHALL NOT apply URL sanitization (defanging) to url-capture org-roam output. org-roam requires real URLs for proper link resolution and backlink functionality. `sem-security-sanitize-urls` SHALL NOT be used on the generated org-roam node body or `#+ROAM_REFS` values, and persisted url-capture output SHALL retain canonical `http://` and `https://` forms.
 
 #### Scenario: Real URLs preserved in org-roam
 - **WHEN** url-capture writes an org-roam node to `/data/org-roam/`
@@ -14,6 +14,25 @@ The system SHALL NOT apply URL sanitization (defanging) to url-capture org-roam 
 #### Scenario: URL sanitization excluded from url-capture
 - **WHEN** `sem-url-capture-process` generates org-roam output
 - **THEN** `sem-security-sanitize-urls` is NOT called on the output
+
+#### Scenario: Defanged forms are rejected in persisted url-capture output
+- **WHEN** url-capture output is validated before write
+- **THEN** persisted trusted URL fields do not contain `hxxp://` or `hxxps://` forms
+
+### Requirement: URL defanging contract is consistent across runtime and documentation
+The system SHALL define one authoritative URL-defanging contract and keep runtime behavior and repository documentation aligned with that contract for task output, RSS digest output, and url-capture output.
+
+#### Scenario: Tasks and RSS outputs use defanged URL representation
+- **WHEN** task or RSS artifacts are produced for operator-facing text output
+- **THEN** URLs follow the documented defanging rules for those output types
+
+#### Scenario: url-capture output remains canonical
+- **WHEN** org-roam url-capture artifacts are produced
+- **THEN** URLs remain canonical and are not defanged
+
+#### Scenario: Documentation states output-specific URL behavior
+- **WHEN** operators consult repository documentation for URL handling
+- **THEN** documentation explicitly distinguishes defanged outputs from canonical url-capture outputs
 
 ## Requirements
 
@@ -173,31 +192,42 @@ The system SHALL configure org-roam note operations to use `/data/org-roam/org-f
 - **AND** URL-capture does not write new nodes directly under `/data/org-roam`
 
 ### Requirement: Source URL visible in Summary section
-The system SHALL write the source URL as the first line of the `* Summary` section body as a plain org-mode link: `Source: [[URL][URL]]`. This ensures visibility in org-roam-ui's node preview. `#+ROAM_REFS` SHALL still be written for backlink resolution but is not the primary display mechanism.
+The system SHALL write the source URL as the first line of the `* Summary` section body as a plain org-mode link: `Source: [[URL][URL]]`. The URL in this line SHALL match the canonical trusted source URL used for capture. `#+ROAM_REFS` SHALL still be written for backlink resolution and SHALL use the same canonical URL.
 
 #### Scenario: Source URL in Summary
-- **WHEN** an org-roam node is generated
+- **WHEN** url-capture writes a generated org-roam node
 - **THEN** the first line of `* Summary` is `Source: [[URL][URL]]`
+- **AND** URL is canonical `http://` or `https://` form
 
-#### Scenario: #+ROAM_REFS still written
-- **WHEN** an org-roam node is generated
+#### Scenario: ROAM_REFS preserved for backlink resolution
+- **WHEN** url-capture writes a generated org-roam node
 - **THEN** `#+ROAM_REFS: URL` is included in the file for org-roam backlink resolution
+- **AND** URL matches the Summary source URL exactly
 
 ### Requirement: Headline marked processed after url-capture invoked
-The system SHALL implement bounded retry for URL capture failures. When `sem-url-capture-process` returns `nil` (indicating trafilatura or LLM failure), the router SHALL increment a retry counter for that headline. After 3 cumulative failures, the headline SHALL be moved to DLQ. Before 3 failures, the headline SHALL remain unprocessed for retry on the next cron cycle.
+The system SHALL classify malformed-sensitive preflight failures in URL capture as terminal security failures (`security-malformed`) and SHALL route them directly to DLQ behavior without retry attempts. Retry counting SHALL apply only to retryable URL-capture failures (for example fetch/provider/validation failures). For retryable failures when `sem-url-capture-process` returns `nil`, the router SHALL increment a retry counter for that headline and move the headline to DLQ after 3 cumulative retryable failures. Before 3 retryable failures, the headline SHALL remain unprocessed for retry on the next cron cycle.
 
-#### Scenario: First failure increments retry counter
-- **WHEN** `sem-url-capture-process` returns `nil` for a headline
+#### Scenario: Malformed-sensitive preflight is terminal for URL capture
+- **WHEN** URL-capture preflight-sensitive sanitization fails due to malformed delimiters
+- **THEN** callback context marks failure kind as `security-malformed`
+- **AND** the router routes the headline to DLQ without retry
+
+#### Scenario: Malformed-sensitive preflight does not consume retry budget
+- **WHEN** URL-capture fails before LLM due to malformed-sensitive delimiters
+- **THEN** URL-capture retry counters are not incremented for retry semantics
+
+#### Scenario: First retryable failure increments retry counter
+- **WHEN** `sem-url-capture-process` returns `nil` for a headline with a retryable failure kind
 - **THEN** the retry counter for that headline hash is incremented to 1
 - **AND** the headline is NOT marked as processed
 
-#### Scenario: Second failure increments retry counter
-- **WHEN** `sem-url-capture-process` returns `nil` for a headline with retry count 1
+#### Scenario: Second retryable failure increments retry counter
+- **WHEN** `sem-url-capture-process` returns `nil` for a headline with retry count 1 and a retryable failure kind
 - **THEN** the retry counter is incremented to 2
 - **AND** the headline is NOT marked as processed
 
-#### Scenario: Third failure moves to DLQ
-- **WHEN** `sem-url-capture-process` returns `nil` for a headline with retry count 2
+#### Scenario: Third retryable failure moves to DLQ
+- **WHEN** `sem-url-capture-process` returns `nil` for a headline with retry count 2 and a retryable failure kind
 - **THEN** the headline is moved to DLQ via `sem-core--mark-dlq`
 - **AND** the headline is marked as processed
 - **AND** the retry counter is cleared
@@ -208,14 +238,18 @@ The system SHALL implement bounded retry for URL capture failures. When `sem-url
 - **AND** the headline is marked as processed
 
 #### Scenario: Failure NOT marked processed (retryable)
-- **WHEN** `sem-url-capture-process` returns `nil` and retry count < 3
+- **WHEN** `sem-url-capture-process` returns `nil` for a retryable failure and retry count < 3
 - **THEN** the headline hash is NOT added to `.sem-cursor.el`
 - **AND** the headline will be retried on next cron run
 
 #### Scenario: Failure marked processed (DLQ)
-- **WHEN** `sem-url-capture-process` returns `nil` and retry count reaches 3
+- **WHEN** `sem-url-capture-process` returns `nil` and either retryable retry count reaches 3 or failure kind is `security-malformed`
 - **THEN** the headline hash IS added to `.sem-cursor.el`
 - **AND** the headline is moved to `/data/errors.org`
+
+#### Scenario: Retryable URL-capture failures remain bounded-retry
+- **WHEN** URL-capture fails for retryable reasons not classified as malformed-sensitive
+- **THEN** bounded retry behavior remains unchanged
 
 ### Requirement: Retry counter uses headline content hash
 The system SHALL use the headline content hash as the retry counter key. The key format SHALL match the existing `:task:` retry key format.

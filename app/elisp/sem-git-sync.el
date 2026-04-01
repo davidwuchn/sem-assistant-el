@@ -22,6 +22,15 @@
 (defconst sem-git-sync-ssh-key "/root/.ssh/id_rsa"
   "Path to the SSH private key for GitHub authentication.")
 
+(defvar sem-git-sync-use-cron-guard t
+  "When non-nil, wrap git-sync cron entry points in overlap guards.")
+
+(defun sem-git-sync--maybe-run-guarded (guard-key thunk)
+  "Run THUNK under GUARD-KEY when `sem-git-sync-use-cron-guard' is non-nil."
+  (if sem-git-sync-use-cron-guard
+      (sem-core-run-cron-guarded guard-key "git-sync" "GIT-SYNC" thunk)
+    (funcall thunk)))
+
 ;;; Helper Functions
 
 (defun sem-git-sync--run-command (program args &optional dir)
@@ -276,11 +285,14 @@ This is the cron entry point. It:
 
 Returns t on success, nil on failure or when no changes to sync.
 Uses unwind-protect to ensure agent teardown runs even on failure."
-  (condition-case err
-      (cl-block sem-git-sync-org-roam
-        (sem-core-log "git-sync" "GIT-SYNC" "OK"
-                      "Starting org-roam sync"
-                      nil)
+  (sem-git-sync--maybe-run-guarded
+   "git-sync-org-roam"
+   (lambda ()
+     (condition-case err
+         (cl-block sem-git-sync-org-roam
+           (sem-core-log "git-sync" "GIT-SYNC" "OK"
+                         "Starting org-roam sync"
+                         nil)
 
         ;; Check if directory exists
         (unless (file-directory-p sem-git-sync-org-roam-dir)
@@ -378,14 +390,14 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
               ;; Cleanup: always run teardown (even on failure or condition)
               (sem-git-sync--teardown-ssh sem-git-sync--agent-spawned-this-cycle))
 
-            sync-success)))
-    (error
-     (sem-core-log-error "git-sync" "GIT-SYNC"
-                         (error-message-string err)
-                         nil
-                         nil)
-     (message "SEM: Git sync error: %s" (error-message-string err))
-     nil)))
+             sync-success)))
+       (error
+        (sem-core-log-error "git-sync" "GIT-SYNC"
+                            (error-message-string err)
+                            nil
+                            nil)
+        (message "SEM: Git sync error: %s" (error-message-string err))
+        nil)))))
 
 ;;;###autoload
 (defun sem-git-sync-org-roam-prepull ()
@@ -394,11 +406,14 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
 This entry point validates repository/upstream state and performs
 `git pull --rebase <remote> <branch>' without creating commits or pushing.
 Returns t on success and nil on failure."
-  (condition-case err
-      (cl-block sem-git-sync-org-roam-prepull
-        (sem-core-log "git-sync" "GIT-SYNC" "OK"
-                      "Starting org-roam pre-pull"
-                      nil)
+  (sem-git-sync--maybe-run-guarded
+   "git-sync-org-roam-prepull"
+   (lambda ()
+     (condition-case err
+         (cl-block sem-git-sync-org-roam-prepull
+           (sem-core-log "git-sync" "GIT-SYNC" "OK"
+                         "Starting org-roam pre-pull"
+                         nil)
 
         (unless (file-directory-p sem-git-sync-org-roam-dir)
           (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
@@ -444,14 +459,14 @@ Returns t on success and nil on failure."
                                     (format "Pre-pull failed (%s): %s" classification pull-output)
                                     nil)
                       nil)))
-              (sem-git-sync--teardown-ssh sem-git-sync--agent-spawned-this-cycle)))))
-    (error
-     (sem-core-log-error "git-sync" "GIT-SYNC"
-                         (format "Pre-pull error: %s" (error-message-string err))
-                         nil
-                         nil)
-     (message "SEM: Git pre-pull error: %s" (error-message-string err))
-     nil)))
+               (sem-git-sync--teardown-ssh sem-git-sync--agent-spawned-this-cycle)))))
+       (error
+        (sem-core-log-error "git-sync" "GIT-SYNC"
+                            (format "Pre-pull error: %s" (error-message-string err))
+                            nil
+                            nil)
+        (message "SEM: Git pre-pull error: %s" (error-message-string err))
+        nil)))))
 
 (provide 'sem-git-sync)
 ;;; sem-git-sync.el ends here

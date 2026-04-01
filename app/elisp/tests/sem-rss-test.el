@@ -161,6 +161,25 @@ This is a structural test verifying the code uses sem-llm-request."
       (sem-rss--generate-file "/tmp/test-rss-tier.org" "prompt" "Test" 1)
       (should (eq captured-tier 'medium)))))
 
+(ert-deftest sem-rss-test-generate-file-defangs-urls-before-write ()
+  "Test RSS file output applies URL defanging contract."
+  (let ((target (make-temp-file "sem-rss-sanitize-" nil ".org")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'sem-llm-request)
+                   (lambda (_prompt _system callback context &optional _tier)
+                     (funcall callback "Link: https://example.com" nil context)
+                     nil))
+                  ((symbol-function 'sem-core-log)
+                   (lambda (&rest _) nil)))
+          (sem-rss--generate-file target "prompt" "Test" 1)
+          (with-temp-buffer
+            (insert-file-contents target)
+            (let ((content (buffer-string)))
+              (should (string-match-p "hxxps://example\\.com" content))
+              (should-not (string-match-p "https://example\\.com" content)))))
+      (when (file-exists-p target)
+        (delete-file target)))))
+
 (ert-deftest sem-rss-test-nil-hash-handling ()
   "Test that sem-core--mark-processed handles nil hash without crashing.
 RSS digest passes nil hash - this should be a no-op."

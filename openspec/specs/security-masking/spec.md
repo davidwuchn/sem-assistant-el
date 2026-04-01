@@ -5,11 +5,31 @@ This capability defines the security masking system that protects sensitive cont
 ## Requirements
 
 ### Requirement: Sensitive blocks replaced with tokens before LLM call
-The system SHALL replace all `#+begin_sensitive` / `#+end_sensitive` blocks with opaque tokens before any content is sent to the LLM API. The original text SHALL be stored in a token map for restoration. The function `sem-security-sanitize-for-llm` SHALL return a three-element list: `(tokenized-text blocks-alist position-info-alist)`. The function SHALL be called in `sem-url-capture-process` on the sanitized article text before passing it to `sem-llm-request`. The returned `blocks-alist` SHALL be stored in the context plist under `:security-blocks`.
+The system SHALL parse sensitive delimiters before any LLM request and SHALL fail closed when delimiter structure is malformed. Delimiter matching SHALL be case-insensitive (`#+begin_sensitive` and `#+BEGIN_SENSITIVE` are both valid) but delimiters MUST appear on standalone lines. The parser SHALL reject malformed forms including missing end marker, end marker without begin marker, nested begin markers, and inline markers embedded in non-delimiter text. On malformed input, sanitization SHALL raise an error and SHALL NOT return tokenized content for LLM transmission. For valid delimiters, the system SHALL replace all `#+begin_sensitive` / `#+end_sensitive` blocks with opaque tokens before any content is sent to the LLM API. The original text SHALL be stored in a token map for restoration. The function `sem-security-sanitize-for-llm` SHALL return a three-element list: `(tokenized-text blocks-alist position-info-alist)`. The function SHALL be called in `sem-url-capture-process` on the sanitized article text before passing it to `sem-llm-request`. The returned `blocks-alist` SHALL be stored in the context plist under `:security-blocks`.
 
 #### Scenario: Sensitive content tokenized
 - **WHEN** content contains `#+begin_sensitive...#+end_sensitive` blocks
 - **THEN** the sensitive content is replaced with `<<SENSITIVE_xxx>>` tokens
+
+#### Scenario: Case-insensitive standalone delimiters are accepted
+- **WHEN** content contains uppercase or mixed-case standalone sensitive delimiters
+- **THEN** sensitive blocks are tokenized successfully
+
+#### Scenario: Inline begin marker is rejected
+- **WHEN** content contains `#+begin_sensitive` not on its own line
+- **THEN** sanitization fails before any LLM request
+
+#### Scenario: Missing end marker is rejected
+- **WHEN** content contains a begin marker without a matching end marker
+- **THEN** sanitization fails before any LLM request
+
+#### Scenario: End marker without begin is rejected
+- **WHEN** content contains an end marker that is not inside an open sensitive block
+- **THEN** sanitization fails before any LLM request
+
+#### Scenario: Nested begin marker is rejected
+- **WHEN** content opens a second sensitive block before closing the first
+- **THEN** sanitization fails before any LLM request
 
 #### Scenario: Original content preserved in token map
 - **WHEN** content is tokenized
@@ -69,28 +89,15 @@ Sensitive content SHALL be restored as plain text without any block markers. Mul
 - **THEN** the blocks-alist is cleared to avoid stale data
 
 ### Requirement: No sensitive content reaches LLM API
-The system SHALL ensure that no content between `#+begin_sensitive` and `#+end_sensitive` markers is ever transmitted to the LLM API. This is a hard requirement.
+The system SHALL ensure sensitive plaintext never reaches the LLM API. This guarantee SHALL be enforced by preflight-sensitive parsing and tokenization only; malformed delimiter inputs SHALL be rejected as terminal failures before any LLM call is attempted.
 
 #### Scenario: Tokenized content sent to LLM
 - **WHEN** content with sensitive blocks is prepared for LLM
 - **THEN** only tokens (not original sensitive text) are in the request
 
-### Requirement: Token expansion detection
-The system SHALL detect when an LLM output contains actual secret content instead of tokens. This SHALL be treated as a CRITICAL security incident indicating sanitizer failure. In `sem-router--route-to-task-llm`, the callback SHALL call `sem-security-verify-tokens-present` on the raw LLM response before restoration. If the returned `expanded` list is non-empty, the response SHALL be rejected (not written to tasks output), a CRITICAL entry SHALL be written to `/data/errors.org` via `sem-core-log-error`, and the headline SHALL be marked processed to prevent infinite retry with the same leaked content.
-
-#### Scenario: Expansion detected in task-router callback
-- **WHEN** `sem-router--route-to-task-llm` callback receives raw LLM output containing original sensitive content from `blocks-alist`
-- **THEN** `sem-security-verify-tokens-present` flags expansion before restoration
-- **AND** the response is rejected (not written to tasks.org)
-- **AND** a CRITICAL error is logged
-
-#### Scenario: Missing tokens do not trigger expansion rejection
-- **WHEN** the LLM omits or drops one or more expected tokens but does not include expanded sensitive plaintext
-- **THEN** expansion rejection is not triggered solely for missing tokens
-
-#### Scenario: Verification order is enforced before restoration
-- **WHEN** task-router callback handles a successful LLM response
-- **THEN** `sem-security-verify-tokens-present` is called on raw output before `sem-security-restore-from-llm`
+#### Scenario: Malformed delimiter prevents LLM call
+- **WHEN** preflight-sensitive parsing detects malformed delimiters
+- **THEN** no LLM request is issued
 
 ## REMOVED Requirements
 

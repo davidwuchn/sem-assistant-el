@@ -7,7 +7,7 @@ Define requirements for integration test assertions that validate outcomes.
 ## ADDED Requirements
 
 ### Requirement: Assertions validate test outcomes
-The system SHALL run assertions after artifact collection to validate integration test results. All configured assertions MUST run even when some fail, and assertion coverage MUST include pre-existing TODO immutability checks, occupied-window overlap policy checks, trusted URL-capture output checks, and task prompt normalization behavior checks for shorthand inputs.
+The system SHALL run assertions after artifact collection to validate integration test results. All configured assertions MUST run even when some fail, and assertion coverage MUST include pre-existing TODO immutability checks, occupied-window overlap policy checks, trusted URL-capture output checks, task prompt normalization behavior checks for shorthand inputs, and malformed-sensitive fixture validation as a terminal DLQ/security path with required `errors.org` and `sem-log.org` evidence.
 
 #### Scenario: All assertions run regardless of prior failures
 - **WHEN** running assertions
@@ -73,6 +73,13 @@ The system SHALL run assertions after artifact collection to validate integratio
 - **THEN** the script MUST grep for each sensitive keyword defined in the `sensitive_keywords` array in tasks.org
 - **AND** each keyword MUST be present in the output (proving sensitive content was unmasked)
 - **AND** if any keyword is missing, the failure message MUST name the missing keyword
+
+#### Scenario: Malformed sensitive fixture is rejected to DLQ/security path
+- **WHEN** integration fixtures include a task with malformed sensitive markers
+- **THEN** assertion logic MUST treat this fixture as DLQ-only and exclude it from expected final `tasks.org` TODO count
+- **AND** assertions MUST verify malformed fixture title is absent from `tasks.org`
+- **AND** assertions MUST verify `errors.org` contains a `:security:` error entry with priority `[#A]` for the malformed fixture
+- **AND** assertions MUST verify `sem-log.org` records a DLQ/security preflight failure message for the malformed fixture
 
 #### Scenario: URL-capture trusted output assertion
 - **WHEN** running trusted URL-capture assertions

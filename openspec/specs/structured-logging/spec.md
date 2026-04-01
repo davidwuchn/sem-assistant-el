@@ -116,10 +116,14 @@ The `sem-core-log` function SHALL never raise an error itself. The function body
 - **THEN** fallback handling does not propagate errors to callers
 
 ### Requirement: errors.org format
-The `/data/errors.org` file SHALL use the following exact format for each error entry:
+The `/data/errors.org` file SHALL support optional metadata in error headlines for severity and classification. `sem-core-log-error` callers MAY provide metadata containing `:priority` and `:tags`; when present, headline output SHALL include the provided priority token (for example `[#A]`) and Org tags (for example `:security:`) while preserving the existing error body format.
+
+Malformed-sensitive security failures SHALL be written with priority `[#A]` and tag `:security:`.
+
+The `/data/errors.org` file SHALL use the following format for each error entry:
 
 ```
-* TODO [YYYY-MM-DD HH:MM:SS] [MODULE] [EVENT-TYPE] FAIL
+* TODO [PRIORITY?] [YYYY-MM-DD HH:MM:SS] [MODULE] [EVENT-TYPE] FAIL :tags?:
 DEADLINE: <YYYY-MM-DD Day HH:MM>
 :PROPERTIES:
 :CREATED: [YYYY-MM-DD HH:MM:SS]
@@ -137,6 +141,14 @@ Error: <error message string>
 - **WHEN** an error is logged
 - **THEN** a `TODO` headline is created with both `DEADLINE` and `:CREATED:` metadata
 
+#### Scenario: Metadata priority and tags appear in error headline
+- **WHEN** `sem-core-log-error` is called with metadata `:priority` and `:tags`
+- **THEN** the created `errors.org` TODO headline includes the provided priority and tags
+
+#### Scenario: Metadata omission preserves legacy formatting
+- **WHEN** `sem-core-log-error` is called without metadata
+- **THEN** the created `errors.org` entry uses the legacy headline format without added tags/priority
+
 #### Scenario: Input preserved
 - **WHEN** an error is logged
 - **THEN** the original input is saved under `** Input`
@@ -148,6 +160,10 @@ Error: <error message string>
 #### Scenario: Orgzly sees new errors as overdue actionable items
 - **WHEN** a new error is written to `/data/errors.org`
 - **THEN** Org clients recognize it as a TODO with an already-due deadline
+
+#### Scenario: Malformed-sensitive uses high-priority security classification
+- **WHEN** malformed-sensitive preflight failure is logged
+- **THEN** the error headline includes `[#A]` and `:security:`
 
 ### Requirement: errors.org is append-only
 The `/data/errors.org` file SHALL be append-only. Entries SHALL never be deleted or modified by the daemon.
