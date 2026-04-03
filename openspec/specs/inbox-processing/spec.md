@@ -208,3 +208,21 @@ During inbox processing, Pass 1 results SHALL be written to the batch temp file 
 #### Scenario: Rules read at batch start
 - **WHEN** `sem-core-process-inbox` starts
 - **THEN** `sem-rules-read` is called to get current rules
+
+### Requirement: Inbox routing diagnostics avoid plaintext content
+Runtime `message` diagnostics emitted during inbox parsing, routing, callback completion, barrier coordination, retry signaling, and stale-callback handling SHALL contain only operational metadata and opaque identifiers. These diagnostics MUST NOT include raw headline titles, headline body snippets, or URL strings.
+
+#### Scenario: Parse and route diagnostics are metadata-only
+- **WHEN** inbox processing emits parse or route progress messages
+- **THEN** each message contains only metadata fields (for example counts, statuses, batch ID, hash prefix)
+- **AND** raw title/body/URL plaintext is not present
+
+#### Scenario: Callback and barrier diagnostics are metadata-only
+- **WHEN** async callback completion or batch barrier diagnostics are emitted
+- **THEN** each message remains uniquely traceable using metadata identifiers
+- **AND** raw title/body/URL plaintext is not present
+
+#### Scenario: Validation failure diagnostics are metadata-only
+- **WHEN** an item fails validation and the runtime emits failure diagnostics
+- **THEN** emitted messages include status and opaque identifiers only
+- **AND** no raw headline/body snippets are present in the message text

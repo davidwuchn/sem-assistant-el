@@ -32,6 +32,10 @@
   "Default maximum API-failure retries for task LLM requests.
 Can be overridden by environment variable `SEM_TASK_API_MAX_RETRIES'.")
 
+(defconst sem-router-message-hash-prefix-length 8
+  "Number of SHA-256 characters used in runtime message item identifiers.
+This short hash prefix balances operator readability with correlation safety.")
+
 (defun sem-router--task-api-max-retries ()
   "Return effective max retries for task LLM API failures.
 Reads `SEM_TASK_API_MAX_RETRIES' at call time and falls back to
@@ -42,6 +46,35 @@ Reads `SEM_TASK_API_MAX_RETRIES' at call time and falls back to
     (if (and (integerp parsed) (> parsed 0))
         parsed
       sem-router--task-api-max-retries)))
+
+(defun sem-router--hash-prefix (hash)
+  "Return a short deterministic HASH prefix for runtime diagnostics."
+  (let* ((safe-hash (or hash "unknown"))
+         (prefix-len sem-router-message-hash-prefix-length))
+    (if (>= (length safe-hash) prefix-len)
+        (substring safe-hash 0 prefix-len)
+      safe-hash)))
+
+(defun sem-router--runtime-message (action status &optional metadata)
+  "Emit a metadata-only runtime message for ACTION and STATUS.
+METADATA is an alist of string key/value pairs included as key=value fields."
+  (let* ((fields
+          (delq nil
+                (mapcar (lambda (entry)
+                          (let ((key (car entry))
+                                (value (cdr entry)))
+                            (when (and key value)
+                              (format "%s=%s" key value))))
+                        metadata)))
+         (suffix (if fields
+                     (concat " " (string-join fields " "))
+                   "")))
+    (message "SEM: module=router action=%s status=%s%s" action status suffix)))
+
+(defun sem-router--runtime-correlation-fields (batch-id hash)
+  "Return metadata fields for BATCH-ID and item HASH correlation."
+  (list (cons "batch" (or batch-id sem-core--batch-id 0))
+        (cons "item" (sem-router--hash-prefix hash))))
 
 ;;; Mutex for tasks.org writes
 
@@ -87,6 +120,10 @@ BATCH-ID is the dispatch batch id used for stale-safe retries."
     (if (>= retry-count sem-router--max-write-retries)
         ;; Max retries reached - route to DLQ
         (progn
+          (sem-router--runtime-message "task-lock" "DLQ"
+                                       (append (sem-router--runtime-correlation-fields
+                                                batch-id (plist-get headline :hash))
+                                               (list (cons "retries" sem-router--max-write-retries))))
           (sem-core-log-error "router" "INBOX-ITEM"
                               (format "Tasks.org write failed after %d retries (lock contention)"
                                       sem-router--max-write-retries)
@@ -97,6 +134,11 @@ BATCH-ID is the dispatch batch id used for stale-safe retries."
           (when dlq-callback
             (funcall dlq-callback)))
       ;; Schedule retry
+      (sem-router--runtime-message "task-lock" "RETRY"
+                                   (append (sem-router--runtime-correlation-fields
+                                            batch-id (plist-get headline :hash))
+                                           (list (cons "attempt" (1+ retry-count))
+                                                 (cons "max" sem-router--max-write-retries))))
       (run-with-timer sem-router--write-retry-delay nil
                       (lambda ()
                         (sem-router--with-tasks-write-lock
@@ -140,22 +182,20 @@ or nil if no body content exists. Nested sub-headlines are excluded."
 Returns a list of headline plists with :title, :tags, :body, :link, :point, :hash."
   (cl-block sem-router--parse-headlines
     (unless (file-exists-p sem-router-inbox-file)
-      (message "SEM: sem-router--parse-headlines: file does not exist: %s" sem-router-inbox-file)
+      (sem-router--runtime-message "parse" "SKIP" '(("reason" . "missing-inbox")))
       (sem-core-log "router" "INBOX-ITEM" "SKIP" "inbox-mobile.org does not exist")
       (cl-return-from sem-router--parse-headlines nil))
 
-    (message "SEM: sem-router--parse-headlines: parsing %s" sem-router-inbox-file)
+    (sem-router--runtime-message "parse" "START" nil)
     (let ((headlines '()))
       (with-temp-buffer
         (insert-file-contents sem-router-inbox-file)
-        (message "SEM: sem-router--parse-headlines: buffer has %d chars, first 100: %s"
-                 (point-max)
-                 (buffer-substring-no-properties
-                  (point-min)
-                  (min (point-max) (+ (point-min) 100))))
+        (sem-router--runtime-message "parse" "READ"
+                                     (list (cons "chars" (point-max))))
         (org-mode)
         (let ((ast (org-element-parse-buffer)))
-          (message "SEM: sem-router--parse-headlines: AST root type: %s" (org-element-type ast))
+          (sem-router--runtime-message "parse" "AST"
+                                       (list (cons "root" (org-element-type ast))))
           (org-element-map ast 'headline
             (lambda (headline-element)
               (let* ((begin (org-element-property :begin headline-element))
@@ -165,10 +205,15 @@ Returns a list of headline plists with :title, :tags, :body, :link, :point, :has
                      (link (when (string-match-p "^https?://" title)
                              (substring-no-properties title)))
                       (tags-str (if tags (string-join tags " ") ""))
-                      (body-str (or body ""))
-                      (hash (secure-hash 'sha256
-                                         (json-encode (vector title tags-str body-str)))))
-                (message "SEM:   parsed headline: %s | tags: %s | hash: %.8s..." title tags-str hash)
+                       (body-str (or body ""))
+                       (hash (secure-hash 'sha256
+                                          (json-encode (vector title tags-str body-str)))))
+                (sem-router--runtime-message
+                 "parse-item" "OK"
+                 (list (cons "item" (sem-router--hash-prefix hash))
+                       (cons "tags" (length tags))
+                       (cons "has-body" (if body 1 0))
+                       (cons "has-link" (if link 1 0))))
                 (push (list :title title
                             :tags tags
                             :body body
@@ -177,7 +222,8 @@ Returns a list of headline plists with :title, :tags, :body, :link, :point, :has
                             :hash hash)
                       headlines))))))
 
-      (message "SEM: sem-router--parse-headlines: found %d headlines" (length headlines))
+      (sem-router--runtime-message "parse" "OK"
+                                   (list (cons "count" (length headlines))))
       (nreverse headlines))))
 
 ;;; Tag Detection
@@ -286,6 +332,10 @@ CALLBACK is called with (success context)."
                                      body
                                      nil
                                      (list :priority "[#A]" :tags '("security")))
+                 (sem-router--runtime-message
+                  "task-preflight" "DLQ"
+                  (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                          (list (cons "reason" "security-sanitize"))))
                  (sem-core--mark-dlq hash)
                  (when callback
                    (funcall callback t (list :hash hash :title title :batch-id dispatch-batch-id)))
@@ -309,6 +359,10 @@ CALLBACK is called with (success context)."
                         (response-valid nil))
                    (if (/= callback-batch-id sem-core--batch-id)
                        (progn
+                         (sem-router--runtime-message
+                          "task-callback" "STALE"
+                          (append (sem-router--runtime-correlation-fields callback-batch-id headline-hash)
+                                  (list (cons "active-batch" sem-core--batch-id))))
                          (sem-core-log "router" "INBOX-ITEM" "SKIP"
                                        (format "Ignoring stale task callback: callback-batch=%d active-batch=%d title=%s"
                                                callback-batch-id sem-core--batch-id headline-title)
@@ -357,6 +411,9 @@ CALLBACK is called with (success context)."
                                                "Malformed LLM output for task (UUID mismatch or missing)"
                                                headline-title
                                                restored-response)
+                           (sem-router--runtime-message
+                            "task-validate" "FAIL"
+                            (sem-router--runtime-correlation-fields callback-batch-id headline-hash))
                            (sem-router--mark-processed headline-hash)
                            (setq headline-context (plist-put headline-context :security-blocks nil))
                            (setq success t)))
@@ -370,6 +427,11 @@ CALLBACK is called with (success context)."
                                                (format "Task LLM API failure exhausted retries (%d/%d): %s"
                                                        retry-count max-retries headline-title)
                                                nil)
+                                 (sem-router--runtime-message
+                                  "task-api" "DLQ"
+                                  (append (sem-router--runtime-correlation-fields callback-batch-id headline-hash)
+                                          (list (cons "attempt" retry-count)
+                                                (cons "max" max-retries))))
                                  (sem-core-log-error "router" "INBOX-ITEM"
                                                      (format "Task LLM API terminal failure after %d retries: %s"
                                                              max-retries api-error)
@@ -381,6 +443,11 @@ CALLBACK is called with (success context)."
                                            (format "Task LLM API failure (attempt %d/%d): %s"
                                                    retry-count max-retries api-error)
                                            nil)
+                             (sem-router--runtime-message
+                              "task-api" "RETRY"
+                              (append (sem-router--runtime-correlation-fields callback-batch-id headline-hash)
+                                      (list (cons "attempt" retry-count)
+                                            (cons "max" max-retries))))
                              (setq success nil)))))
                        (unless response-valid
                          (when callback
@@ -398,6 +465,9 @@ CALLBACK is called with (success context)."
                              (error-message-string err)
                              (plist-get headline :title)
                              nil)
+         (sem-router--runtime-message
+          "task-route" "FAIL"
+          (sem-router--runtime-correlation-fields dispatch-batch-id (plist-get headline :hash)))
          (when callback
            (funcall callback nil
                     (list :hash (plist-get headline :hash)
@@ -691,112 +761,155 @@ This is called by sem-core-process-inbox."
               (processed-count 0)
               (skipped-count 0))
 
-          (message "SEM: sem-router-process-inbox: found %d headlines" (length headlines))
+          (sem-router--runtime-message "process" "START"
+                                       (list (cons "batch" dispatch-batch-id)
+                                             (cons "total" (length headlines))))
           (unless headlines
-            (message "SEM: sem-router-process-inbox: no headlines, returning nil")
+            (sem-router--runtime-message "process" "SKIP"
+                                         (list (cons "batch" dispatch-batch-id)
+                                               (cons "reason" "empty")))
             (cl-return-from sem-router-process-inbox nil))
 
-          (message "SEM: Processing %d headlines..." (length headlines))
+          (sem-router--runtime-message "process" "RUN"
+                                       (list (cons "batch" dispatch-batch-id)))
 
           (dolist (headline headlines)
             (let ((hash (plist-get headline :hash))
                   (title (plist-get headline :title)))
-
-              (message "SEM: Headline: %s | tags: %s" title (plist-get headline :tags))
+              (sem-router--runtime-message
+               "item" "SEEN"
+               (append
+                (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                (list (cons "tags" (length (or (plist-get headline :tags) '()))))))
               (if (sem-router--is-processed hash)
                   (progn
-                    (message "SEM: Already processed, skipping: %s" title)
+                    (sem-router--runtime-message "item" "SKIP"
+                                                 (append
+                                                  (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                                  (list (cons "reason" "already-processed"))))
                     (setq skipped-count (1+ skipped-count)))
                 ;; Route based on tag/type
                 (let ((url (sem-router--is-link-headline headline)))
                   (cond
                    ;; Link headline -> URL capture (async)
-                    (url
-                     (message "SEM: Routing to URL capture: %s" url)
-                     (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
-                     (sem-url-capture-process
-                      url
-                      (lambda (filepath context)
-                        "Callback for async URL capture.
+                   (url
+                    (sem-router--runtime-message "route" "URL"
+                                                 (sem-router--runtime-correlation-fields dispatch-batch-id hash))
+                    (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
+                    (sem-url-capture-process
+                     url
+                     (lambda (filepath context)
+                       "Callback for async URL capture.
 Handles success, retry, and DLQ escalation."
                         (if (/= dispatch-batch-id sem-core--batch-id)
-                            (sem-core-log "router" "INBOX-ITEM" "SKIP"
-                                          (format "Ignoring stale URL callback: callback-batch=%d active-batch=%d url=%s"
-                                                  dispatch-batch-id sem-core--batch-id url)
-                                          nil)
+                            (progn
+                              (sem-router--runtime-message
+                               "url-callback" "STALE"
+                               (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                       (list (cons "active-batch" sem-core--batch-id))))
+                              (sem-core-log "router" "INBOX-ITEM" "SKIP"
+                                            (format "Ignoring stale URL callback: callback-batch=%d active-batch=%d url=%s"
+                                                    dispatch-batch-id sem-core--batch-id url)
+                                            nil)
+                              (when (fboundp 'sem-core--batch-barrier-check)
+                                (sem-core--batch-barrier-check dispatch-batch-id)))
                           (if filepath
-                              (progn
-                                (sem-core--clear-retry hash)
-                                (sem-router--mark-processed hash)
-                                (setq processed-count (1+ processed-count))
-                                (message "SEM: URL captured: %s -> %s" url filepath))
-                            (let ((failure-kind (plist-get context :failure-kind)))
-                              (if (eq failure-kind 'security-malformed)
-                                  (progn
-                                    (sem-core-log "router" "URL-CAPTURE" "DLQ"
-                                                  (format "URL capture security preflight failed, moved to DLQ: %s" url)
-                                                  nil)
-                                    (sem-core--mark-dlq hash title nil)
-                                    (message "SEM: URL capture malformed sensitive block, moved to DLQ: %s" url))
-                                (let ((retry-count (sem-core--increment-retry hash)))
-                                  (if (>= retry-count 3)
-                                      (progn
-                                        (sem-core--mark-dlq hash title nil)
-                                        (message "SEM: URL capture failed after 3 retries, moved to DLQ: %s" url))
-                                    (progn
-                                      (when (eq failure-kind 'timeout)
-                                        (sem-core-log "router" "URL-CAPTURE" "FAIL"
-                                                      (format "URL capture timeout (attempt %d/3): %s"
-                                                              retry-count url)
-                                                      nil))
-                                      (message "SEM: URL capture failed (attempt %d/3), will retry: %s"
-                                               retry-count url))))))))
-                        (when (fboundp 'sem-core--batch-barrier-check)
-                          (sem-core--batch-barrier-check dispatch-batch-id)))))
+                             (progn
+                               (sem-core--clear-retry hash)
+                               (sem-router--mark-processed hash)
+                               (setq processed-count (1+ processed-count))
+                               (sem-router--runtime-message "url-callback" "OK"
+                                                            (sem-router--runtime-correlation-fields dispatch-batch-id hash)))
+                           (let ((failure-kind (plist-get context :failure-kind)))
+                             (if (eq failure-kind 'security-malformed)
+                                 (progn
+                                   (sem-core-log "router" "URL-CAPTURE" "DLQ"
+                                                 (format "URL capture security preflight failed, moved to DLQ: %s" url)
+                                                 nil)
+                                   (sem-core--mark-dlq hash title nil)
+                                   (sem-router--runtime-message "url-callback" "DLQ"
+                                                                (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                                                        (list (cons "reason" "security-malformed")))))
+                               (let ((retry-count (sem-core--increment-retry hash)))
+                                 (if (>= retry-count 3)
+                                     (progn
+                                       (sem-core--mark-dlq hash title nil)
+                                       (sem-router--runtime-message "url-callback" "DLQ"
+                                                                    (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                                                            (list (cons "reason" "retry-exhausted")
+                                                                                  (cons "attempt" retry-count)
+                                                                                  (cons "max" 3)))))
+                                   (progn
+                                     (when (eq failure-kind 'timeout)
+                                       (sem-core-log "router" "URL-CAPTURE" "FAIL"
+                                                     (format "URL capture timeout (attempt %d/3): %s"
+                                                             retry-count url)
+                                                     nil))
+                                     (sem-router--runtime-message "url-callback" "RETRY"
+                                                                  (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                                                          (list (cons "attempt" retry-count)
+                                                                                (cons "max" 3))))))))))
+                       (when (fboundp 'sem-core--batch-barrier-check)
+                         (sem-core--batch-barrier-check dispatch-batch-id))))))
                     ;; Task headline -> LLM task generation (async)
-                    ((sem-router--is-task-headline headline)
-                     (message "SEM: Routing to LLM task generation: %s" title)
-                     (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
-                      (sem-router--route-to-task-llm
-                       headline
-                       (lambda (success context)
-                         "Callback for async task LLM processing."
-                         (let ((callback-batch-id (or (plist-get context :batch-id) dispatch-batch-id)))
-                           (if (/= callback-batch-id sem-core--batch-id)
+                   ((sem-router--is-task-headline headline)
+                    (sem-router--runtime-message "route" "TASK"
+                                                 (sem-router--runtime-correlation-fields dispatch-batch-id hash))
+                    (setq sem-core--pending-callbacks (1+ sem-core--pending-callbacks))
+                    (sem-router--route-to-task-llm
+                     headline
+                     (lambda (success context)
+                       "Callback for async task LLM processing."
+                       (let ((callback-batch-id (or (plist-get context :batch-id) dispatch-batch-id)))
+                         (if (/= callback-batch-id sem-core--batch-id)
+                             (progn
+                               (sem-router--runtime-message
+                                "task-callback" "STALE"
+                                (append (sem-router--runtime-correlation-fields callback-batch-id hash)
+                                        (list (cons "active-batch" sem-core--batch-id))))
                                (sem-core-log "router" "INBOX-ITEM" "SKIP"
                                              (format "Ignoring stale task completion callback: callback-batch=%d active-batch=%d title=%s"
                                                      callback-batch-id sem-core--batch-id
                                                      (plist-get context :title))
-                                             nil)
-                             (if success
-                                 (message "SEM: Task LLM processed: %s" (plist-get context :title))
-                               (message "SEM: Task LLM failed: %s" (plist-get context :title))))
-                           (when (fboundp 'sem-core--batch-barrier-check)
-                             (sem-core--batch-barrier-check callback-batch-id))))
-                       dispatch-batch-id)
-                      (setq processed-count (1+ processed-count)))
-                   ;; Unknown - skip
-                   (t
-                    (message "SEM: No routing rule matched, skipping: %s" title)
-                    (sem-core-log "router" "INBOX-ITEM" "SKIP"
-                                  (format "Unknown tag, skipping: %s" title)
-                                  nil)
-                    (setq skipped-count (1+ skipped-count))
-                    ;; Mark as processed to avoid infinite loop
-                    (sem-router--mark-processed hash)))))))
+                                             nil))
+                           (if success
+                               (sem-router--runtime-message "task-callback" "OK"
+                                                            (sem-router--runtime-correlation-fields
+                                                             callback-batch-id hash))
+                             (sem-router--runtime-message "task-callback" "FAIL"
+                                                          (sem-router--runtime-correlation-fields
+                                                           callback-batch-id hash))))
+                         (when (fboundp 'sem-core--batch-barrier-check)
+                           (sem-core--batch-barrier-check callback-batch-id))))
+                     dispatch-batch-id)
+                    (setq processed-count (1+ processed-count)))
+                    ;; Unknown - skip
+                    (t
+                     (sem-router--runtime-message "route" "SKIP"
+                                                  (append (sem-router--runtime-correlation-fields dispatch-batch-id hash)
+                                                          (list (cons "reason" "no-rule"))))
+                     (sem-core-log "router" "INBOX-ITEM" "SKIP"
+                                   (format "Unknown tag, skipping: %s" title)
+                                   nil)
+                     (setq skipped-count (1+ skipped-count))
+                     ;; Mark as processed to avoid infinite loop
+                     (sem-router--mark-processed hash)))))))
 
           (sem-core-log "router" "INBOX-ITEM" "OK"
                         (format "Processed=%d, Skipped=%d"
                                 processed-count skipped-count)
                         nil)
-          (message "SEM: Inbox processing complete: %d processed, %d skipped"
-                   processed-count skipped-count))
+          (sem-router--runtime-message "process" "OK"
+                                       (list (cons "batch" dispatch-batch-id)
+                                             (cons "processed" processed-count)
+                                             (cons "skipped" skipped-count))))
       (error
        (sem-core-log-error "router" "INBOX-ITEM"
                            (error-message-string err)
                            nil
                            nil)
-       (message "SEM: Router error: %s" (error-message-string err))))))
+       (sem-router--runtime-message "process" "FAIL"
+                                    (list (cons "batch" sem-core--batch-id)))))))
 
 (provide 'sem-router)
 ;;; sem-router.el ends here

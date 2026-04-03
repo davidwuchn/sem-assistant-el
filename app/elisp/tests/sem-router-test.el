@@ -15,6 +15,21 @@
 (load-file (expand-file-name "../sem-security.el" (file-name-directory load-file-name)))
 (load-file (expand-file-name "../sem-router.el" (file-name-directory load-file-name)))
 
+(defun sem-router-test--capture-runtime-messages (thunk)
+  "Run THUNK and return captured runtime message lines."
+  (let ((captured '()))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) captured))))
+      (funcall thunk))
+    (nreverse captured)))
+
+(defun sem-router-test--assert-no-plaintext-leaks (messages samples)
+  "Assert MESSAGES do not include any plaintext SAMPLES."
+  (dolist (line messages)
+    (dolist (sample samples)
+      (should-not (string-match-p (regexp-quote sample) line)))))
+
 ;;; Test @link routing to url-capture
 
 (ert-deftest sem-router-test-link-tag-detection ()
@@ -1087,6 +1102,155 @@ Empty body is valid for zero-body headlines."
             (should captured-timeout-log)))
       (sem-mock-cleanup-temp-file test-cursor-file)
       (sem-mock-cleanup-temp-file test-retries-file))))
+
+(ert-deftest sem-router-test-runtime-message-task-success-metadata-only ()
+  "Test task success emits metadata-only runtime message fields."
+  (let* ((title "Sensitive launch playbook")
+         (body "private notes inside task body")
+         (url "https://sensitive.example.com/private")
+         (hash "00112233445566778899aabbccddeeff")
+         (captured
+          (sem-router-test--capture-runtime-messages
+           (lambda ()
+             (let ((sem-core--batch-id 100)
+                   (sem-core--pending-callbacks 0))
+               (cl-letf (((symbol-function 'sem-router--parse-headlines)
+                          (lambda ()
+                            (list (list :title title
+                                        :tags '("task")
+                                        :body body
+                                        :link url
+                                        :hash hash))))
+                         ((symbol-function 'sem-router--is-processed)
+                          (lambda (_hash) nil))
+                         ((symbol-function 'sem-router--route-to-task-llm)
+                          (lambda (_headline callback &optional batch-id)
+                            (funcall callback t (list :hash hash :batch-id batch-id))
+                            t))
+                         ((symbol-function 'sem-core--batch-barrier-check)
+                          (lambda (&optional _batch-id) nil))
+                         ((symbol-function 'sem-core-log)
+                          (lambda (&rest _) nil))
+                         ((symbol-function 'sem-core-log-error)
+                          (lambda (&rest _) nil)))
+                 (sem-router-process-inbox 100)))))))
+    (should (cl-some (lambda (line)
+                       (string-match-p "action=task-callback status=OK" line))
+                     captured))
+    (sem-router-test--assert-no-plaintext-leaks captured (list title body url))))
+
+(ert-deftest sem-router-test-runtime-message-task-failure-metadata-only ()
+  "Test task failure emits metadata-only runtime message fields."
+  (let* ((title "Private migration checklist")
+         (body "contains internal details")
+         (url "https://sensitive.example.com/checklist")
+         (hash "ffeeddccbbaa99887766554433221100")
+         (captured
+          (sem-router-test--capture-runtime-messages
+           (lambda ()
+             (let ((sem-core--batch-id 101)
+                   (sem-core--pending-callbacks 0))
+               (cl-letf (((symbol-function 'sem-router--parse-headlines)
+                          (lambda ()
+                            (list (list :title title
+                                        :tags '("task")
+                                        :body body
+                                        :link url
+                                        :hash hash))))
+                         ((symbol-function 'sem-router--is-processed)
+                          (lambda (_hash) nil))
+                         ((symbol-function 'sem-router--route-to-task-llm)
+                          (lambda (_headline callback &optional batch-id)
+                            (funcall callback nil (list :hash hash :batch-id batch-id))
+                            t))
+                         ((symbol-function 'sem-core--batch-barrier-check)
+                          (lambda (&optional _batch-id) nil))
+                         ((symbol-function 'sem-core-log)
+                          (lambda (&rest _) nil))
+                         ((symbol-function 'sem-core-log-error)
+                          (lambda (&rest _) nil)))
+                 (sem-router-process-inbox 101)))))))
+    (should (cl-some (lambda (line)
+                       (string-match-p "action=task-callback status=FAIL" line))
+                     captured))
+    (sem-router-test--assert-no-plaintext-leaks captured (list title body url))))
+
+(ert-deftest sem-router-test-runtime-message-url-retry-metadata-only ()
+  "Test URL retry emits metadata-only runtime message fields."
+  (let* ((title "Private incident URL")
+         (body "sensitive retry data")
+         (url "https://sensitive.example.com/retry")
+         (hash "11223344556677889900aabbccddeeff")
+         (captured
+          (sem-router-test--capture-runtime-messages
+           (lambda ()
+             (let ((sem-core--batch-id 102)
+                   (sem-core--pending-callbacks 0))
+               (cl-letf (((symbol-function 'sem-router--parse-headlines)
+                          (lambda ()
+                            (list (list :title title
+                                        :tags '("link")
+                                        :body body
+                                        :link url
+                                        :hash hash))))
+                         ((symbol-function 'sem-router--is-processed)
+                          (lambda (_hash) nil))
+                         ((symbol-function 'sem-url-capture-process)
+                          (lambda (_url callback)
+                            (funcall callback nil (list :url url :failure-kind 'timeout))
+                            t))
+                         ((symbol-function 'sem-core--increment-retry)
+                          (lambda (_hash) 1))
+                         ((symbol-function 'sem-core--batch-barrier-check)
+                          (lambda (&optional _batch-id) nil))
+                         ((symbol-function 'sem-core-log)
+                          (lambda (&rest _) nil))
+                         ((symbol-function 'sem-core-log-error)
+                          (lambda (&rest _) nil)))
+                 (sem-router-process-inbox 102)))))))
+    (should (cl-some (lambda (line)
+                       (string-match-p "action=url-callback status=RETRY" line))
+                     captured))
+    (sem-router-test--assert-no-plaintext-leaks captured (list title body url))))
+
+(ert-deftest sem-router-test-runtime-message-stale-url-callback-metadata-only ()
+  "Test stale URL callback emits metadata-only runtime message fields."
+  (let* ((title "Private stale callback title")
+         (body "sensitive stale callback body")
+         (url "https://sensitive.example.com/stale")
+         (hash "aabbccddeeff00112233445566778899")
+         (captured
+          (sem-router-test--capture-runtime-messages
+           (lambda ()
+             (let ((sem-core--batch-id 200)
+                   (sem-core--pending-callbacks 0))
+               (cl-letf (((symbol-function 'sem-router--parse-headlines)
+                          (lambda ()
+                            (list (list :title title
+                                        :tags '("link")
+                                        :body body
+                                        :link url
+                                        :hash hash))))
+                         ((symbol-function 'sem-router--is-processed)
+                          (lambda (_hash) nil))
+                         ((symbol-function 'sem-url-capture-process)
+                          (lambda (_url callback)
+                            (funcall callback nil (list :url url :failure-kind 'timeout))
+                            t))
+                         ((symbol-function 'sem-core--increment-retry)
+                          (lambda (&rest _)
+                            (error "retry should not run in stale path")))
+                         ((symbol-function 'sem-core--batch-barrier-check)
+                          (lambda (&optional _batch-id) nil))
+                         ((symbol-function 'sem-core-log)
+                          (lambda (&rest _) nil))
+                         ((symbol-function 'sem-core-log-error)
+                          (lambda (&rest _) nil)))
+                 (sem-router-process-inbox 199)))))))
+    (should (cl-some (lambda (line)
+                       (string-match-p "action=url-callback status=STALE" line))
+                     captured))
+    (sem-router-test--assert-no-plaintext-leaks captured (list title body url))))
 
 (provide 'sem-router-test)
 ;;; sem-router-test.el ends here

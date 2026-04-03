@@ -7,6 +7,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'sem-mock)
 
 ;; Load the module under test
@@ -482,6 +483,32 @@ When last-flush-date matches current date, buffer should not be erased."
       ;; Cleanup
       (setq sem-core--last-flush-date ""))))
 
+(ert-deftest sem-core-test-batch-barrier-message-metadata-only ()
+  "Test batch barrier runtime message includes only metadata fields."
+  (let ((captured-messages '())
+        (sensitive-title "Top Secret Launch Plan")
+        (sensitive-body "private body content")
+        (sensitive-url "https://sensitive.example.com/path")
+        (sem-core--batch-id 41)
+        (sem-core--pending-callbacks 1))
+    (cl-letf (((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) captured-messages)))
+              ((symbol-function 'sem-core--cancel-batch-watchdog)
+               (lambda () nil))
+              ((symbol-function 'sem-planner-run-planning-step)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil)))
+      (sem-core--batch-barrier-check 41)
+      (should (cl-some (lambda (line)
+                         (string-match-p "Batch 41 complete, firing planning step" line))
+                       captured-messages))
+      (dolist (line captured-messages)
+        (should-not (string-match-p (regexp-quote sensitive-title) line))
+        (should-not (string-match-p (regexp-quote sensitive-body) line))
+        (should-not (string-match-p (regexp-quote sensitive-url) line))))))
+
 (ert-deftest sem-core-test-error-handling-unwritable-dir ()
   "Test that flush handles unwritable log directory gracefully.
 The function should catch errors and return nil without signaling."
@@ -633,6 +660,39 @@ The function should catch errors and return nil without signaling."
             (should (= write-count 1))
             (should (string= sem-core--last-flush-date today))
             (should (string= sem-core--last-flushed-messages-hash-date today))))
+      (setq sem-core--last-flush-date "")
+      (setq sem-core--last-flushed-messages-hash nil)
+      (setq sem-core--last-flushed-messages-hash-date nil))))
+
+(ert-deftest sem-core-test-messages-flush-persists-metadata-only-runtime-lines ()
+  "Test persisted daily message content remains metadata-only for router output."
+  (let ((captured-content nil)
+        (sensitive-title "Confidential customer launch")
+        (sensitive-body "private body text")
+        (sensitive-url "https://sensitive.example.com/secret"))
+    (unwind-protect
+        (progn
+          (setq sem-core--last-flush-date "")
+          (setq sem-core--last-flushed-messages-hash nil)
+          (setq sem-core--last-flushed-messages-hash-date nil)
+          (with-current-buffer "*Messages*"
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (sem-router--runtime-message
+               "process" "OK"
+               '(("batch" . 77) ("item" . "a1b2c3d4") ("processed" . 1) ("skipped" . 0)))))
+          (cl-letf (((symbol-function 'write-region)
+                     (lambda (start _end _filename &optional _append _visit)
+                       (setq captured-content start)
+                       nil))
+                    ((symbol-function 'make-directory)
+                     (lambda (&rest _) nil)))
+            (sem-core--flush-messages-daily)
+            (should (stringp captured-content))
+            (should (string-match-p "module=router action=process status=OK" captured-content))
+            (should-not (string-match-p (regexp-quote sensitive-title) captured-content))
+            (should-not (string-match-p (regexp-quote sensitive-body) captured-content))
+            (should-not (string-match-p (regexp-quote sensitive-url) captured-content))))
       (setq sem-core--last-flush-date "")
       (setq sem-core--last-flushed-messages-hash nil)
       (setq sem-core--last-flushed-messages-hash-date nil))))
