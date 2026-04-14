@@ -1,0 +1,86 @@
+#+TITLE: SEM Assistant (Elisp Daemon)
+
+* Overview
+SEM Assistant is a self-hosted Emacs daemon for single-user personal operations.
+It receives mobile captures via WebDAV, routes them through deterministic Elisp
+flows, uses remote LLM calls for bounded text transformations, and writes results
+to your Org files. In practice, it handles three main loops: inbox processing,
+URL-to-org-roam capture, and periodic git sync for org-roam notes.
+
+* Motivation
+The core idea is simple: capture fast on mobile, process safely on a remote box,
+and keep the output in plain Org files you own.
+
+This project intentionally treats the LLM as a tool, not as the orchestrator.
+The orchestration lives in Elisp code with explicit routing, retries, logging,
+and file contracts. This is the key conceptual difference from systems where the
+LLM directly drives workflow decisions end-to-end. Here, the model helps with
+normalization, planning text, and summarization, but the daemon controls the
+pipeline.
+
+* How to use
+** Hardcoded flows and tags
+- Inbox source is =/data/inbox-mobile.org=.
+- Headline tagged =:task:= is routed to task normalization + planning flow.
+- Headline tagged =:link:= is routed to URL capture flow.
+- Headline title that starts with =http://= or =https://= is treated as link
+  capture even without =:link:=.
+- Unknown headline types are skipped and logged.
+
+** Path contract
+- Shared runtime root: =/data=.
+- Scheduler rules file: =/data/rules.org=.
+- Task output file: =/data/tasks.org=.
+- org-roam repository root: =/data/org-roam=.
+- org-roam notes subtree: =/data/org-roam/org-files=.
+
+** org-roam flow
+- Link captures become org-roam nodes under =/data/org-roam/org-files=.
+- Git sync operates at repository root =/data/org-roam=.
+- Keep DB artifacts out of content history (for example =org-roam.db=).
+
+** WebDAV settings
+- WebDAV endpoint is your HTTPS domain (for example =https://org.example.com/=).
+- Required env values include:
+  - =WEBDAV_DOMAIN=
+  - =WEBDAV_USERNAME=
+  - =WEBDAV_PASSWORD=
+- Mobile sync should target the correct path scope (root for inbox/tasks/rules,
+  and org-roam subtree as needed).
+
+** Git settings
+- SSH key expected by git-sync in container: =/root/.ssh/id_rsa=.
+- Git identity must be configured in container (name/email) for commits.
+- Manual trigger for inbox processing:
+  #+begin_src sh
+  docker compose exec emacs emacsclient -s sem-server -e "(sem-core-process-inbox)"
+  #+end_src
+- Manual trigger for git commit+push:
+  #+begin_src sh
+  docker compose exec emacs emacsclient -s sem-server -e "(sem-git-sync-org-roam)"
+  #+end_src
+
+* Security
+Security model is "LLM as untrusted component".
+
+** Sensitive blocks
+- Text inside =#+begin_sensitive= / =#+end_sensitive= is not sent to the LLM.
+- Sensitive payload is masked before model calls and restored afterward.
+
+** Planner context pruning
+- Planner receives reduced/anonymized context instead of full raw task corpus.
+- The goal is to minimize unnecessary data exposure while preserving scheduling
+  signal.
+
+** Trust boundaries
+- LLM output is treated as untrusted text and validated before acceptance.
+- Deterministic code paths handle retries, DLQ/error logging, file writes, and
+  cron overlap guards.
+- Operational data stays in plain files you can inspect directly.
+
+* Afterwords
+This is a vibe-coded project.
+
+I mainly validated behavior by running unit tests and integration tests, then I
+started using it myself in daily flow. It is pragmatic software: opinionated,
+iterative, and grounded in real usage rather than polished framework design.
