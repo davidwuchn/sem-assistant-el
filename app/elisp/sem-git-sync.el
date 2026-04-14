@@ -36,19 +36,20 @@
 (defun sem-git-sync--run-command (program args &optional dir)
   "Run PROGRAM with ARGS in DIR and return (exit-code . output).
 Returns a cons cell where car is the exit code and cdr is the command output."
-  (let ((command-directory (file-name-as-directory (or dir default-directory)))
+  (let ((effective-args (if dir
+                            (append (list "-C" (file-name-as-directory dir)) args)
+                          args))
         (output-buffer (generate-new-buffer " *git-sync-cmd*")))
     (unwind-protect
         (with-current-buffer output-buffer
           (erase-buffer)
-          (let ((default-directory command-directory))
-            (condition-case err
-                (let ((exit-code
-                       (apply #'call-process program nil output-buffer nil args)))
-                  (cons exit-code (buffer-string)))
-              (error
-               (insert (error-message-string err))
-               (cons 127 (buffer-string))))))
+          (condition-case err
+              (let ((exit-code
+                     (apply #'call-process program nil output-buffer nil effective-args)))
+                (cons exit-code (buffer-string)))
+            (error
+             (insert (error-message-string err))
+             (cons 127 (buffer-string)))))
       (when (buffer-live-p output-buffer)
         (kill-buffer output-buffer)))))
 
@@ -303,13 +304,15 @@ Uses unwind-protect to ensure agent teardown runs even on failure."
           (cl-return-from sem-git-sync-org-roam nil))
 
         ;; Check if it's a git repository
-        (let ((git-check (sem-git-sync--run-command "git" '("rev-parse" "--git-dir") sem-git-sync-org-roam-dir)))
-          (when (or (/= (car git-check) 0)
-                    (string-empty-p (string-trim (cdr git-check))))
-            (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
-                          (format "Not a git repository: %s" sem-git-sync-org-roam-dir)
+         (let ((git-check (sem-git-sync--run-command "git" '("rev-parse" "--git-dir") sem-git-sync-org-roam-dir)))
+           (when (or (/= (car git-check) 0)
+                     (string-empty-p (string-trim (cdr git-check))))
+             (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                          (format "Not a git repository: %s (%s)"
+                                  sem-git-sync-org-roam-dir
+                                  (string-trim (cdr git-check)))
                           nil)
-            (cl-return-from sem-git-sync-org-roam nil)))
+             (cl-return-from sem-git-sync-org-roam nil)))
 
         (let ((initial-state (sem-git-sync--sync-state)))
           (unless (plist-get initial-state :ok)
@@ -422,13 +425,15 @@ Returns t on success and nil on failure."
                         nil)
           (cl-return-from sem-git-sync-org-roam-prepull nil))
 
-        (let ((git-check (sem-git-sync--run-command "git" '("rev-parse" "--git-dir") sem-git-sync-org-roam-dir)))
-          (when (or (/= (car git-check) 0)
-                    (string-empty-p (string-trim (cdr git-check))))
-            (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
-                          (format "Not a git repository: %s" sem-git-sync-org-roam-dir)
+         (let ((git-check (sem-git-sync--run-command "git" '("rev-parse" "--git-dir") sem-git-sync-org-roam-dir)))
+           (when (or (/= (car git-check) 0)
+                     (string-empty-p (string-trim (cdr git-check))))
+             (sem-core-log "git-sync" "GIT-SYNC" "FAIL"
+                          (format "Not a git repository: %s (%s)"
+                                  sem-git-sync-org-roam-dir
+                                  (string-trim (cdr git-check)))
                           nil)
-            (cl-return-from sem-git-sync-org-roam-prepull nil)))
+             (cl-return-from sem-git-sync-org-roam-prepull nil)))
 
         (let ((state (sem-git-sync--sync-state)))
           (unless (plist-get state :ok)
