@@ -3,7 +3,7 @@
 # Cron runs in background, emacs runs as daemon, tail keeps foreground alive
 
 # Set correct permissions on cron directories (cron requires this)
-chmod -R go-w /etc/cron.d
+chmod -R go-w /etc/cron.d /etc/crontabs
 
 if [ -z "${CLIENT_TIMEZONE:-}" ]; then
   echo "SEM: STARTUP ERROR: CLIENT_TIMEZONE is not set"
@@ -14,10 +14,25 @@ cron_tmp="$(mktemp)"
 {
   printf 'CRON_TZ=%s\n' "$CLIENT_TIMEZONE"
   printf 'TZ=%s\n' "$CLIENT_TIMEZONE"
-  cat /etc/cron.d/sem-cron
+  awk '
+    /^[[:space:]]*$/ { print; next }
+    /^[[:space:]]*#/ { print; next }
+    /^[A-Za-z_][A-Za-z0-9_]*=/ { next }
+    {
+      if (NF >= 7 && $6 == "root") {
+        printf "%s %s %s %s %s", $1, $2, $3, $4, $5
+        for (i = 7; i <= NF; i++) {
+          printf " %s", $i
+        }
+        printf "\n"
+      } else {
+        print
+      }
+    }
+  ' /etc/cron.d/sem-cron
 } > "$cron_tmp"
-mv "$cron_tmp" /etc/cron.d/sem-cron
-chmod 0744 /etc/cron.d/sem-cron
+mv "$cron_tmp" /etc/crontabs/root
+chmod 0600 /etc/crontabs/root
 
 # Start cron daemon in background
 if command -v service >/dev/null 2>&1; then
