@@ -37,16 +37,22 @@
     (should (string= (sem-time-client-timezone) "Europe/Belgrade"))))
 
 (ert-deftest sem-time-test-format-string-uses-client-timezone ()
-  "Test format helper forwards client timezone to `format-time-string'."
-  (let ((captured-zone nil))
+  "Test format helper applies CLIENT_TIMEZONE via scoped TZ env var."
+  (let ((captured-tz nil)
+        (captured-zone nil))
     (cl-letf (((symbol-function 'sem-time-client-timezone)
                (lambda () "America/New_York"))
+              ((symbol-function 'setenv)
+               (lambda (name value &optional _substitute)
+                 (when (string= name "TZ")
+                   (setq captured-tz value))))
               ((symbol-function 'format-time-string)
-               (lambda (_format _time zone)
-                 (setq captured-zone zone)
-                 "ok")))
+                (lambda (_format _time &optional zone)
+                  (setq captured-zone zone)
+                  "ok")))
       (should (string= (sem-time-format-string "%Y-%m-%d") "ok"))
-      (should (string= captured-zone "America/New_York")))))
+      (should (string= captured-tz "America/New_York"))
+      (should-not captured-zone))))
 
 (provide 'sem-time-test)
 ;;; sem-time-test.el ends here

@@ -27,7 +27,9 @@ container images expose timezone data without a canonical zoneinfo tree."
   (when (sem-time--safe-timezone-name-p timezone)
     (condition-case nil
         (progn
-          (format-time-string "%Y-%m-%d %H:%M:%S%z" (current-time) timezone)
+          (let ((process-environment (copy-sequence process-environment)))
+            (setenv "TZ" timezone)
+            (format-time-string "%Y-%m-%d %H:%M:%S%z" (current-time)))
           t)
       (error nil))))
 
@@ -43,7 +45,9 @@ container images expose timezone data without a canonical zoneinfo tree."
 
 (defun sem-time-format-string (format &optional time)
   "Format TIME with FORMAT using CLIENT_TIMEZONE semantics."
-  (format-time-string format (or time (current-time)) (sem-time-client-timezone)))
+  (let ((process-environment (copy-sequence process-environment)))
+    (setenv "TZ" (sem-time-client-timezone))
+    (format-time-string format (or time (current-time)))))
 
 (defun sem-time-format-iso-local (&optional time)
   "Format TIME as ISO-8601 local datetime in CLIENT_TIMEZONE.
