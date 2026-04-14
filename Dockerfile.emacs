@@ -34,7 +34,10 @@ COPY dev/sem-daemon-watchdog /usr/local/bin/sem-daemon-watchdog
 RUN chmod +x /usr/local/bin/start-cron \
     && chmod +x /usr/local/bin/sem-daemon-watchdog \
     && touch /var/log/cron.log \
-    && mkdir -p /data/org-roam /data/elfeed /data/morning-read
+    && mkdir -p /data/org-roam /data/elfeed /data/morning-read \
+    && git config --global --add safe.directory /data/org-roam \
+    && git config --global user.name "SemyonSinchenko" \
+    && git config --global user.email "ssinchenko@apache.org"
 
 # Install packages at build time - build fails if any package fails
 RUN eask install
