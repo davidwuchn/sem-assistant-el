@@ -136,11 +136,17 @@
   "Test that org-roam sync returns t when there are no changes to commit."
   (sem-git-sync-test--with-isolated-guard
     (cl-letf (((symbol-function 'file-directory-p)
-               (lambda (_) t))
+                (lambda (_) t))
+              ((symbol-function 'sem-git-sync--run-command)
+               (lambda (program args &optional _dir)
+                 (if (and (string= program "git")
+                          (equal args '("rev-parse" "--git-dir")))
+                     (cons 0 ".git\n")
+                   (cons 0 ""))))
               ((symbol-function 'sem-git-sync--sync-state)
                (lambda ()
-                 (list :ok t :dirty nil :ahead 0 :behind 0 :sync-needed nil))))
-      (should (eq t (sem-git-sync-org-roam))))))
+                  (list :ok t :dirty nil :ahead 0 :behind 0 :sync-needed nil))))
+       (should (eq t (sem-git-sync-org-roam))))))
 
 (ert-deftest sem-git-sync-test-org-roam-cl-return-from-no-signal ()
   "Regression test: cl-return-from should not signal 'Return from unknown block' error." 

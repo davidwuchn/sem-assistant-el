@@ -36,18 +36,19 @@
 (defun sem-git-sync--run-command (program args &optional dir)
   "Run PROGRAM with ARGS in DIR and return (exit-code . output).
 Returns a cons cell where car is the exit code and cdr is the command output."
-  (let ((default-directory (or dir default-directory))
+  (let ((command-directory (file-name-as-directory (or dir default-directory)))
         (output-buffer (generate-new-buffer " *git-sync-cmd*")))
     (unwind-protect
         (with-current-buffer output-buffer
           (erase-buffer)
-          (condition-case err
-              (let ((exit-code
-                     (apply #'call-process program nil output-buffer nil args)))
-                (cons exit-code (buffer-string)))
-            (error
-             (insert (error-message-string err))
-             (cons 127 (buffer-string)))))
+          (let ((default-directory command-directory))
+            (condition-case err
+                (let ((exit-code
+                       (apply #'call-process program nil output-buffer nil args)))
+                  (cons exit-code (buffer-string)))
+              (error
+               (insert (error-message-string err))
+               (cons 127 (buffer-string))))))
       (when (buffer-live-p output-buffer)
         (kill-buffer output-buffer)))))
 
