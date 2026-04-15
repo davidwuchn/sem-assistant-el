@@ -198,5 +198,62 @@ RSS digest passes nil hash - this should be a no-op."
                             (string= (buffer-string) "()"))))))
       (delete-file test-cursor))))
 
+;;; Tests for feed parser and reload cache
+
+(ert-deftest sem-rss-test-parse-feeds-supports-org-links-and-inherited-tags ()
+  "Test parser supports org-link headings and inherited tags." 
+  (let ((tmp-file (make-temp-file "sem-rss-feeds-" nil ".org"
+                                  (concat "* Feeds :elfeed:\n"
+                                          "** AI :ai:\n"
+                                          "*** [[https://example.com/rss.xml][Example]] :csai:\n"
+                                          "*** https://another.example/feed :vendors:\n"
+                                          "** Ignored :ignore:\n"
+                                          "*** https://ignored.example/feed\n"
+                                          "* Other\n"
+                                          "** https://outside.example/feed\n"))))
+    (unwind-protect
+        (let* ((feeds (sem-rss--parse-feeds-from-org-file tmp-file))
+               (entry1 (seq-find (lambda (entry)
+                                   (and (consp entry)
+                                        (string= (car entry) "https://example.com/rss.xml")))
+                                 feeds))
+               (entry2 (seq-find (lambda (entry)
+                                   (and (consp entry)
+                                        (string= (car entry) "https://another.example/feed")))
+                                 feeds)))
+          (should (= (length feeds) 2))
+          (should entry1)
+          (should entry2)
+          (should (member 'ai (cdr entry1)))
+          (should (member 'csai (cdr entry1)))
+          (should (member 'ai (cdr entry2)))
+          (should (member 'vendors (cdr entry2))))
+      (delete-file tmp-file))))
+
+(ert-deftest sem-rss-test-refresh-feeds-skips-reparse-when-unchanged ()
+  "Test refresh uses cache when feeds file fingerprint is unchanged." 
+  (let* ((tmp-file (make-temp-file "sem-rss-feeds-" nil ".org"
+                                   "* Feeds :elfeed:\n** https://example.com/rss.xml :ai:\n"))
+         (cache-file (make-temp-file "sem-rss-feeds-cache-") )
+         (setenv-restore (getenv "CLIENT_TIMEZONE"))
+         (sem-rss-feeds-file tmp-file)
+         (sem-rss-feeds-cache-file cache-file))
+    (unwind-protect
+        (progn
+          (setenv "CLIENT_TIMEZONE" "Etc/UTC")
+          (cl-letf (((symbol-function 'sem-core-log) (lambda (&rest _) nil))
+                    ((symbol-function 'sem-core-log-error) (lambda (&rest _) nil)))
+            (let ((first (sem-rss-refresh-feeds t)))
+              (should (plist-get first :reloaded))
+              (should (= (plist-get first :count) 1)))
+            (setq elfeed-feeds nil)
+            (let ((second (sem-rss-refresh-feeds)))
+              (should-not (plist-get second :reloaded))
+              (should (eq (plist-get second :reason) 'unchanged))
+              (should (= (length elfeed-feeds) 1)))))
+      (setenv "CLIENT_TIMEZONE" setenv-restore)
+      (delete-file tmp-file)
+      (delete-file cache-file))))
+
 (provide 'sem-rss-test)
 ;;; sem-rss-test.el ends here

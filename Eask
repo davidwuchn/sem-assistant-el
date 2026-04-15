@@ -12,5 +12,4 @@
 (depends-on "emacs" "28.1")
 (depends-on "gptel")
 (depends-on "elfeed")
-(depends-on "elfeed-org")
 (depends-on "org-roam")

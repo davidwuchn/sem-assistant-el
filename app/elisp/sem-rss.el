@@ -10,9 +10,10 @@
 ;;; Code:
 
 (require 'seq)
+(require 'cl-lib)
 (require 'subr-x)
+(require 'org)
 (require 'elfeed)
-(require 'elfeed-org)
 (require 'sem-core)
 (require 'sem-llm)
 (require 'sem-security)
@@ -34,6 +35,12 @@
 
 (defconst sem-rss-dir "/data/morning-read/"
   "Directory where daily digests are stored.")
+
+(defconst sem-rss-feeds-file "/data/feeds.org"
+  "Path to feeds configuration file in Org format.")
+
+(defconst sem-rss-feeds-cache-file "/data/.sem-feeds-cache.el"
+  "Path to feed parsing cache metadata.")
 
 ;;; Prompt Templates (loaded from external files)
 
@@ -57,6 +64,162 @@ Loaded lazily on first use from general-prompt.txt.")
 (defvar sem-rss-arxiv-prompt-template nil
   "Template for arXiv digest prompts.
 Loaded lazily on first use from arxiv-prompt.txt.")
+
+;;; Feed Parsing and Reload Cache
+
+(defun sem-rss--extract-feed-url-from-heading-line (line)
+  "Extract feed URL from Org heading LINE.
+Supports both plain URL headings and Org links.
+Returns URL string or nil when LINE does not define a feed URL." 
+  (cond
+   ((string-match "^\\(?:\\*+\\s-+\\)?\\(https?://[^[:space:]]+\\)" line)
+    (match-string 1 line))
+   ((string-match "^\\(?:\\*+\\s-+\\)?\\[\\[\\(https?://[^]]+\\)\\]\\(\\[[^]]*\\]\\)?\\]" line)
+    (match-string 1 line))
+   (t nil)))
+
+(defun sem-rss--normalized-feed-tags (tags)
+  "Normalize TAGS for Elfeed feed entry.
+Removes structural tags and returns a list of symbols." 
+  (thread-last tags
+               (mapcar #'downcase)
+               (seq-remove (lambda (tag)
+                             (member tag '("elfeed" "ignore"))))
+               delete-dups
+               (mapcar #'intern)))
+
+(defun sem-rss--parse-feeds-from-org-file (file-path)
+  "Parse FILE-PATH and return Elfeed feed definitions.
+The return value is a list of Elfeed feed entries.
+Each entry is either a URL string or a list where CAR is URL and CDR are tags." 
+  (with-temp-buffer
+    (insert-file-contents file-path)
+    (let ((feeds '())
+          (seen (make-hash-table :test 'equal))
+          (tag-stack '()))
+      (goto-char (point-min))
+      (while (re-search-forward "^\\(\\*+\\)\\s-+\\(.*\\)$" nil t)
+        (let* ((level (length (match-string 1)))
+               (raw-heading (match-string 2))
+               (title raw-heading)
+               (local-tags '()))
+          (when (string-match "\\(.*?\\)\\s-+\\(:[[:alnum:]_@#%:.-]+:\\)\\s-*$" raw-heading)
+            (setq title (string-trim (match-string 1 raw-heading)))
+            (setq local-tags (split-string (match-string 2 raw-heading) ":" t)))
+
+          (while (> (length tag-stack) (1- level))
+            (setq tag-stack (butlast tag-stack 1)))
+
+          (let* ((parent-tags (if tag-stack (car (last tag-stack)) '()))
+                 (all-tags (delete-dups (append parent-tags local-tags)))
+                 (url (sem-rss--extract-feed-url-from-heading-line title)))
+            (setq tag-stack (append tag-stack (list all-tags)))
+            (when (and url
+                       (member "elfeed" all-tags)
+                       (not (member "ignore" all-tags))
+                       (not (gethash url seen)))
+              (puthash url t seen)
+              (let ((tag-symbols (sem-rss--normalized-feed-tags all-tags)))
+                (push (if tag-symbols
+                          (cons url tag-symbols)
+                        url)
+                      feeds))))))
+      (nreverse feeds))))
+
+(defun sem-rss--feeds-file-fingerprint (file-path)
+  "Return fingerprint plist for FILE-PATH.
+Includes :size and :sha256 keys." 
+  (with-temp-buffer
+    (insert-file-contents file-path)
+    (list :size (buffer-size)
+          :sha256 (secure-hash 'sha256 (current-buffer)))))
+
+(defun sem-rss--read-feeds-cache ()
+  "Read and return feed cache plist from `sem-rss-feeds-cache-file'."
+  (when (file-exists-p sem-rss-feeds-cache-file)
+    (condition-case _err
+        (with-temp-buffer
+          (insert-file-contents sem-rss-feeds-cache-file)
+          (read (current-buffer)))
+      (error nil))))
+
+(defun sem-rss--write-feeds-cache (cache)
+  "Atomically write CACHE plist to `sem-rss-feeds-cache-file'."
+  (let ((tmp-file (concat sem-rss-feeds-cache-file ".tmp")))
+    (with-temp-file tmp-file
+      (prin1 cache (current-buffer)))
+    (rename-file tmp-file sem-rss-feeds-cache-file t)))
+
+(defun sem-rss-refresh-feeds (&optional force)
+  "Refresh `elfeed-feeds' from feeds Org file.
+When FORCE is non-nil, bypass cache fingerprint checks.
+Returns a plist with :reloaded, :count, and :reason keys." 
+  (condition-case err
+      (if (not (file-exists-p sem-rss-feeds-file))
+          (progn
+            (sem-core-log "rss" "ELFEED-FEEDS" "SKIP"
+                          (format "Feeds file missing: %s" sem-rss-feeds-file))
+            (setq elfeed-feeds nil)
+            (list :reloaded nil :count 0 :reason 'missing-file))
+        (let* ((cache (sem-rss--read-feeds-cache))
+               (fingerprint (sem-rss--feeds-file-fingerprint sem-rss-feeds-file))
+               (same-size (= (plist-get fingerprint :size)
+                             (or (plist-get cache :size) -1)))
+               (same-hash (string=
+                           (plist-get fingerprint :sha256)
+                           (or (plist-get cache :sha256) "")))
+               (cached-feeds (plist-get cache :feeds))
+               (can-reuse (and (not force) same-size same-hash (listp cached-feeds))))
+          (if can-reuse
+              (progn
+                (setq elfeed-feeds cached-feeds)
+                (sem-core-log "rss" "ELFEED-FEEDS" "SKIP"
+                              (format "Feeds unchanged, reused cache (%d feeds)"
+                                      (length cached-feeds)))
+                (list :reloaded nil :count (length cached-feeds) :reason 'unchanged))
+            (let* ((parsed-feeds (sem-rss--parse-feeds-from-org-file sem-rss-feeds-file))
+                   (feed-count (length parsed-feeds))
+                   (cache-data (append fingerprint
+                                       (list :feeds parsed-feeds
+                                             :updated-at (sem-time-format-string "%Y-%m-%dT%H:%M:%S%z")))))
+              (setq elfeed-feeds parsed-feeds)
+              (sem-rss--write-feeds-cache cache-data)
+              (if (> feed-count 0)
+                  (sem-core-log "rss" "ELFEED-FEEDS" "OK"
+                                (format "Loaded %d feeds from %s" feed-count sem-rss-feeds-file))
+                (sem-core-log "rss" "ELFEED-FEEDS" "FAIL"
+                              (format "No feeds parsed from %s" sem-rss-feeds-file)))
+              (list :reloaded t :count feed-count
+                    :reason (if force 'forced 'changed))))))
+    (error
+     (sem-core-log-error "rss" "ELFEED-FEEDS"
+                         (error-message-string err)
+                         sem-rss-feeds-file
+                         nil)
+     (list :reloaded nil :count (length (or elfeed-feeds '())) :reason 'error))))
+
+(defun sem-rss-elfeed-update-cron ()
+  "Cron-safe Elfeed update with feed reload and structured logging." 
+  (sem-core-run-cron-guarded
+   "rss-elfeed-update" "rss" "ELFEED-UPDATE"
+   (lambda ()
+     (condition-case err
+         (let* ((reload-result (sem-rss-refresh-feeds))
+                (count (plist-get reload-result :count)))
+           (if (<= count 0)
+               (sem-core-log "rss" "ELFEED-UPDATE" "SKIP"
+                             "Skipping elfeed-update because feed count is zero")
+             (progn
+               (sem-core-log "rss" "ELFEED-UPDATE" "OK"
+                             (format "Starting update for %d feeds" count))
+               (elfeed-update)
+               (sem-core-log "rss" "ELFEED-UPDATE" "OK"
+                             "elfeed-update dispatched"))))
+       (error
+        (sem-core-log-error "rss" "ELFEED-UPDATE"
+                            (error-message-string err)
+                            nil
+                            nil))))))
 
 (defun sem-rss--load-prompt-template (file-path)
   "Load prompt template from FILE-PATH.

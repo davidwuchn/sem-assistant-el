@@ -15,6 +15,7 @@ COMPOSE_OVERRIDE="$SCRIPT_DIR/docker-compose.test.yml"
 TEST_INBOX="$SCRIPT_DIR/testing-resources/inbox-tasks.org"
 PREEXISTING_TASKS_FIXTURE="$SCRIPT_DIR/testing-resources/preexisting-tasks.org"
 PREEXISTING_UMBRELLA_FIXTURE="$SCRIPT_DIR/testing-resources/20260313152244-llm.org"
+FEEDS_FIXTURE="$SCRIPT_DIR/testing-resources/feeds.org"
 TEST_DATA_DIR="$REPO_ROOT/test-data"
 ORG_ROAM_REPO_DIR="$TEST_DATA_DIR/org-roam"
 ORG_ROAM_NOTES_DIR="$ORG_ROAM_REPO_DIR/org-files"
@@ -24,6 +25,7 @@ WEBDAV_BASE_URL="http://localhost:16065"
 WEBDAV_USERNAME="${WEBDAV_USERNAME:-orgzly}"
 WEBDAV_PASSWORD="${WEBDAV_PASSWORD:-changeme}"
 TRUSTED_URL="https://semyonsinchenko.github.io/ssinchenko/post/aider_2026_and_other_topics/"
+TRUSTED_FEED_URL="https://semyonsinchenko.github.io/ssinchenko/index.xml"
 TRUSTED_UMBRELLA_ID="96a58b04-1f58-47c9-993f-551994939252"
 TRUSTED_UMBRELLA_TITLE="LLM"
 TRUSTED_UMBRELLA_TAG=":umbrella:"
@@ -175,11 +177,20 @@ setup_test_data() {
         return 1
     fi
 
+    if [[ ! -f "$FEEDS_FIXTURE" ]]; then
+        echo "ERROR: feeds fixture not found: $FEEDS_FIXTURE" >&2
+        TEST_STATUS="FAIL"
+        return 1
+    fi
+
     echo "Installing pre-existing tasks fixture into WebDAV data path..."
     cp "$PREEXISTING_TASKS_FIXTURE" "$TEST_DATA_DIR/tasks.org"
 
     echo "Seeding pre-existing umbrella fixture into runtime org-roam directory..."
     cp "$PREEXISTING_UMBRELLA_FIXTURE" "$ORG_ROAM_NOTES_DIR/"
+
+    echo "Installing feeds fixture into runtime data path..."
+    cp "$FEEDS_FIXTURE" "$TEST_DATA_DIR/feeds.org"
 
     echo "Validating pre-existing fixture shape..."
     python3 - "$TEST_DATA_DIR/tasks.org" <<'PY'
@@ -674,6 +685,35 @@ verify_cron_emacsclient() {
         echo "FAIL: emacsclient execution verification failed"
         return 1
     fi
+}
+
+verify_elfeed_feed_parser() {
+    echo ""
+    echo "=== Elfeed Feed Parser Verification ==="
+
+    local parser_result
+    parser_result=$(podman-compose exec emacs emacsclient -s sem-server --eval '
+(progn
+  (require (quote sem-rss))
+  (let* ((refresh-result (sem-rss-refresh-feeds t))
+         (count (plist-get refresh-result :count))
+         (has-trusted nil))
+    (dolist (entry elfeed-feeds)
+      (let ((url (if (consp entry) (car entry) entry)))
+        (when (and (stringp url)
+                   (string= url "https://semyonsinchenko.github.io/ssinchenko/index.xml"))
+          (setq has-trusted t))))
+    (format "count=%s trusted=%s" count has-trusted)))
+' 2>&1)
+
+    echo "elfeed parser result: $parser_result"
+    if echo "$parser_result" | grep -q "count=" && echo "$parser_result" | grep -q "trusted=t"; then
+        echo "PASS: feed parser loaded feeds and found trusted feed URL"
+        return 0
+    fi
+
+    echo "FAIL: feed parser did not load expected feeds"
+    return 1
 }
 
 # =============================================================================
@@ -1698,6 +1738,10 @@ run_paid_inbox_validation() {
     # Cron/emacsclient verification
     if ! verify_cron_emacsclient; then
         echo "WARNING: emacsclient verification failed - continuing anyway"
+    fi
+
+    if ! verify_elfeed_feed_parser; then
+        echo "WARNING: elfeed feed parser verification failed - continuing anyway"
     fi
     
     # Process inbox

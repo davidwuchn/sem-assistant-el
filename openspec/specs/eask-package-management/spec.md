@@ -16,7 +16,7 @@ dependencies required by daemon runtime and unit tests.
 
 #### Scenario: Required packages declared in Eask
 - **WHEN** the `Eask` file is evaluated
-- **THEN** dependencies for `gptel`, `elfeed`, `elfeed-org`, `org-roam`, and `websocket` are declared
+- **THEN** dependencies for `gptel`, `elfeed`, and `org-roam` are declared
 
 ### Requirement: Eask installs dependencies in project-local storage
 Dependency installation via Eask MUST place packages under `.eask/{EMACS-VERSION}/elpa/`

@@ -12,10 +12,10 @@
 0 4 * * *	root	emacsclient -s sem-server -e "(sem-core-purge-inbox)"
 
 # Elfeed update - four times before digest generation (5AM, 6AM, 7AM, 8AM)
-0 5 * * *	root	emacsclient -s sem-server -e "(elfeed-update)"
-0 6 * * *	root	emacsclient -s sem-server -e "(elfeed-update)"
-0 7 * * *	root	emacsclient -s sem-server -e "(elfeed-update)"
-0 8 * * *	root	emacsclient -s sem-server -e "(elfeed-update)"
+0 5 * * *	root	emacsclient -s sem-server -e "(sem-rss-elfeed-update-cron)"
+0 6 * * *	root	emacsclient -s sem-server -e "(sem-rss-elfeed-update-cron)"
+0 7 * * *	root	emacsclient -s sem-server -e "(sem-rss-elfeed-update-cron)"
+0 8 * * *	root	emacsclient -s sem-server -e "(sem-rss-elfeed-update-cron)"
 
 # RSS morning digest - daily at 9:30 AM (after all elfeed updates complete)
 30 9 * * *	root	emacsclient -s sem-server -e "(sem-rss-generate-morning-digest)"

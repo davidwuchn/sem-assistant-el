@@ -1,0 +1,3 @@
+* Integration Feeds :elfeed:
+** Trusted :integration:
+*** [[https://semyonsinchenko.github.io/ssinchenko/index.xml][Semyon Sinchenko Blog]] :trusted:

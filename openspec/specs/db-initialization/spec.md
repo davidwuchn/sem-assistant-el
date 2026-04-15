@@ -48,12 +48,13 @@ The system SHALL handle `org-roam-db-sync` errors gracefully. If `org-roam-db-sy
 - **WHEN** `org-roam-db-sync` encounters a malformed `.org` file
 - **THEN** the error is logged to `/data/errors.org` and the daemon continues
 
-### Requirement: feeds.org read via elfeed-org
-The system SHALL configure elfeed-org to read `/data/feeds.org`. If `/data/feeds.org` does not exist, elfeed SHALL start with an empty feed list — no error is raised.
+### Requirement: feeds.org parsed by internal loader
+The system SHALL parse `/data/feeds.org` via an internal feeds loader during startup refresh.
+If `/data/feeds.org` does not exist, Elfeed SHALL start with an empty feed list and no error is raised.
 
 #### Scenario: feeds.org loaded
 - **WHEN** `/data/feeds.org` exists
-- **THEN** elfeed-org reads subscriptions from it
+- **THEN** the internal loader parses feed subscriptions from it
 
 #### Scenario: Missing feeds.org handled
 - **WHEN** `/data/feeds.org` does not exist

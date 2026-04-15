@@ -4,9 +4,7 @@
 ;; Package-Requires: ((emacs "28.1")
 ;;                    (gptel "20260322.2306")
 ;;                    (elfeed "20260218.1306")
-;;                    (elfeed-org "20250219.950")
-;;                    (org-roam "20260224.1637")
-;;                    (websocket "20260301.157"))
+;;                    (org-roam "20260224.1637"))
 
 ;;; Commentary:
 ;; Package metadata entrypoint for Eask workspace installation.

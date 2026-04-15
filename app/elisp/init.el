@@ -108,7 +108,7 @@ to `OPENROUTER_MODEL'. The returned :models list is deduplicated."
   "Load build-time-installed package dependencies with `require'.
 Signals an error when any required dependency fails to load."
   (let ((failed '()))
-    (dolist (pkg '(gptel elfeed elfeed-org org-roam))
+    (dolist (pkg '(gptel elfeed org-roam))
       (condition-case err
           (require pkg)
         (error
@@ -163,7 +163,6 @@ Model is read from OPENROUTER_MODEL at call time."
              repository-root
              notes-root))
   (setq elfeed-db-directory (expand-file-name "/data/elfeed/"))
-  (setq rmh-elfeed-org-files '("/data/feeds.org"))
   (message "SEM: Paths configured"))
 
 ;;; 5. Set Security Globals
@@ -206,7 +205,6 @@ This is pre-wiring for future github-integration."
   "Load Elfeed database with corruption recovery.
 Attempts to load existing DB. On error, wipes and recreates."
   (require 'elfeed)
-  (require 'elfeed-org)
   (let ((db-dir elfeed-db-directory))
     (make-directory db-dir t)
     (condition-case err
@@ -219,10 +217,7 @@ Attempts to load existing DB. On error, wipes and recreates."
        (delete-directory db-dir t)
        (make-directory db-dir t)
        (elfeed-db-load)
-       (message "SEM: Elfeed DB recreated"))))
-  ;; Configure elfeed-org
-  (elfeed-org)
-  (message "SEM: Elfeed-org configured"))
+       (message "SEM: Elfeed DB recreated")))))
 
 (defun sem-init--init-org-roam-db ()
   "Rebuild org-roam database from scratch.
@@ -330,6 +325,8 @@ written to errors.org to aid debugging."
         ;; Step 8: Load modules
         (message "SEM: Starting init step 8/10 - load modules")
         (sem-init--load-modules)
+        (when (fboundp 'sem-rss-refresh-feeds)
+          (sem-rss-refresh-feeds))
         (sem-init--mark-startup-invariant 'modules-loaded)
         (message "SEM: Step 8/10 complete - modules loaded")
         ;; Step 9: Install messages hook
