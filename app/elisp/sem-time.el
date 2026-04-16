@@ -26,11 +26,13 @@ Validation is runtime-based rather than filesystem-based because some
 container images expose timezone data without a canonical zoneinfo tree."
   (when (sem-time--safe-timezone-name-p timezone)
     (condition-case nil
-        (progn
-          (let ((process-environment (copy-sequence process-environment)))
-            (setenv "TZ" timezone)
-            (format-time-string "%Y-%m-%d %H:%M:%S%z" (current-time)))
-          t)
+        (let ((previous-rule (getenv "TZ")))
+          (unwind-protect
+              (progn
+                (set-time-zone-rule timezone)
+                (format-time-string "%Y-%m-%d %H:%M:%S%z" (current-time))
+                t)
+            (set-time-zone-rule previous-rule)))
       (error nil))))
 
 (defun sem-time-client-timezone ()
@@ -45,9 +47,13 @@ container images expose timezone data without a canonical zoneinfo tree."
 
 (defun sem-time-format-string (format &optional time)
   "Format TIME with FORMAT using CLIENT_TIMEZONE semantics."
-  (let ((process-environment (copy-sequence process-environment)))
-    (setenv "TZ" (sem-time-client-timezone))
-    (format-time-string format (or time (current-time)))))
+  (let ((timezone (sem-time-client-timezone))
+        (previous-rule (getenv "TZ")))
+    (unwind-protect
+        (progn
+          (set-time-zone-rule timezone)
+          (format-time-string format (or time (current-time))))
+      (set-time-zone-rule previous-rule))))
 
 (defun sem-time-format-iso-local (&optional time)
   "Format TIME as ISO-8601 local datetime in CLIENT_TIMEZONE.
