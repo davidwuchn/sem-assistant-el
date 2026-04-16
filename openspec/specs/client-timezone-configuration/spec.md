@@ -7,6 +7,10 @@ This capability defines required client timezone configuration and makes it auth
 ### Requirement: Mandatory client timezone configuration
 The system SHALL require a `CLIENT_TIMEZONE` configuration value at startup. `CLIENT_TIMEZONE` MUST be a valid IANA timezone identifier available in the runtime environment.
 
+When runtime timezone APIs require tzfile-style rules, the system SHALL resolve
+the configured IANA identifier to an equivalent zoneinfo-backed rule
+representation without changing the configured `CLIENT_TIMEZONE` value.
+
 #### Scenario: Startup fails when CLIENT_TIMEZONE is missing
 - **WHEN** daemon startup begins and `CLIENT_TIMEZONE` is unset or empty
 - **THEN** startup fails before cron workflows or inbox processing begin
@@ -14,6 +18,11 @@ The system SHALL require a `CLIENT_TIMEZONE` configuration value at startup. `CL
 #### Scenario: Startup fails when CLIENT_TIMEZONE is invalid
 - **WHEN** daemon startup begins and `CLIENT_TIMEZONE` does not resolve to a valid IANA timezone
 - **THEN** startup fails with an explicit configuration error
+
+#### Scenario: Runtime uses zoneinfo-backed rule for IANA timezone
+- **WHEN** `CLIENT_TIMEZONE` is an IANA identifier and matching tzdata is available
+- **THEN** runtime time formatting uses an equivalent zoneinfo-backed timezone rule
+- **AND** user-visible configuration remains the original IANA value
 
 ### Requirement: CLIENT_TIMEZONE is authoritative runtime timezone
 The system SHALL treat `CLIENT_TIMEZONE` as the single authoritative timezone for runtime scheduling semantics, timestamp interpretation, and day-boundary logic.
