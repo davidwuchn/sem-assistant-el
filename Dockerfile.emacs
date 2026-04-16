@@ -9,8 +9,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /uvx /bin/
 # Install trafilatura
 RUN uv tool install -q "trafilatura>=2.0.0,<3.0.0" && uv cache clean -q
 
-# Install watchdog runtime dependencies
-RUN apk add --no-cache util-linux
+# Install watchdog/runtime timezone dependencies
+RUN apk add --no-cache util-linux tzdata
 
 # Create app directory
 WORKDIR /app
