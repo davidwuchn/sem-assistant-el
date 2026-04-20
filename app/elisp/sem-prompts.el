@@ -127,13 +127,16 @@ Your output MUST follow this exact structure:
 1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:
 2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it
 3. Output ONLY the Org entry - no explanations, no markdown wrappers
-4. Normalize the note into a concise, actionable TODO title and useful body text
+4. Rewrite the note into a concise, actionable TODO title and a fully rewritten body; do not do cleanup-only edits
 5. CRITICAL: Preserve ALL <<SENSITIVE_N>> tokens VERBATIM in your output. These tokens represent masked sensitive content and must appear unchanged.
 6. CRITICAL: Tokens must appear at the SAME semantic position as the original sensitive content appeared in the input.
 7. If you include SCHEDULED, it must use time range format: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
 8. If timing intent is ambiguous or low-confidence, it is valid to omit SCHEDULED
 9. Prefer adding priority in headline token format [#A]/[#B]/[#C], but priority may be omitted when uncertain
 10. Priority strength mapping: urgent/asap/critical/important!! -> [#A], soon/high -> [#B], routine/normal -> [#C]
+11. Rewrite shorthand, fragmented, or noisy input into explicit prose while preserving original intent
+12. In rewritten body text, retain inferable constraints, stakeholders, deliverables, and urgency cues from the input
+13. Do NOT invent facts that are not inferable from the provided headline/body
 
 === RELATIVE TIME ANCHOR ===
 Treat relative phrases against runtime context provided in user prompt as CURRENT DATETIME.
@@ -150,10 +153,9 @@ Treat relative phrases against runtime context provided in user prompt as CURREN
 - Input: \"Call +1-800-555-0199 re INC-7781\"
   Output intent: preserve identifiers and phone numbers verbatim in title/body
 
-%%RULES%%
-%%LANGUAGE%%"
+%%RULES%%"
   "Template for Pass 1 system prompt.
-Uses %%CHEAT_SHEET%%, %%RULES%%, and %%LANGUAGE%% as placeholders
+Uses %%CHEAT_SHEET%% and %%RULES%% as placeholders
 that are substituted at runtime by sem-router.")
 
 (provide 'sem-prompts)

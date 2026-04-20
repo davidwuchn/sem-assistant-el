@@ -47,6 +47,14 @@ Reads `SEM_TASK_API_MAX_RETRIES' at call time and falls back to
         parsed
       sem-router--task-api-max-retries)))
 
+(defun sem-router--output-language ()
+  "Return effective OUTPUT_LANGUAGE with deterministic English fallback.
+Returns `English' when the environment variable is unset or empty."
+  (let ((output-language (getenv "OUTPUT_LANGUAGE")))
+    (if (or (null output-language) (string-empty-p output-language))
+        "English"
+      output-language)))
+
 (defun sem-router--hash-prefix (hash)
   "Return a short deterministic HASH prefix for runtime diagnostics."
   (let* ((safe-hash (or hash "unknown"))
@@ -268,25 +276,25 @@ SANITIZED-BODY is optional task body text after security masking.
 INJECTED-ID is the pre-generated UUID string to embed verbatim.
 
 Returns a plist with keys :user-prompt and :system-prompt."
-  (let* ((output-language (or (getenv "OUTPUT_LANGUAGE") "English"))
+  (let* ((output-language (sem-router--output-language))
          (client-timezone (sem-time-client-timezone))
          (current-datetime (sem-time-format-iso-local (current-time)))
-         (language-instruction (format "\n\nOUTPUT LANGUAGE: Write your entire response in %s. Do not use any other language."
-                                       output-language))
+         (language-instruction
+          (format "OUTPUT LANGUAGE REQUIREMENT: You MUST write the entire response in %s only. Do not use any other language."
+                  output-language))
          (rules-text (if (fboundp 'sem-rules-read)
                          (or (sem-rules-read) "")
                        ""))
          (rules-section (if (string-empty-p rules-text)
                             ""
                           (format "\n\n=== USER SCHEDULING RULES ===\n%s\n" rules-text)))
-         (system-prompt
+         (system-prompt-base
           (replace-regexp-in-string
            "%%CHEAT_SHEET%%" sem-prompts-org-mode-cheat-sheet
            (replace-regexp-in-string
             "%%RULES%%" rules-section
-            (replace-regexp-in-string
-             "%%LANGUAGE%%" language-instruction
-             sem-prompts-pass1-system-template t t) t t)))
+            sem-prompts-pass1-system-template t t)))
+         (system-prompt (concat system-prompt-base "\n\n" language-instruction))
          (user-prompt
           (concat
            (format "Convert this task headline into a structured Org TODO entry:

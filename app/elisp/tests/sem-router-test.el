@@ -749,6 +749,86 @@ Could be next week or later."))
     (should (string-match-p "transform a raw capture note" captured-system-prompt))
     (should (string-match-p "wendsday" captured-system-prompt))))
 
+(ert-deftest sem-router-test-build-task-prompt-language-instruction-is-final-line ()
+  "Test language instruction is strict and appended as final line."
+  (let ((real-getenv (symbol-function 'getenv)))
+    (cl-letf (((symbol-function 'getenv)
+               (lambda (name)
+                 (if (string= name "OUTPUT_LANGUAGE")
+                     "Japanese"
+                   (funcall real-getenv name)))))
+      (let* ((prompt-pair
+              (sem-router--build-task-llm-prompts
+               "Call vendor tomorrow"
+               '("task")
+               "Body text"
+               "550e8400-e29b-41d4-a716-446655440000"))
+             (captured-system-prompt (plist-get prompt-pair :system-prompt))
+             (expected-line
+              "OUTPUT LANGUAGE REQUIREMENT: You MUST write the entire response in Japanese only. Do not use any other language.")
+             (last-line (car (last (split-string captured-system-prompt "\n" t)))))
+        (should (string-match-p "OUTPUT LANGUAGE REQUIREMENT" captured-system-prompt))
+        (should (string= last-line expected-line))))))
+
+(ert-deftest sem-router-test-build-task-prompt-language-fallbacks-to-english ()
+  "Test empty or unset OUTPUT_LANGUAGE deterministically falls back to English."
+  (let ((real-getenv (symbol-function 'getenv)))
+    (dolist (raw-value '(nil ""))
+      (cl-letf (((symbol-function 'getenv)
+                 (lambda (name)
+                   (if (string= name "OUTPUT_LANGUAGE")
+                       raw-value
+                     (funcall real-getenv name)))))
+        (let* ((prompt-pair
+                (sem-router--build-task-llm-prompts
+                 "Call vendor tomorrow"
+                 '("task")
+                 "Body text"
+                 "550e8400-e29b-41d4-a716-446655440000"))
+               (captured-system-prompt (plist-get prompt-pair :system-prompt)))
+          (should
+           (string-match-p
+            "OUTPUT LANGUAGE REQUIREMENT: You MUST write the entire response in English only. Do not use any other language."
+            captured-system-prompt)))))))
+
+(ert-deftest sem-router-test-task-route-composes-task-prompt-with-language-instruction ()
+  "Test task pipeline sends system prompt with strict language instruction."
+  (let ((captured-system-prompt nil)
+        (sem-core--batch-id 42)
+        (real-getenv (symbol-function 'getenv)))
+    (require 'sem-llm)
+    (cl-letf (((symbol-function 'org-id-new)
+               (lambda () "550e8400-e29b-41d4-a716-446655440000"))
+              ((symbol-function 'getenv)
+               (lambda (name)
+                 (if (string= name "OUTPUT_LANGUAGE")
+                     "French"
+                   (funcall real-getenv name))))
+              ((symbol-function 'sem-llm-request)
+               (lambda (_prompt system callback context &optional _tier)
+                 (setq captured-system-prompt system)
+                 (funcall callback nil (list :error "mock") context)
+                 nil))
+              ((symbol-function 'sem-core--increment-retry)
+               (lambda (&rest _) 1))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil)))
+      (sem-router--route-to-task-llm
+       '(:title "Buy milk" :tags ("task") :body nil :hash "task-hash")
+       (lambda (_success _context) nil)
+       42)
+      (should (string-match-p "transform a raw capture note" captured-system-prompt))
+      (should
+       (string-match-p
+        "OUTPUT LANGUAGE REQUIREMENT: You MUST write the entire response in French only. Do not use any other language."
+        captured-system-prompt))
+      (should
+       (string=
+        (car (last (split-string captured-system-prompt "\n" t)))
+        "OUTPUT LANGUAGE REQUIREMENT: You MUST write the entire response in French only. Do not use any other language.")))))
+
 (ert-deftest sem-router-test-task-write-creates-file ()
   "Test that tasks.org is created if absent.
 Success path: tasks.org auto-created on first write."

@@ -116,10 +116,19 @@
   (should (string-match-p "NEVER wrap" sem-prompts-org-mode-cheat-sheet)))
 
 (ert-deftest sem-prompts-test-pass1-template-transform-contract ()
-  "Test Pass 1 template enforces note-to-TODO transformation contract." 
+  "Test Pass 1 template enforces note-to-TODO transformation contract."
   (should (string-match-p "transform a raw capture note" sem-prompts-pass1-system-template))
   (should (string-match-p "timing intent is ambiguous" sem-prompts-pass1-system-template))
-  (should (string-match-p "may be multi-line" sem-prompts-pass1-system-template)))
+  (should (string-match-p "may be multi-line" sem-prompts-pass1-system-template))
+  (should (string-match-p "do not do cleanup-only edits" sem-prompts-pass1-system-template))
+  (should (string-match-p "Do NOT invent facts" sem-prompts-pass1-system-template)))
+
+(ert-deftest sem-prompts-test-pass1-template-retains-inferable-context ()
+  "Test Pass 1 template requires inferable context retention in rewrites."
+  (should (string-match-p "retain inferable constraints" sem-prompts-pass1-system-template))
+  (should (string-match-p "stakeholders" sem-prompts-pass1-system-template))
+  (should (string-match-p "deliverables" sem-prompts-pass1-system-template))
+  (should (string-match-p "urgency cues" sem-prompts-pass1-system-template)))
 
 (ert-deftest sem-prompts-test-pass1-template-shorthand-examples ()
   "Test Pass 1 template includes shorthand and edge-case examples."

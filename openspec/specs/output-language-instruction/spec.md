@@ -18,26 +18,26 @@ The system SHALL read the `OUTPUT_LANGUAGE` environment variable at call time (n
 - **THEN** it SHALL read `(getenv "OUTPUT_LANGUAGE")` inside the function body, not at module load time
 
 ### Requirement: Default language is English
-If the `OUTPUT_LANGUAGE` environment variable is not set, the system SHALL use "English" as the default value.
+If the `OUTPUT_LANGUAGE` environment variable is not set, the system SHALL use "English" as the default value for generated natural-language content in Pass 1 `:task:` transformation output.
 
 #### Scenario: Default when env var is unset
 - **WHEN** `OUTPUT_LANGUAGE` environment variable is not set
-- **THEN** the system SHALL use the string `"English"` as the default
+- **THEN** Pass 1 generated task title and body content SHALL use the string `"English"` as the effective output language
 
 #### Scenario: No error on unset env var
 - **WHEN** `OUTPUT_LANGUAGE` environment variable is not set
 - **THEN** the system SHALL NOT raise an error or warning
 
 ### Requirement: Language instruction is appended to system prompt
-The language instruction SHALL be appended to the system prompt as the final line.
+For Pass 1 `:task:` transformation, the language instruction SHALL be appended to the system prompt as the final line and SHALL express mandatory language compliance semantics.
 
 #### Scenario: Language instruction format
-- **WHEN** the language instruction is generated
-- **THEN** it SHALL be in the format: `\n\nOUTPUT LANGUAGE: Write your entire response in <value>. Do not use any other language.`
+- **WHEN** the language instruction is generated for task transformation
+- **THEN** it SHALL instruct the model to write the entire response in the selected output language and not use other languages
 
 #### Scenario: Language instruction is final line
-- **WHEN** the complete system prompt is constructed
-- **THEN** the language instruction SHALL be the last content in the prompt, after the org-mode cheat sheet
+- **WHEN** the complete Pass 1 task system prompt is constructed
+- **THEN** the language instruction SHALL be the last content in the prompt after other task prompt content
 
 ### Requirement: Value is used verbatim without validation
 The `OUTPUT_LANGUAGE` value SHALL be used exactly as provided without any validation or normalization.
@@ -53,11 +53,15 @@ The `OUTPUT_LANGUAGE` value SHALL be used exactly as provided without any valida
 - **AND** no error or warning SHALL be generated
 
 ### Requirement: Task pipeline includes language instruction
-The task pipeline in `sem-router.el` SHALL include the output language instruction in its system prompt.
+The task pipeline in `sem-router.el` SHALL include the output language instruction in its Pass 1 system prompt and SHALL apply it to all generated natural-language fields in transformed task output.
 
 #### Scenario: Task pipeline system prompt includes language
 - **WHEN** `sem-router--route-to-task-llm` builds its system prompt
-- **THEN** the prompt SHALL include the concatenated: cheat sheet + task instructions + language instruction
+- **THEN** the prompt SHALL include the concatenated task prompt content and language instruction
+
+#### Scenario: Generated fields follow selected language
+- **WHEN** Pass 1 task transformation returns generated title and body content
+- **THEN** generated natural-language fields SHALL be in the selected output language without mixed-language output
 
 ### Requirement: URL capture pipeline includes language instruction
 The URL capture pipeline in `sem-url-capture.el` SHALL include the output language instruction in its system prompt.
