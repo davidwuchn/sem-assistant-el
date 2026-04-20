@@ -27,7 +27,6 @@ services:
     container_name: sem-webdav
     volumes:
       - ./data:/data:rw,z
-      - ./static/organice:/var/www/organice:ro,z
       - ./webdav/apache/start-webdav.sh:/usr/local/bin/start-webdav.sh:ro,z
       - ./webdav/apache/httpd-webdav.conf.template:/usr/local/apache2/conf/extra/httpd-webdav.conf.template:ro,z
       - /etc/letsencrypt:/certs:ro,z
@@ -42,7 +41,16 @@ services:
       - WEBDAV_GID=${WEBDAV_GID:-1000}
     ports:
       - "${WEBDAV_PORT:-443}:6065"
+    depends_on:
+      - organice
     command: ["/bin/sh", "/usr/local/bin/start-webdav.sh"]
+    restart: unless-stopped
+
+  organice:
+    image: ${ORGANICE_IMAGE:-twohundredok/organice:5826}
+    container_name: sem-organice
+    environment:
+      - REACT_APP_WEBDAV_URL=https://${WEBDAV_DOMAIN:-example.com}
     restart: unless-stopped
 
   certbot:

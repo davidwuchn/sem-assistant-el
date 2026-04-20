@@ -32,7 +32,7 @@ DavLockDB /tmp/DavLock
       Require valid-user
     </LimitExcept>
 
-    RewriteEngine On
+    RewriteEngine Off
 
     # Handle unauthenticated CORS preflight without mutating DAV data.
     RewriteCond %{REQUEST_METHOD} ^OPTIONS$ [NC]
@@ -60,13 +60,9 @@ DavLockDB /tmp/DavLock
   SSLCertificateFile @@ORGANICE_CERT_FILE@@
   SSLCertificateKeyFile @@ORGANICE_KEY_FILE@@
 
-  DocumentRoot "/var/www/organice"
-
-  <Directory "/var/www/organice">
-    Options Indexes FollowSymLinks
-    AllowOverride None
-    Require all granted
-  </Directory>
+  ProxyPreserveHost On
+  ProxyPass / http://organice:5000/
+  ProxyPassReverse / http://organice:5000/
 
   ErrorLog /proc/self/fd/2
   CustomLog /proc/self/fd/1 combined

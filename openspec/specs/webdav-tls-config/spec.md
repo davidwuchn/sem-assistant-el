@@ -36,6 +36,14 @@ The runtime environment contract SHALL continue to require `WEBDAV_DOMAIN` and S
 - **THEN** startup fails before serving traffic
 - **AND** logs identify which prerequisite failed
 
+### Requirement: Organice image pinning is configurable without altering TLS contract
+The runtime environment contract SHALL allow operators to pin the organice runtime image tag while preserving the existing TLS certificate path and domain behavior.
+
+#### Scenario: Organice image can be pinned via environment
+- **WHEN** inspecting compose configuration and environment documentation
+- **THEN** operators can set an explicit organice image reference (for example via `ORGANICE_IMAGE`)
+- **AND** changing the organice image reference does not alter certificate mount paths or domain variable requirements
+
 ### Requirement: Single Certbot automation service supports both certificate lineages
 Certificate automation SHALL support both `WEBDAV_DOMAIN` and `ORGANICE_DOMAIN` certificate lineages from a single Certbot service instance and shared Let's Encrypt state volume. Renewal behavior MUST keep both lineages current without requiring a second Certbot container.
 

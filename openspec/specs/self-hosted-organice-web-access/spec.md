@@ -22,3 +22,11 @@ The system SHALL support browser-based organice WebDAV login and data access flo
 #### Scenario: Browser login succeeds from self-hosted origin
 - **WHEN** a user enters valid WebDAV credentials in organice hosted on the configured origin
 - **THEN** organice can authenticate and list repository files via WebDAV
+
+### Requirement: Organice runtime is served through reverse proxy without direct public application port mapping
+The system SHALL run organice as a dedicated containerized runtime behind the existing HTTPS reverse-proxy endpoint for `ORGANICE_DOMAIN`. The compose contract MUST NOT require publishing an additional host port for the organice container.
+
+#### Scenario: Organice service remains internal to compose network
+- **WHEN** inspecting compose service configuration for organice
+- **THEN** organice runs as a dedicated service image
+- **AND** browser traffic reaches organice through the `ORGANICE_DOMAIN` HTTPS virtual host instead of a directly published organice container port

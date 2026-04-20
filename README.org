@@ -47,14 +47,16 @@ pipeline.
   - =WEBDAV_DOMAIN=
   - =ORGANICE_DOMAIN=
   - =ORGANICE_ORIGIN= (must exactly match =https://ORGANICE_DOMAIN=)
+  - =ORGANICE_IMAGE= (optional; defaults to =twohundredok/organice:5826=)
   - =WEBDAV_USERNAME=
   - =WEBDAV_PASSWORD=
 - Mobile sync should target the correct path scope (root for inbox/tasks/rules,
   and org-roam subtree as needed).
 
 ** Self-hosted organice and CORS
-- Organice static assets are served from =static/organice/= through the existing
-  HTTPS WebDAV container, routed by host header to =ORGANICE_DOMAIN=.
+- Organice runs as a dedicated container image and is served through the existing
+  HTTPS WebDAV container as reverse proxy, routed by host header to
+  =ORGANICE_DOMAIN=.
 - Browser CORS access is strict single-origin: only =ORGANICE_ORIGIN= is
   allowed, with credentialed requests enabled for that origin.
 - Wildcard origins are not used. Disallowed origins are not granted

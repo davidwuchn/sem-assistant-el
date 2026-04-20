@@ -59,13 +59,6 @@ CERT_FILE="/certs/live/${WEBDAV_DOMAIN}/fullchain.pem"
 KEY_FILE="/certs/live/${WEBDAV_DOMAIN}/privkey.pem"
 ORGANICE_CERT_FILE="/certs/live/${ORGANICE_DOMAIN}/fullchain.pem"
 ORGANICE_KEY_FILE="/certs/live/${ORGANICE_DOMAIN}/privkey.pem"
-ORGANICE_ROOT="/var/www/organice"
-
-if [ ! -d "$ORGANICE_ROOT" ] || [ ! -r "$ORGANICE_ROOT/index.html" ]; then
-  echo "[webdav] ERROR: Missing organice static assets under ${ORGANICE_ROOT}."
-  echo "[webdav] Expected readable file: ${ORGANICE_ROOT}/index.html"
-  exit 1
-fi
 
 if [ ! -r "$CERT_FILE" ] || [ ! -r "$KEY_FILE" ]; then
   echo "[webdav] ERROR: Missing TLS certificate files for WEBDAV_DOMAIN=${WEBDAV_DOMAIN}."
@@ -129,6 +122,8 @@ sed -i 's/^#\(LoadModule dav_module modules\/mod_dav.so\)$/\1/' "$httpd_conf"
 sed -i 's/^#\(LoadModule dav_fs_module modules\/mod_dav_fs.so\)$/\1/' "$httpd_conf"
 sed -i 's/^#\(LoadModule rewrite_module modules\/mod_rewrite.so\)$/\1/' "$httpd_conf"
 sed -i 's/^#\(LoadModule headers_module modules\/mod_headers.so\)$/\1/' "$httpd_conf"
+sed -i 's/^#\(LoadModule proxy_module modules\/mod_proxy.so\)$/\1/' "$httpd_conf"
+sed -i 's/^#\(LoadModule proxy_http_module modules\/mod_proxy_http.so\)$/\1/' "$httpd_conf"
 sed -i 's/^#\(LoadModule authn_file_module modules\/mod_authn_file.so\)$/\1/' "$httpd_conf"
 sed -i 's/^#\(LoadModule auth_basic_module modules\/mod_auth_basic.so\)$/\1/' "$httpd_conf"
 sed -i "s/^User .*/User #${WEBDAV_UID}/" "$httpd_conf"
