@@ -21,9 +21,13 @@ WebDAV authentication and TLS domain configuration SHALL remain environment-driv
 - **AND** logs provide actionable failure context
 
 ### Requirement: Production bootstrap order requires certificate readiness before secure startup
-Production deployment and bootstrap guidance MUST require successful certificate issuance and certificate readability verification before operators execute production WebDAV startup paths that enforce TLS certificate mounts.
+Production deployment and bootstrap guidance MUST require certificate readiness checks for both WebDAV and self-hosted organice domains before secure startup. Rollout behavior SHALL preserve service continuity for existing daemon and sync workflows by sequencing restarts to avoid unnecessary concurrent downtime.
 
-#### Scenario: Production startup is gated on certificate readiness
-- **WHEN** an operator follows the production WebDAV bootstrap flow
-- **THEN** certificate issuance and mounted certificate readability are verified before production startup is attempted
-- **AND** startup guidance does not present production startup as a valid first step before certificate readiness
+#### Scenario: Dual-domain certificate readiness gates rollout
+- **WHEN** an operator follows the production bootstrap flow for this change
+- **THEN** certificate issuance and readability are verified for both WebDAV and organice domains before secure startup is attempted
+
+#### Scenario: Rollout minimizes disruption to existing workflows
+- **WHEN** WebDAV CORS policy and organice hosting changes are deployed
+- **THEN** service restarts are sequenced to avoid prolonged unavailability of existing WebDAV-based sync workflows
+- **AND** daemon scheduling behavior continues after rollout without data-format migration requirements

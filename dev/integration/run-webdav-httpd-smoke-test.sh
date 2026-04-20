@@ -11,14 +11,18 @@ TEST_CERTS_DIR="$REPO_ROOT/test-data-httpd-certs"
 
 WEBDAV_PORT="${WEBDAV_PORT:-16066}"
 WEBDAV_DOMAIN="${WEBDAV_DOMAIN:-webdav-test.local}"
+ORGANICE_DOMAIN="${ORGANICE_DOMAIN:-organice-test.local}"
+ORGANICE_ORIGIN="${ORGANICE_ORIGIN:-https://organice-test.local}"
 WEBDAV_USERNAME="${WEBDAV_USERNAME:-orgzly}"
-WEBDAV_PASSWORD="${WEBDAV_PASSWORD:-changeme}"
+WEBDAV_PASSWORD="${WEBDAV_PASSWORD:-SmokeTestPassword2026Strong}"
 WEBDAV_UID="${WEBDAV_UID:-$(id -u)}"
 WEBDAV_GID="${WEBDAV_GID:-$(id -g)}"
 WEBDAV_BASE_URL="https://localhost:${WEBDAV_PORT}"
 
 export WEBDAV_PORT
 export WEBDAV_DOMAIN
+export ORGANICE_DOMAIN
+export ORGANICE_ORIGIN
 export WEBDAV_USERNAME
 export WEBDAV_PASSWORD
 export WEBDAV_UID
@@ -81,7 +85,7 @@ if [[ -d "$TEST_DATA_DIR" || -d "$TEST_CERTS_DIR" ]]; then
     podman unshare rm -rf "$TEST_DATA_DIR" "$TEST_CERTS_DIR" >/dev/null 2>&1 || true
   fi
 fi
-mkdir -p "$TEST_DATA_DIR" "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN"
+mkdir -p "$TEST_DATA_DIR" "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN" "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN"
 printf 'v1\n' > "$TEST_DATA_DIR/simple.txt"
 
 openssl req -x509 -nodes -newkey rsa:2048 \
@@ -89,6 +93,12 @@ openssl req -x509 -nodes -newkey rsa:2048 \
   -out "$TEST_CERTS_DIR/live/$WEBDAV_DOMAIN/fullchain.pem" \
   -days 1 \
   -subj "/CN=$WEBDAV_DOMAIN" >/dev/null 2>&1
+
+openssl req -x509 -nodes -newkey rsa:2048 \
+  -keyout "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN/privkey.pem" \
+  -out "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN/fullchain.pem" \
+  -days 1 \
+  -subj "/CN=$ORGANICE_DOMAIN" >/dev/null 2>&1
 
 echo "== Starting isolated WebDAV (Apache/mod_dav) =="
 $COMPOSE_CMD -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" up -d webdav >/dev/null
@@ -216,6 +226,85 @@ if [[ "$host_content" != $'v4-fresh' ]]; then
   exit 1
 fi
 echo "PASS: WebDAV writes persist to host-mounted data"
+
+echo "== Check 5: allowed origin returns deterministic CORS headers =="
+allowed_headers=$(curl -k -sS -o /dev/null -D - \
+  -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
+  -H "Origin: ${ORGANICE_ORIGIN}" \
+  "${WEBDAV_BASE_URL}/simple.txt")
+if [[ "$allowed_headers" != *"Access-Control-Allow-Origin: ${ORGANICE_ORIGIN}"* ]]; then
+  echo "FAIL: allowed origin did not receive Access-Control-Allow-Origin"
+  exit 1
+fi
+if [[ "$allowed_headers" != *"Access-Control-Allow-Credentials: true"* ]]; then
+  echo "FAIL: allowed origin did not receive Access-Control-Allow-Credentials"
+  exit 1
+fi
+if [[ "$allowed_headers" != *"Vary: Origin"* ]]; then
+  echo "FAIL: allowed origin response missing Vary: Origin"
+  exit 1
+fi
+echo "PASS: allowed origin CORS response headers are correct"
+
+echo "== Check 6: disallowed origin is not granted CORS access =="
+blocked_headers=$(curl -k -sS -o /dev/null -D - \
+  -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
+  -H "Origin: https://blocked-origin.invalid" \
+  "${WEBDAV_BASE_URL}/simple.txt")
+if [[ "$blocked_headers" == *"Access-Control-Allow-Origin:"* ]]; then
+  echo "FAIL: disallowed origin unexpectedly received Access-Control-Allow-Origin"
+  exit 1
+fi
+echo "PASS: disallowed origin receives no granted CORS origin"
+
+echo "== Check 7: OPTIONS preflight is unauthenticated for allowed origin =="
+preflight_headers=$(curl -k -sS -o /dev/null -D - -w 'HTTP_STATUS:%{http_code}' \
+  -X OPTIONS \
+  -H "Origin: ${ORGANICE_ORIGIN}" \
+  -H "Access-Control-Request-Method: PROPFIND" \
+  -H "Access-Control-Request-Headers: authorization,depth" \
+  "${WEBDAV_BASE_URL}/")
+preflight_status="${preflight_headers##*HTTP_STATUS:}"
+assert_status "204" "$preflight_status" "unauthenticated OPTIONS preflight"
+if [[ "$preflight_headers" != *"Access-Control-Allow-Methods:"* ]]; then
+  echo "FAIL: allowed preflight missing Access-Control-Allow-Methods"
+  exit 1
+fi
+if [[ "$preflight_headers" != *"Access-Control-Allow-Headers:"* ]]; then
+  echo "FAIL: allowed preflight missing Access-Control-Allow-Headers"
+  exit 1
+fi
+echo "PASS: OPTIONS preflight returns expected CORS metadata"
+
+echo "== Check 8: non-OPTIONS request without auth remains unauthorized =="
+unauth_get_status=$(curl -k -sS -o /dev/null -w '%{http_code}' "${WEBDAV_BASE_URL}/simple.txt" || true)
+assert_status "401" "$unauth_get_status" "unauthenticated GET remains unauthorized"
+
+echo "== Check 9: startup fails with missing organice certificate lineage =="
+$COMPOSE_CMD -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" down -v >/dev/null 2>&1 || true
+rm -f "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN/fullchain.pem" "$TEST_CERTS_DIR/live/$ORGANICE_DOMAIN/privkey.pem"
+
+set +e
+$COMPOSE_CMD -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" up -d webdav >/dev/null
+start_rc=$?
+set -e
+if [[ "$start_rc" -ne 0 ]]; then
+  echo "PASS: container startup command failed when organice certificates were missing"
+else
+  sleep 2
+  startup_probe=$(curl -k -sS -o /dev/null -w '%{http_code}' -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" "${WEBDAV_BASE_URL}/simple.txt" || true)
+  if [[ "$startup_probe" == "200" ]]; then
+    echo "FAIL: service became healthy despite missing organice certificate files"
+    exit 1
+  fi
+
+  webdav_logs=$($COMPOSE_CMD -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" logs webdav 2>/dev/null || true)
+  if [[ "$webdav_logs" != *"Missing TLS certificate files for ORGANICE_DOMAIN"* ]]; then
+    echo "FAIL: startup logs did not include ORGANICE_DOMAIN certificate prerequisite failure"
+    exit 1
+  fi
+  echo "PASS: startup fails closed and logs ORGANICE_DOMAIN certificate prerequisite failure"
+fi
 
 echo ""
 echo "All Apache WebDAV smoke checks passed."

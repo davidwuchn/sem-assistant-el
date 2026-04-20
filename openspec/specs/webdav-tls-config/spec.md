@@ -5,12 +5,15 @@ TBD
 ## Requirements
 
 ### Requirement: Let's Encrypt certificate paths
-Production WebDAV TLS configuration SHALL continue to use Let's Encrypt standard certificate filenames `fullchain.pem` and `privkey.pem` from `/certs/live/<domain>/`, with `<domain>` derived from `WEBDAV_DOMAIN`. This path contract SHALL be preserved while migrating runtime implementation to Apache configuration.
+Production TLS configuration SHALL support dual-domain operation for WebDAV and self-hosted organice using Let's Encrypt standard certificate filenames `fullchain.pem` and `privkey.pem` under `/certs/live/<domain>/`. The existing WebDAV certificate path contract derived from `WEBDAV_DOMAIN` SHALL remain intact, and organice HTTPS SHALL use the same path convention derived from the configured organice domain.
 
-#### Scenario: Certificate file paths remain compatible
+#### Scenario: WebDAV certificate path remains compatible
 - **WHEN** inspecting production WebDAV TLS configuration
-- **THEN** certificate and key paths resolve to `/certs/live/<domain>/fullchain.pem` and `/certs/live/<domain>/privkey.pem`
-- **AND** `<domain>` is sourced from `WEBDAV_DOMAIN`
+- **THEN** certificate and key paths resolve to `/certs/live/$WEBDAV_DOMAIN/fullchain.pem` and `/certs/live/$WEBDAV_DOMAIN/privkey.pem`
+
+#### Scenario: Organice certificate path follows same convention
+- **WHEN** inspecting production organice TLS configuration
+- **THEN** certificate and key paths resolve to `/certs/live/$ORGANICE_DOMAIN/fullchain.pem` and `/certs/live/$ORGANICE_DOMAIN/privkey.pem`
 
 ### Requirement: Docker compose mount unchanged
 The `docker-compose.yml` WebDAV service certificate mount SHALL remain `/etc/letsencrypt:/certs:ro,z` and SHALL NOT be modified by this change.
@@ -21,19 +24,27 @@ The `docker-compose.yml` WebDAV service certificate mount SHALL remain `/etc/let
 - **AND** no alternate cert mount path is required
 
 ### Requirement: WEBDAV_DOMAIN environment variable
-The `.env.example` file SHALL include `WEBDAV_DOMAIN` with documentation explaining it must match the Let's Encrypt certificate domain. Production startup behavior SHALL fail fast when TLS is enabled but certificate files for `WEBDAV_DOMAIN` are missing, unreadable, or invalid.
+The runtime environment contract SHALL continue to require `WEBDAV_DOMAIN` and SHALL additionally require explicit organice domain configuration for self-hosted organice operation. Startup MUST fail fast when required domain variables or corresponding certificate files are missing, unreadable, or invalid.
 
-#### Scenario: Environment variable documentation
-- **WHEN** inspecting `.env.example`
-- **THEN** it SHALL contain a `WEBDAV_DOMAIN` entry
-- **AND** it SHALL include a comment explaining the variable must match the Let's Encrypt certificate domain
+#### Scenario: Domain variables are documented and explicit
+- **WHEN** inspecting environment documentation and compose configuration
+- **THEN** `WEBDAV_DOMAIN` remains required for WebDAV TLS
+- **AND** organice domain configuration is explicitly documented and required for self-hosted organice HTTPS operation
 
-#### Scenario: Configurable domain
-- **WHEN** an operator sets `WEBDAV_DOMAIN` in `.env`
-- **THEN** the WebDAV container SHALL use certificates from `/etc/letsencrypt/live/$WEBDAV_DOMAIN/`
-- **AND** TLS startup SHALL succeed if certificates exist at that path
+#### Scenario: Missing domain or certificate prerequisites fail startup
+- **WHEN** production startup is attempted without required domain variables or valid certificate files
+- **THEN** startup fails before serving traffic
+- **AND** logs identify which prerequisite failed
 
-#### Scenario: Missing or invalid certificate material
-- **WHEN** TLS is enabled and required certificate files for `WEBDAV_DOMAIN` are missing, unreadable, or invalid
-- **THEN** WebDAV startup MUST fail before serving traffic
-- **AND** the failure MUST be visible in startup logs with actionable context
+### Requirement: Single Certbot automation service supports both certificate lineages
+Certificate automation SHALL support both `WEBDAV_DOMAIN` and `ORGANICE_DOMAIN` certificate lineages from a single Certbot service instance and shared Let's Encrypt state volume. Renewal behavior MUST keep both lineages current without requiring a second Certbot container.
+
+#### Scenario: Initial issuance supports both domains from one service
+- **WHEN** operators configure both domains and run certificate issuance in production
+- **THEN** the Certbot service can obtain certificates for both `WEBDAV_DOMAIN` and `ORGANICE_DOMAIN`
+- **AND** issued files are available under `/certs/live/$WEBDAV_DOMAIN/` and `/certs/live/$ORGANICE_DOMAIN/`
+
+#### Scenario: Renewal updates both lineages without duplicated Certbot services
+- **WHEN** scheduled certificate renewal runs with both domain lineages present
+- **THEN** renewal updates each lineage in place as needed
+- **AND** deployment does not require separate Certbot containers per domain

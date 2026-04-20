@@ -1,12 +1,12 @@
-ServerName localhost
 Listen 6065
 
 DavLockDB /tmp/DavLock
 
 <VirtualHost *:6065>
+  ServerName @@WEBDAV_DOMAIN@@
   SSLEngine on
-  SSLCertificateFile @@CERT_FILE@@
-  SSLCertificateKeyFile @@KEY_FILE@@
+  SSLCertificateFile @@WEBDAV_CERT_FILE@@
+  SSLCertificateKeyFile @@WEBDAV_KEY_FILE@@
 
   DocumentRoot "/data"
 
@@ -18,12 +18,25 @@ DavLockDB /tmp/DavLock
 
   <Location "/">
     Dav On
+    Header always set Vary "Origin" "expr=-n %{req:Origin}"
+    Header always set Access-Control-Allow-Origin "@@ORGANICE_ORIGIN@@" "expr=%{req:Origin} == '@@ORGANICE_ORIGIN@@'"
+    Header always set Access-Control-Allow-Credentials "true" "expr=%{req:Origin} == '@@ORGANICE_ORIGIN@@'"
+    Header always set Access-Control-Allow-Methods "OPTIONS, GET, PROPFIND, PUT, DELETE, MOVE, COPY, MKCOL, PROPPATCH, LOCK, UNLOCK" "expr=%{REQUEST_METHOD} == 'OPTIONS' && %{req:Origin} == '@@ORGANICE_ORIGIN@@'"
+    Header always set Access-Control-Allow-Headers "Authorization, Content-Type, Depth, Destination, If, If-Match, If-None-Match, If-Unmodified-Since, Lock-Token, Overwrite, Timeout, X-Requested-With" "expr=%{REQUEST_METHOD} == 'OPTIONS' && %{req:Origin} == '@@ORGANICE_ORIGIN@@'"
+    Header always set Access-Control-Max-Age "600" "expr=%{REQUEST_METHOD} == 'OPTIONS' && %{req:Origin} == '@@ORGANICE_ORIGIN@@'"
+
     AuthType Basic
     AuthName "SEM WebDAV"
     AuthUserFile "/usr/local/apache2/conf/webdav.htpasswd"
-    Require valid-user
+    <LimitExcept OPTIONS>
+      Require valid-user
+    </LimitExcept>
 
     RewriteEngine On
+
+    # Handle unauthenticated CORS preflight without mutating DAV data.
+    RewriteCond %{REQUEST_METHOD} ^OPTIONS$ [NC]
+    RewriteRule ^ - [R=204,L]
 
     # Reject unconditional writes when no supported precondition is provided.
     RewriteCond %{REQUEST_METHOD} ^(PUT|DELETE|MOVE|COPY|PROPPATCH)$ [NC]
@@ -36,6 +49,24 @@ DavLockDB /tmp/DavLock
     RewriteCond %{HTTP:If-Match} ^W/ [NC]
     RewriteRule ^ - [R=412,L]
   </Location>
+
+  ErrorLog /proc/self/fd/2
+  CustomLog /proc/self/fd/1 combined
+</VirtualHost>
+
+<VirtualHost *:6065>
+  ServerName @@ORGANICE_DOMAIN@@
+  SSLEngine on
+  SSLCertificateFile @@ORGANICE_CERT_FILE@@
+  SSLCertificateKeyFile @@ORGANICE_KEY_FILE@@
+
+  DocumentRoot "/var/www/organice"
+
+  <Directory "/var/www/organice">
+    Options Indexes FollowSymLinks
+    AllowOverride None
+    Require all granted
+  </Directory>
 
   ErrorLog /proc/self/fd/2
   CustomLog /proc/self/fd/1 combined

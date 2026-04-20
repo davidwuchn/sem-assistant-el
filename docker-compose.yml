@@ -27,11 +27,14 @@ services:
     container_name: sem-webdav
     volumes:
       - ./data:/data:rw,z
+      - ./static/organice:/var/www/organice:ro,z
       - ./webdav/apache/start-webdav.sh:/usr/local/bin/start-webdav.sh:ro,z
       - ./webdav/apache/httpd-webdav.conf.template:/usr/local/apache2/conf/extra/httpd-webdav.conf.template:ro,z
       - /etc/letsencrypt:/certs:ro,z
     environment:
       - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-example.com}
+      - ORGANICE_DOMAIN=${ORGANICE_DOMAIN:-organice.example.com}
+      - ORGANICE_ORIGIN=${ORGANICE_ORIGIN:-https://organice.example.com}
       - WEBDAV_USERNAME=${WEBDAV_USERNAME:-orgzly}
       - WEBDAV_PASSWORD=${WEBDAV_PASSWORD:-ChangeMeStrongPassword2026}
       - WEBDAV_RUNTIME_MODE=${WEBDAV_RUNTIME_MODE:-production}
@@ -53,6 +56,7 @@ services:
       - /var/log/letsencrypt:/var/log/letsencrypt:rw,z
     environment:
       - WEBDAV_DOMAIN=${WEBDAV_DOMAIN:-}
+      - ORGANICE_DOMAIN=${ORGANICE_DOMAIN:-}
       - CERTBOT_EMAIL=${CERTBOT_EMAIL:-}
       - CERTBOT_STAGING=${CERTBOT_STAGING:-true}
       - CERTBOT_RENEW_INTERVAL=${CERTBOT_RENEW_INTERVAL:-12h}
@@ -60,5 +64,5 @@ services:
       - "80:80"
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - 'set -eu; if [ -z "$${WEBDAV_DOMAIN}" ]; then echo "[certbot] ERROR: WEBDAV_DOMAIN is not set."; exit 1; fi; if [ -z "$${CERTBOT_EMAIL}" ]; then echo "[certbot] ERROR: CERTBOT_EMAIL is not set."; exit 1; fi; certbot_flags=""; if [ "$${CERTBOT_STAGING}" = "true" ]; then certbot_flags="--staging"; echo "[certbot] Staging mode enabled (CERTBOT_STAGING=true)."; else echo "[certbot] Production mode enabled (CERTBOT_STAGING=false)."; fi; echo "[certbot] Requesting initial certificate for $${WEBDAV_DOMAIN} via HTTP-01 on port 80."; if certbot certonly --standalone --non-interactive --agree-tos --email "$${CERTBOT_EMAIL}" --preferred-challenges http -d "$${WEBDAV_DOMAIN}" $$certbot_flags; then echo "[certbot] Initial certificate request succeeded for $${WEBDAV_DOMAIN}."; else echo "[certbot] ERROR: Initial issuance failed."; echo "[certbot] Verify DNS resolves $${WEBDAV_DOMAIN} to this host, inbound TCP/80 is open, and no process is occupying port 80."; exit 1; fi; while true; do echo "[certbot] Running renewal check for $${WEBDAV_DOMAIN}."; if certbot renew --standalone --non-interactive --preferred-challenges http $$certbot_flags; then echo "[certbot] Renewal check complete."; else echo "[certbot] ERROR: Renewal failed. Check DNS, firewall, and ACME reachability for $${WEBDAV_DOMAIN}."; fi; echo "[certbot] Sleeping for $${CERTBOT_RENEW_INTERVAL} before next renewal check."; sleep "$${CERTBOT_RENEW_INTERVAL}"; done'
+      - 'set -eu; if [ -z "$${WEBDAV_DOMAIN}" ]; then echo "[certbot] ERROR: WEBDAV_DOMAIN is not set."; exit 1; fi; if [ -z "$${ORGANICE_DOMAIN}" ]; then echo "[certbot] ERROR: ORGANICE_DOMAIN is not set."; exit 1; fi; if [ -z "$${CERTBOT_EMAIL}" ]; then echo "[certbot] ERROR: CERTBOT_EMAIL is not set."; exit 1; fi; certbot_flags=""; if [ "$${CERTBOT_STAGING}" = "true" ]; then certbot_flags="--staging"; echo "[certbot] Staging mode enabled (CERTBOT_STAGING=true)."; else echo "[certbot] Production mode enabled (CERTBOT_STAGING=false)."; fi; issue_cert() { domain="$${1}"; echo "[certbot] Requesting initial certificate for $${domain} via HTTP-01 on port 80."; if certbot certonly --standalone --non-interactive --agree-tos --email "$${CERTBOT_EMAIL}" --preferred-challenges http --cert-name "$${domain}" -d "$${domain}" $$certbot_flags; then echo "[certbot] Initial certificate request succeeded for $${domain}."; else echo "[certbot] ERROR: Initial issuance failed for $${domain}."; echo "[certbot] Verify DNS resolves $${domain} to this host, inbound TCP/80 is open, and no process is occupying port 80."; exit 1; fi; }; issue_cert "$${WEBDAV_DOMAIN}"; issue_cert "$${ORGANICE_DOMAIN}"; while true; do echo "[certbot] Running renewal check for all configured lineages."; if certbot renew --standalone --non-interactive --preferred-challenges http $$certbot_flags; then echo "[certbot] Renewal check complete for all lineages."; else echo "[certbot] ERROR: Renewal failed. Check DNS, firewall, and ACME reachability for $${WEBDAV_DOMAIN} and $${ORGANICE_DOMAIN}."; fi; echo "[certbot] Sleeping for $${CERTBOT_RENEW_INTERVAL} before next renewal check."; sleep "$${CERTBOT_RENEW_INTERVAL}"; done'
     restart: unless-stopped

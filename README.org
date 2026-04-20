@@ -41,12 +41,51 @@ pipeline.
 
 ** WebDAV settings
 - WebDAV endpoint is your HTTPS domain (for example =https://org.example.com/=).
+- Self-hosted organice endpoint uses a dedicated HTTPS origin (for example
+  =https://organice.example.com/=).
 - Required env values include:
   - =WEBDAV_DOMAIN=
+  - =ORGANICE_DOMAIN=
+  - =ORGANICE_ORIGIN= (must exactly match =https://ORGANICE_DOMAIN=)
   - =WEBDAV_USERNAME=
   - =WEBDAV_PASSWORD=
 - Mobile sync should target the correct path scope (root for inbox/tasks/rules,
   and org-roam subtree as needed).
+
+** Self-hosted organice and CORS
+- Organice static assets are served from =static/organice/= through the existing
+  HTTPS WebDAV container, routed by host header to =ORGANICE_DOMAIN=.
+- Browser CORS access is strict single-origin: only =ORGANICE_ORIGIN= is
+  allowed, with credentialed requests enabled for that origin.
+- Wildcard origins are not used. Disallowed origins are not granted
+  =Access-Control-Allow-Origin=.
+- =OPTIONS= preflight is unauthenticated for browser compatibility, while
+  non-=OPTIONS= WebDAV methods remain authenticated.
+
+** Dual-domain TLS and rollout sequence
+1. Configure DNS for both =WEBDAV_DOMAIN= and =ORGANICE_DOMAIN= to point to the
+   same host.
+2. Issue certificates for both domains via certbot profile:
+   #+begin_src sh
+   docker compose --profile certbot up -d certbot
+   #+end_src
+3. Confirm certificate files exist for both lineages under
+   =/etc/letsencrypt/live/$DOMAIN/{fullchain.pem,privkey.pem}=.
+4. Deploy WebDAV + organice endpoint:
+   #+begin_src sh
+   docker compose up -d webdav emacs
+   #+end_src
+5. Verify browser origin flow:
+   - allowed origin sends and receives credentialed CORS headers
+   - disallowed origins do not receive granted CORS headers
+   - unauthenticated non-=OPTIONS= methods still return =401=
+
+Rollback (minimal downtime):
+- Keep WebDAV container running until old policy or host route is ready.
+- Revert =ORGANICE_*= env values and Apache template changes, then restart only
+  the =webdav= service first, followed by dependent services if needed.
+- Certbot can continue managing existing lineages; no extra certbot container is
+  required for dual-domain renewal.
 
 ** Git settings
 - SSH key expected by git-sync in container: =/root/.ssh/id_rsa=.
