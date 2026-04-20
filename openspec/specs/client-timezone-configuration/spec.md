@@ -31,6 +31,15 @@ The system SHALL treat `CLIENT_TIMEZONE` as the single authoritative timezone fo
 - **WHEN** scheduling, planning, purge-window checks, digest-date derivation, or daily log partitioning evaluate time
 - **THEN** they use `CLIENT_TIMEZONE` semantics consistently
 
+#### Scenario: Cron/system runtime context uses CLIENT_TIMEZONE
+- **WHEN** cron daemon and shell-level runtime time APIs evaluate current time
+- **THEN** they use timezone data derived from `CLIENT_TIMEZONE`
+- **AND** they do not fall back to implicit UTC unless `CLIENT_TIMEZONE` is explicitly UTC
+
+#### Scenario: Startup fails when CLIENT_TIMEZONE zoneinfo is missing
+- **WHEN** `CLIENT_TIMEZONE` points to an IANA identifier not present in runtime zoneinfo data
+- **THEN** daemon startup fails before cron scheduling begins
+
 ### Requirement: No per-item timezone override support
 The system SHALL NOT support per-user, per-task, or per-entry timezone overrides for scheduling behavior in this change.
 

@@ -5,10 +5,41 @@
 # Set correct permissions on cron directories (cron requires this)
 chmod -R go-w /etc/cron.d /etc/crontabs
 
+cron_source="${SEM_CRON_D_PATH:-/etc/cron.d/sem-cron}"
+cron_target="${SEM_CRONTAB_ROOT_PATH:-/etc/crontabs/root}"
+timezone_root="${SEM_TIMEZONE_ROOT:-/usr/share/zoneinfo}"
+localtime_path="${SEM_LOCALTIME_PATH:-/etc/localtime}"
+timezone_path="${SEM_TIMEZONE_PATH:-/etc/timezone}"
+tz_path="${SEM_TZ_PATH:-/etc/TZ}"
+
 if [ -z "${CLIENT_TIMEZONE:-}" ]; then
   echo "SEM: STARTUP ERROR: CLIENT_TIMEZONE is not set"
   exit 1
 fi
+
+timezone_file="${timezone_root}/${CLIENT_TIMEZONE}"
+if [ ! -f "$timezone_file" ]; then
+  echo "SEM: STARTUP ERROR: CLIENT_TIMEZONE zoneinfo file not found: $timezone_file"
+  exit 1
+fi
+
+if ! ln -snf "$timezone_file" "$localtime_path"; then
+  echo "SEM: STARTUP ERROR: failed to link $localtime_path to $timezone_file"
+  exit 1
+fi
+
+if ! printf '%s\n' "$CLIENT_TIMEZONE" > "$timezone_path"; then
+  echo "SEM: STARTUP ERROR: failed to write $timezone_path"
+  exit 1
+fi
+
+if ! printf '%s\n' "$CLIENT_TIMEZONE" > "$tz_path"; then
+  echo "SEM: STARTUP ERROR: failed to write $tz_path"
+  exit 1
+fi
+
+export TZ="$CLIENT_TIMEZONE"
+echo "SEM: Timezone bootstrap applied CLIENT_TIMEZONE=$CLIENT_TIMEZONE"
 
 cron_tmp="$(mktemp)"
 {
@@ -29,10 +60,10 @@ cron_tmp="$(mktemp)"
         print
       }
     }
-  ' /etc/cron.d/sem-cron
+  ' "$cron_source"
 } > "$cron_tmp"
-mv "$cron_tmp" /etc/crontabs/root
-chmod 0600 /etc/crontabs/root
+mv "$cron_tmp" "$cron_target"
+chmod 0600 "$cron_target"
 
 # Start cron daemon in background
 if command -v service >/dev/null 2>&1; then

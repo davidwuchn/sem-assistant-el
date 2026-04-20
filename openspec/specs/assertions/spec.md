@@ -7,7 +7,7 @@ Define requirements for integration test assertions that validate outcomes.
 ## ADDED Requirements
 
 ### Requirement: Assertions validate test outcomes
-The system SHALL run assertions after artifact collection to validate integration test results. All configured assertions MUST run even when some fail, and assertion coverage MUST include pre-existing TODO immutability checks, occupied-window overlap policy checks, trusted URL-capture output checks, task prompt normalization behavior checks for shorthand inputs, and malformed-sensitive fixture validation as a terminal DLQ/security path with required `errors.org` and `sem-log.org` evidence.
+The system SHALL run assertions after artifact collection to validate integration test results. All configured assertions MUST run even when some fail, and assertion coverage MUST include pre-existing TODO immutability checks, occupied-window overlap policy checks, trusted URL-capture output checks, task prompt normalization behavior checks for shorthand inputs, malformed-sensitive fixture validation as a terminal DLQ/security path with required `errors.org` and `sem-log.org` evidence, and cron/system timezone alignment checks against `CLIENT_TIMEZONE`.
 
 #### Scenario: All assertions run regardless of prior failures
 - **WHEN** running assertions
@@ -80,6 +80,13 @@ The system SHALL run assertions after artifact collection to validate integratio
 - **AND** assertions MUST verify malformed fixture title is absent from `tasks.org`
 - **AND** assertions MUST verify `errors.org` contains a `:security:` error entry with priority `[#A]` for the malformed fixture
 - **AND** assertions MUST verify `sem-log.org` records a DLQ/security preflight failure message for the malformed fixture
+
+#### Scenario: Cron/system timezone alignment assertion
+- **WHEN** running integration assertions under paid inbox mode
+- **THEN** assertions MUST compare observed container UTC offset (`date +%z`) against expected offset computed from `CLIENT_TIMEZONE` and current runtime epoch
+- **AND** assertions MUST verify `/etc/timezone` and `TZ` environment equal `CLIENT_TIMEZONE`
+- **AND** assertions MUST verify crontab timezone header lines contain `CRON_TZ=CLIENT_TIMEZONE` and `TZ=CLIENT_TIMEZONE`
+- **AND** assertions MUST emit `ASSERTION_9_RESULT:PASS|FAIL`
 
 #### Scenario: URL-capture trusted output assertion
 - **WHEN** running trusted URL-capture assertions

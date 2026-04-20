@@ -22,6 +22,12 @@ printf 'service %s\n' "$*" >>"${MOCK_CALL_LOG:?}"
 exit 0
 EOF
 
+  cat >"$mock_dir/ln" <<'EOF'
+#!/bin/sh
+printf 'ln %s\n' "$*" >>"${MOCK_CALL_LOG:?}"
+exit 0
+EOF
+
   cat >"$mock_dir/eask" <<'EOF'
 #!/bin/sh
 printf 'eask %s\n' "$*" >>"${MOCK_CALL_LOG:?}"
@@ -60,7 +66,7 @@ exit 0
 EOF
 
   chmod +x "$mock_dir/chmod" "$mock_dir/service" "$mock_dir/eask" \
-    "$mock_dir/emacsclient" "$mock_dir/sleep" "$mock_dir/tail"
+    "$mock_dir/emacsclient" "$mock_dir/sleep" "$mock_dir/tail" "$mock_dir/ln"
 }
 
 run_start_cron() {
@@ -83,6 +89,35 @@ assert_contains() {
   return 1
 }
 
+assert_line_order() {
+  file="$1"
+  first="$2"
+  second="$3"
+
+  first_line=$(grep -n "$first" "$file" | head -1 | cut -d: -f1 || true)
+  second_line=$(grep -n "$second" "$file" | head -1 | cut -d: -f1 || true)
+
+  if [ -z "$first_line" ] || [ -z "$second_line" ]; then
+    return 1
+  fi
+
+  [ "$first_line" -lt "$second_line" ]
+}
+
+setup_start_cron_fs() {
+  root="$1"
+  timezone_name="${2:-Etc/UTC}"
+
+  mkdir -p "$root/etc/cron.d" "$root/etc/crontabs"
+  mkdir -p "$root/zoneinfo/$(dirname "$timezone_name")"
+
+  cat >"$root/etc/cron.d/sem-cron" <<'EOF'
+*/30 * * * * root emacsclient -s sem-server -e "(sem-core-process-inbox)"
+EOF
+
+  : >"$root/zoneinfo/$timezone_name"
+}
+
 run_test() {
   name="$1"
   test_fn="$2"
@@ -97,25 +132,62 @@ run_test() {
 
 test_start_cron_waits_for_readiness_before_tail() {
   output="$TMP_DIR/readiness-success.log"
+  test_root="$TMP_DIR/runtime-success"
   : >"$MOCK_CALL_LOG"
   : >"$MOCK_COUNTER_FILE"
+  setup_start_cron_fs "$test_root" "Etc/UTC"
 
-  run_start_cron "$output" env MOCK_READY_AFTER=2 SEM_DAEMON_READY_MAX_ATTEMPTS=3 SEM_DAEMON_READY_SLEEP_SEC=0
+  run_start_cron "$output" env CLIENT_TIMEZONE=Etc/UTC MOCK_READY_AFTER=2 SEM_DAEMON_READY_MAX_ATTEMPTS=3 SEM_DAEMON_READY_SLEEP_SEC=0 \
+    SEM_CRON_D_PATH="$test_root/etc/cron.d/sem-cron" SEM_CRONTAB_ROOT_PATH="$test_root/etc/crontabs/root" \
+    SEM_TIMEZONE_ROOT="$test_root/zoneinfo" SEM_LOCALTIME_PATH="$test_root/etc/localtime" \
+    SEM_TIMEZONE_PATH="$test_root/etc/timezone" SEM_TZ_PATH="$test_root/etc/TZ"
   assert_contains "$MOCK_CALL_LOG" "sleep 0" \
-    && assert_contains "$MOCK_CALL_LOG" "tail -F /var/log/cron.log"
+    && assert_contains "$MOCK_CALL_LOG" "tail -F /var/log/cron.log" \
+    && assert_contains "$MOCK_CALL_LOG" "ln -snf $test_root/zoneinfo/Etc/UTC $test_root/etc/localtime" \
+    && assert_line_order "$MOCK_CALL_LOG" "ln -snf" "service cron start" \
+    && assert_contains "$test_root/etc/timezone" "Etc/UTC" \
+    && assert_contains "$test_root/etc/TZ" "Etc/UTC" \
+    && assert_contains "$test_root/etc/crontabs/root" "CRON_TZ=Etc/UTC"
 }
 
 test_start_cron_fails_fast_when_readiness_times_out() {
   output="$TMP_DIR/readiness-timeout.log"
+  test_root="$TMP_DIR/runtime-timeout"
   : >"$MOCK_CALL_LOG"
   : >"$MOCK_COUNTER_FILE"
+  setup_start_cron_fs "$test_root" "Etc/UTC"
 
-  if run_start_cron "$output" env MOCK_READY_AFTER=999 SEM_DAEMON_READY_MAX_ATTEMPTS=2 SEM_DAEMON_READY_SLEEP_SEC=0; then
+  if run_start_cron "$output" env CLIENT_TIMEZONE=Etc/UTC MOCK_READY_AFTER=999 SEM_DAEMON_READY_MAX_ATTEMPTS=2 SEM_DAEMON_READY_SLEEP_SEC=0 \
+    SEM_CRON_D_PATH="$test_root/etc/cron.d/sem-cron" SEM_CRONTAB_ROOT_PATH="$test_root/etc/crontabs/root" \
+    SEM_TIMEZONE_ROOT="$test_root/zoneinfo" SEM_LOCALTIME_PATH="$test_root/etc/localtime" \
+    SEM_TIMEZONE_PATH="$test_root/etc/timezone" SEM_TZ_PATH="$test_root/etc/TZ"; then
     return 1
   fi
 
   assert_contains "$output" "startup readiness failed" \
     && ! assert_contains "$MOCK_CALL_LOG" "tail -F /var/log/cron.log"
+}
+
+test_start_cron_fails_when_timezone_file_missing() {
+  output="$TMP_DIR/timezone-missing.log"
+  test_root="$TMP_DIR/runtime-timezone-missing"
+  : >"$MOCK_CALL_LOG"
+  : >"$MOCK_COUNTER_FILE"
+
+  mkdir -p "$test_root/etc/cron.d" "$test_root/etc/crontabs" "$test_root/zoneinfo/Etc"
+  cat >"$test_root/etc/cron.d/sem-cron" <<'EOF'
+*/30 * * * * root emacsclient -s sem-server -e "(sem-core-process-inbox)"
+EOF
+
+  if run_start_cron "$output" env CLIENT_TIMEZONE=Etc/UTC \
+    SEM_CRON_D_PATH="$test_root/etc/cron.d/sem-cron" SEM_CRONTAB_ROOT_PATH="$test_root/etc/crontabs/root" \
+    SEM_TIMEZONE_ROOT="$test_root/zoneinfo" SEM_LOCALTIME_PATH="$test_root/etc/localtime" \
+    SEM_TIMEZONE_PATH="$test_root/etc/timezone" SEM_TZ_PATH="$test_root/etc/TZ"; then
+    return 1
+  fi
+
+  assert_contains "$output" "zoneinfo file not found" \
+    && ! assert_contains "$MOCK_CALL_LOG" "service cron start"
 }
 
 TMP_DIR="$(mktemp -d)"
@@ -130,6 +202,7 @@ create_mocks "$MOCK_BIN"
 
 run_test "readiness success enters keepalive" test_start_cron_waits_for_readiness_before_tail
 run_test "readiness timeout exits without keepalive" test_start_cron_fails_fast_when_readiness_times_out
+run_test "timezone bootstrap fails when zoneinfo missing" test_start_cron_fails_when_timezone_file_missing
 
 printf 'Tests passed: %s\n' "$PASS_COUNT"
 printf 'Tests failed: %s\n' "$FAIL_COUNT"

@@ -63,7 +63,7 @@ EXPECTED_MALFORMED_SENSITIVE_DLQ_COUNT=1
 EXPECTED_TASK_COUNT=$((EXPECTED_NEW_TASK_COUNT + EXPECTED_PREEXISTING_TASK_COUNT - EXPECTED_MALFORMED_SENSITIVE_DLQ_COUNT))
 
 # Assertion constants
-RUNTIME_TIMEZONE="UTC"
+RUNTIME_TIMEZONE="${CLIENT_TIMEZONE}"
 ASSERTION3_LOWER_BOUND_TOLERANCE_SECONDS=60
 KEYWORDS=("quarterly financial reports" "#452" "team building activity" "INC-7781" "AMBIGUOUS-WEEKDAY-CASE-9012")
 SENSITIVE_KEYWORDS=("supersecret123" "sk-live-abc123xyz789" "IBAN: DE89370400440532013000" "ACCOUNT NUMBER: 123456789")
@@ -78,6 +78,7 @@ ASSERTION_RESULT_KEYS=(
     "ASSERTION_6_RESULT"
     "ASSERTION_7_RESULT"
     "ASSERTION_8_RESULT"
+    "ASSERTION_9_RESULT"
 )
 
 # Test status
@@ -1660,9 +1661,113 @@ PY
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
 
+    # Assertion 9: Cron/system timezone alignment with CLIENT_TIMEZONE
+    echo "Assertion 9: Cron/system timezone alignment..."
+    {
+        echo "=== Assertion 9: Cron/System Timezone Alignment ==="
+
+        local timezone_diag_file
+        timezone_diag_file="$RUN_DIR/timezone-diagnostics.txt"
+
+        local container_epoch observed_offset observed_zone localtime_link timezone_file_value tz_env_value cron_tz_line cron_job_tz_line expected_offset
+        container_epoch=$(podman-compose exec emacs sh -lc 'date +%s' 2>/dev/null | tr -d '\r' || true)
+        observed_offset=$(podman-compose exec emacs sh -lc 'date +%z' 2>/dev/null | tr -d '\r' || true)
+        observed_zone=$(podman-compose exec emacs sh -lc 'date +%Z' 2>/dev/null | tr -d '\r' || true)
+        localtime_link=$(podman-compose exec emacs sh -lc 'if command -v readlink >/dev/null 2>&1; then readlink /etc/localtime || true; else ls -l /etc/localtime || true; fi' 2>/dev/null | tr -d '\r' || true)
+        timezone_file_value=$(podman-compose exec emacs sh -lc 'if [ -f /etc/timezone ]; then cat /etc/timezone; fi' 2>/dev/null | tr -d '\r' || true)
+        tz_env_value=$(podman-compose exec emacs sh -lc 'printf "%s" "${TZ:-}"' 2>/dev/null | tr -d '\r' || true)
+        cron_tz_line=$(podman-compose exec emacs sh -lc 'if [ -f /etc/crontabs/root ]; then grep "^CRON_TZ=" /etc/crontabs/root || true; fi' 2>/dev/null | tr -d '\r' || true)
+        cron_job_tz_line=$(podman-compose exec emacs sh -lc 'if [ -f /etc/crontabs/root ]; then grep "^TZ=" /etc/crontabs/root || true; fi' 2>/dev/null | tr -d '\r' || true)
+
+        expected_offset=$(python3 - "$CLIENT_TIMEZONE" "$container_epoch" <<'PY' 2>/dev/null || true
+import datetime
+import sys
+from zoneinfo import ZoneInfo
+
+timezone_name = sys.argv[1]
+epoch = int(sys.argv[2])
+dt = datetime.datetime.fromtimestamp(epoch, tz=ZoneInfo(timezone_name))
+print(dt.strftime("%z"))
+PY
+)
+
+        cat > "$timezone_diag_file" <<EOF
+CLIENT_TIMEZONE=$CLIENT_TIMEZONE
+container_epoch=$container_epoch
+expected_offset=$expected_offset
+observed_offset=$observed_offset
+observed_zone=$observed_zone
+localtime_link=$localtime_link
+timezone_file_value=$timezone_file_value
+tz_env_value=$tz_env_value
+crontab_cron_tz_line=$cron_tz_line
+crontab_tz_line=$cron_job_tz_line
+EOF
+
+        cat "$timezone_diag_file"
+
+        local timezone_failed
+        timezone_failed="false"
+
+        if [[ -z "$container_epoch" || -z "$observed_offset" || -z "$expected_offset" ]]; then
+            echo "FAIL: missing required timezone probe output (epoch/offset)"
+            timezone_failed="true"
+        fi
+
+        if [[ "$observed_offset" != "$expected_offset" ]]; then
+            echo "FAIL: offset mismatch expected=$expected_offset observed=$observed_offset timezone=$CLIENT_TIMEZONE"
+            timezone_failed="true"
+        else
+            echo "PASS: runtime offset matches expected client timezone offset ($expected_offset)"
+        fi
+
+        if [[ "$timezone_file_value" != "$CLIENT_TIMEZONE" ]]; then
+            echo "FAIL: /etc/timezone mismatch expected=$CLIENT_TIMEZONE observed=$timezone_file_value"
+            timezone_failed="true"
+        else
+            echo "PASS: /etc/timezone matches CLIENT_TIMEZONE"
+        fi
+
+        if [[ "$tz_env_value" != "$CLIENT_TIMEZONE" ]]; then
+            echo "FAIL: TZ env mismatch expected=$CLIENT_TIMEZONE observed=$tz_env_value"
+            timezone_failed="true"
+        else
+            echo "PASS: TZ environment matches CLIENT_TIMEZONE"
+        fi
+
+        if [[ "$cron_tz_line" != "CRON_TZ=$CLIENT_TIMEZONE" ]]; then
+            echo "FAIL: crontab CRON_TZ mismatch expected=CRON_TZ=$CLIENT_TIMEZONE observed=$cron_tz_line"
+            timezone_failed="true"
+        else
+            echo "PASS: crontab CRON_TZ matches CLIENT_TIMEZONE"
+        fi
+
+        if [[ "$cron_job_tz_line" != "TZ=$CLIENT_TIMEZONE" ]]; then
+            echo "FAIL: crontab TZ mismatch expected=TZ=$CLIENT_TIMEZONE observed=$cron_job_tz_line"
+            timezone_failed="true"
+        else
+            echo "PASS: crontab TZ matches CLIENT_TIMEZONE"
+        fi
+
+        if echo "$localtime_link" | grep -Fq "/usr/share/zoneinfo/$CLIENT_TIMEZONE"; then
+            echo "PASS: /etc/localtime points to expected zoneinfo path"
+        else
+            echo "FAIL: /etc/localtime does not reference expected zoneinfo path"
+            timezone_failed="true"
+        fi
+
+        if [[ "$timezone_failed" == "true" ]]; then
+            echo "ASSERTION_9_RESULT:FAIL"
+        else
+            echo "ASSERTION_9_RESULT:PASS"
+        fi
+
+        echo ""
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
+
     # Final result - read from temp file (avoids subshell variable loss issue)
     echo "=== Final Result ==="
-    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion5 final_assertion5a final_assertion5b final_assertion6 final_assertion7 final_assertion8
+    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion5 final_assertion5a final_assertion5b final_assertion6 final_assertion7 final_assertion8 final_assertion9
     final_assertion1=$(grep "ASSERTION_1_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion2=$(grep "ASSERTION_2_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion3=$(grep "ASSERTION_3_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
@@ -1673,6 +1778,7 @@ PY
     final_assertion6=$(grep "ASSERTION_6_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion7=$(grep "ASSERTION_7_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion8=$(grep "ASSERTION_8_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion9=$(grep "ASSERTION_9_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
 
     for assertion_key in "${ASSERTION_RESULT_KEYS[@]}"; do
         if ! grep -q "${assertion_key}:" "$RUN_DIR/assertion-results.txt"; then
@@ -1689,6 +1795,7 @@ PY
           "$final_assertion5b" == "PASS" &&
           "$final_assertion7" == "PASS" &&
           "$final_assertion8" == "PASS" &&
+          "$final_assertion9" == "PASS" &&
           "$TEST_STATUS" == "PASS" &&
           ( "$final_assertion6" == "PASS" || "$final_assertion6" == "WARN" || "$final_assertion6" == "SKIP" ) ]]; then
         echo "ALL ASSERTIONS PASSED"
@@ -1706,6 +1813,7 @@ PY
     echo "  Assertion 6 (SCHEDULED preferences): $final_assertion6"
     echo "  Assertion 7 (URL-capture trusted output): $final_assertion7"
     echo "  Assertion 8 (Malformed sensitive DLQ/security): $final_assertion8"
+    echo "  Assertion 9 (Cron/system timezone alignment): $final_assertion9"
     exit 1
 }
 

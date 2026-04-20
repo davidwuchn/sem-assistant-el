@@ -53,3 +53,16 @@ The integration test workflow SHALL remain compatible with the base Emacs servic
 - **WHEN** integration tests execute with the test compose override
 - **THEN** setup, execution, cleanup, and artifact collection complete using the same deterministic paths and container expectations
 - **AND** production WebDAV runtime substitutions do not change test lifecycle contracts
+
+### Requirement: Paid inbox integration run asserts cron/system timezone alignment
+The paid inbox integration workflow SHALL include an explicit timezone assertion that validates cron/system runtime timezone alignment with `CLIENT_TIMEZONE` and persists timezone diagnostics into the run artifacts.
+
+#### Scenario: Timezone assertion runs in paid inbox flow
+- **WHEN** `run-integration-tests.sh` executes in paid inbox mode
+- **THEN** the assertions phase emits `ASSERTION_9_RESULT:PASS|FAIL`
+- **AND** final suite pass/fail status includes `ASSERTION_9_RESULT`
+
+#### Scenario: Timezone diagnostics are persisted for debugging
+- **WHEN** timezone assertion executes
+- **THEN** diagnostics are written to a run artifact file under `test-results/`
+- **AND** diagnostics include observed offset, expected offset, `/etc/localtime` resolution, `/etc/timezone`, and `TZ`

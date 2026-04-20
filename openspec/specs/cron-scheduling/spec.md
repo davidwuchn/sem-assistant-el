@@ -61,6 +61,23 @@ The system SHALL implement the following complete schedule with no gaps or overl
 - **THEN** cron evaluates schedule expressions in `CLIENT_TIMEZONE`
 - **AND** schedule timing does not depend on implicit host/container default timezone
 
+### Requirement: Timezone bootstrap precedes cron daemon startup
+The system SHALL bootstrap runtime timezone files and environment from `CLIENT_TIMEZONE` before launching the cron daemon. Startup MUST fail fast when timezone bootstrap cannot be completed.
+
+#### Scenario: Runtime timezone files align with CLIENT_TIMEZONE
+- **WHEN** container startup applies timezone bootstrap
+- **THEN** `/etc/localtime` references `/usr/share/zoneinfo/CLIENT_TIMEZONE`
+- **AND** `/etc/timezone` contains `CLIENT_TIMEZONE`
+- **AND** `TZ` environment equals `CLIENT_TIMEZONE`
+
+#### Scenario: Startup fails when timezone bootstrap cannot resolve zoneinfo
+- **WHEN** `CLIENT_TIMEZONE` does not map to an existing file under `/usr/share/zoneinfo`
+- **THEN** startup exits with an explicit configuration error before cron starts
+
+#### Scenario: Runtime offset matches configured timezone semantics
+- **WHEN** runtime time is evaluated in the container after startup
+- **THEN** observed UTC offset matches the expected offset for `CLIENT_TIMEZONE` at that instant (including DST transitions)
+
 ### Requirement: Watchdog cron job is operational-only
 The cron schedule SHALL treat the daemon liveness watchdog as an operational supervision job. The watchdog cron entry MUST NOT invoke inbox processing, purge, RSS generation, or git synchronization workflows.
 
