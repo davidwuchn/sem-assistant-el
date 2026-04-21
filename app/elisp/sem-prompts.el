@@ -127,16 +127,22 @@ Your output MUST follow this exact structure:
 1. :FILETAGS: MUST be exactly one of: :work:, :family:, :routine:, or :opensource:
 2. :ID: MUST be the EXACT value provided in the template below - do not generate, modify, or substitute it
 3. Output ONLY the Org entry - no explanations, no markdown wrappers
-4. Rewrite the note into a concise, actionable TODO title and a fully rewritten body; do not do cleanup-only edits
+4. Rewrite into a concise, action-oriented TODO title and a rewritten informative body; do not do cleanup-only edits
 5. CRITICAL: Preserve ALL <<SENSITIVE_N>> tokens VERBATIM in your output. These tokens represent masked sensitive content and must appear unchanged.
 6. CRITICAL: Tokens must appear at the SAME semantic position as the original sensitive content appeared in the input.
 7. If you include SCHEDULED, it must use time range format: SCHEDULED: <YYYY-MM-DD HH:MM-HH:MM>
 8. If timing intent is ambiguous or low-confidence, it is valid to omit SCHEDULED
 9. Prefer adding priority in headline token format [#A]/[#B]/[#C], but priority may be omitted when uncertain
 10. Priority strength mapping: urgent/asap/critical/important!! -> [#A], soon/high -> [#B], routine/normal -> [#C]
-11. Rewrite shorthand, fragmented, or noisy input into explicit prose while preserving original intent
-12. In rewritten body text, retain inferable constraints, stakeholders, deliverables, and urgency cues from the input
-13. Do NOT invent facts that are not inferable from the provided headline/body
+11. Treat the capture as two-part input: when both headline and body exist, normalize them jointly and preserve meaningful constraints/identifiers from either part
+12. For headline-only input, synthesize informative body text from inferable details in the headline
+13. For long title-only captures, keep only the core action in the TODO headline and move stakeholders, deadlines, deliverables, and constraints into rewritten body prose
+14. Preserve urgency semantics and verbatim identifiers (for example ticket numbers, phone numbers, and <<SENSITIVE_N>> tokens)
+15. If scheduling is ambiguous, keep context in the body without forcing SCHEDULED
+16. If the title is already concise and atomic, keep output brief and avoid unnecessary body expansion
+17. Rewrite shorthand, fragmented, or noisy input into explicit prose while preserving original intent
+18. In rewritten body text, retain inferable constraints, stakeholders, deliverables, and urgency cues from the input
+19. Do NOT invent facts that are not inferable from the provided headline/body
 
 === RELATIVE TIME ANCHOR ===
 Treat relative phrases against runtime context provided in user prompt as CURRENT DATETIME.
@@ -152,6 +158,14 @@ Treat relative phrases against runtime context provided in user prompt as CURREN
   Output intent: conflicting urgency resolves to strongest signal ([#A] > [#B] > [#C])
 - Input: \"Call +1-800-555-0199 re INC-7781\"
   Output intent: preserve identifiers and phone numbers verbatim in title/body
+- Input: \"Need to send Q2 renewal proposal draft to Priya and Marco by Friday 4pm include pricing options and migration timeline\"
+  Output intent: concise action-focused title; move stakeholders, deadline, and deliverables into rewritten body
+- Input: \"ASAP coordinate release checklist with SRE and QA before Thu noon include rollback notes ref REL-4421\"
+  Output intent: preserve urgency and REL-4421 verbatim; title stays concise; body carries coordination details
+- Input: \"next week maybe plan retro with design\"
+  Output intent: preserve timing context in body but do not force SCHEDULED when confidence is low
+- Input: \"Buy printer ink\"
+  Output intent: already concise atomic task stays brief; avoid unnecessary body verbosity
 
 %%RULES%%"
   "Template for Pass 1 system prompt.
