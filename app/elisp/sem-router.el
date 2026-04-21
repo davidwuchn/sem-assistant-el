@@ -3,7 +3,7 @@
 
 ;;; Commentary:
 ;; This module parses headlines from inbox-mobile.org and routes them
-;; to the appropriate handler (url-capture or LLM task generation).
+;; to the appropriate handler (url-capture, deterministic journal, or LLM task generation).
 ;; It also manages cursor tracking via content hashes.
 ;;
 ;; URL contract: task output written to tasks files is operator-facing and
@@ -13,6 +13,7 @@
 
 (require 'org)
 (require 'json)
+(require 'cl-lib)
 (require 'sem-core)
 (require 'sem-prompts)
 (require 'sem-time)
@@ -24,6 +25,9 @@
 
 (defconst sem-router-tasks-file "/data/tasks.org"
   "Path to the tasks file where processed @task headlines are written.")
+
+(defconst sem-router-journal-file "/data/journal.org"
+  "Path to the journal file where processed :journal: headlines are written.")
 
 (defconst sem-router-task-tags '("work" "family" "routine" "opensource")
   "Allowed tags for task headlines. Must be one of these values.")
@@ -185,6 +189,31 @@ or nil if no body content exists. Nested sub-headlines are excluded."
         body-text
       nil)))
 
+(defun sem-router--extract-headline-body-raw (headline-element)
+  "Extract raw body text from HEADLINE-ELEMENT without trimming.
+Returns nil if no body content exists. Nested sub-headlines are excluded."
+  (let ((contents-begin (org-element-property :contents-begin headline-element))
+        (contents-end (org-element-property :contents-end headline-element))
+        (body-text nil))
+    (when (and contents-begin contents-end (> contents-end contents-begin))
+      (setq body-text
+            (save-excursion
+              (save-restriction
+                (narrow-to-region contents-begin contents-end)
+                (goto-char (point-min))
+                (while (and (not (eobp)) (looking-at "^\\*+"))
+                  (forward-line 1))
+                (if (eobp)
+                    nil
+                  (let ((start (point))
+                        (end (point-max)))
+                    (when (re-search-forward "^\\*+" nil t)
+                      (setq end (match-beginning 0)))
+                    (buffer-substring-no-properties start end)))))))
+    (if (and body-text (> (length body-text) 0))
+        body-text
+      nil)))
+
 (defun sem-router--parse-headlines ()
   "Parse all headlines from inbox-mobile.org using org-element.
 Returns a list of headline plists with :title, :tags, :body, :link, :point, :hash."
@@ -210,6 +239,7 @@ Returns a list of headline plists with :title, :tags, :body, :link, :point, :has
                      (title (org-element-property :raw-value headline-element))
                      (tags (org-element-property :tags headline-element))
                      (body (sem-router--extract-headline-body headline-element))
+                     (journal-body (sem-router--extract-headline-body-raw headline-element))
                      (link (when (string-match-p "^https?://" title)
                              (substring-no-properties title)))
                       (tags-str (if tags (string-join tags " ") ""))
@@ -225,6 +255,7 @@ Returns a list of headline plists with :title, :tags, :body, :link, :point, :has
                 (push (list :title title
                             :tags tags
                             :body body
+                            :journal-body journal-body
                             :link link
                             :point begin
                             :hash hash)
@@ -254,6 +285,64 @@ Returns the URL if it's a link headline, nil otherwise."
   "Check if HEADLINE is a task headline (has @task tag).
 Returns non-nil if it's a task headline."
   (member "task" (plist-get headline :tags)))
+
+(defun sem-router--is-journal-headline (headline)
+  "Check if HEADLINE is a journal headline (has :journal: tag).
+Returns non-nil if it's a journal headline."
+  (member "journal" (plist-get headline :tags)))
+
+(defun sem-router--journal-extract-mentions (text)
+  "Extract deduplicated mention values from TEXT.
+Matches `@[A-Za-z0-9_-]+', strips leading `@', and preserves first-seen order."
+  (let ((start 0)
+        (seen (make-hash-table :test 'equal))
+        (mentions '()))
+    (while (and text (string-match "@[A-Za-z0-9_-]+" text start))
+      (let* ((token (match-string 0 text))
+             (mention (substring token 1)))
+        (unless (gethash mention seen)
+          (puthash mention t seen)
+          (push mention mentions)))
+      (setq start (match-end 0)))
+    (nreverse mentions)))
+
+(defun sem-router--journal-non-routing-tags (tags)
+  "Return TAGS excluding the routing tag `journal'."
+  (cl-remove-if (lambda (tag) (string= tag "journal")) (or tags '())))
+
+(defun sem-router--journal-tags-inbox-value (tags)
+  "Return formatted `TAGS_INBOX' property value from TAGS.
+Returns ":tag1:tag2:" when tags are present, otherwise an empty string."
+  (let ((non-routing-tags (sem-router--journal-non-routing-tags tags)))
+    (if non-routing-tags
+        (format ":%s:" (string-join non-routing-tags ":"))
+      "")))
+
+(defun sem-router--journal-heading-exists-p (content heading)
+  "Return non-nil when CONTENT contains exact HEADING line."
+  (and content
+       (string-match-p (format "^%s$" (regexp-quote heading)) content)))
+
+(defun sem-router--journal-next-item-number (content day-heading)
+  "Return next numeric `**** N' index for DAY-HEADING within CONTENT."
+  (with-temp-buffer
+    (insert (or content ""))
+    (goto-char (point-min))
+    (if (not (re-search-forward (format "^%s$" (regexp-quote day-heading)) nil t))
+        1
+      (let ((day-start (point))
+            (day-end nil)
+            (max-number 0))
+        (save-excursion
+          (goto-char day-start)
+          (setq day-end
+                (if (re-search-forward "^\\*\\*\\* " nil t)
+                    (match-beginning 0)
+                  (point-max))))
+        (goto-char day-start)
+        (while (re-search-forward "^\\*\\*\\*\\* \\([0-9]+\\)$" day-end t)
+          (setq max-number (max max-number (string-to-number (match-string 1)))))
+        (1+ max-number)))))
 
 ;;; Cursor Tracking
 
@@ -752,22 +841,204 @@ Returns t on success, nil on failure."
                          nil)
      nil)))
 
+(defun sem-router--build-journal-entry (headline ingested-at)
+  "Build an intermediate journal entry from HEADLINE and INGESTED-AT.
+Signals an error when required headline metadata is missing."
+  (let* ((hash (plist-get headline :hash))
+         (title (plist-get headline :title))
+         (body (or (plist-get headline :journal-body)
+                   (plist-get headline :body)
+                   ""))
+         (tags (plist-get headline :tags))
+         (tags-inbox (sem-router--journal-tags-inbox-value tags))
+         (mentions (sem-router--journal-extract-mentions body)))
+    (unless (and (stringp hash) (not (string-empty-p hash)))
+      (error "Journal headline missing hash"))
+    (unless (stringp title)
+      (error "Journal headline missing title"))
+    (list :hash hash
+          :title title
+          :body body
+          :ingested-at ingested-at
+          :tags-inbox tags-inbox
+          :mentions-raw (string-join mentions ", "))))
+
+(defun sem-router--journal-entry-fragment (entry item-number)
+  "Build one journal item fragment from ENTRY using ITEM-NUMBER."
+  (let ((body (or (plist-get entry :body) ""))
+        (ingested-at (or (plist-get entry :ingested-at) ""))
+        (tags-inbox (or (plist-get entry :tags-inbox) ""))
+        (mentions-raw (or (plist-get entry :mentions-raw) "")))
+    (concat (format "**** %d\n" item-number)
+            ":PROPERTIES:\n"
+            (format ":INGESTED_AT: %s\n" ingested-at)
+            (format ":TAGS_INBOX: %s\n" tags-inbox)
+            (format ":MENTIONS_RAW: %s\n" mentions-raw)
+            ":END:\n\n"
+            body
+            (unless (string-suffix-p "\n" body)
+              "\n"))))
+
+(defun sem-router--journal-build-append-payload (entries ingest-time existing-content)
+  "Build one append payload for ENTRIES at INGEST-TIME.
+Uses EXISTING-CONTENT to add missing date-tree headings once and continue day numbering."
+  (let* ((year (format-time-string "%Y" ingest-time))
+         (month (format-time-string "%Y-%m" ingest-time))
+         (day (format-time-string "%Y-%m-%d" ingest-time))
+         (year-heading (format "* %s" year))
+         (month-heading (format "** %s" month))
+         (day-heading (format "*** %s" day))
+         (year-exists (sem-router--journal-heading-exists-p existing-content year-heading))
+         (month-exists (sem-router--journal-heading-exists-p existing-content month-heading))
+         (day-exists (sem-router--journal-heading-exists-p existing-content day-heading))
+         (next-number (sem-router--journal-next-item-number existing-content day-heading))
+         (payload ""))
+    (when (and (not (string-empty-p (or existing-content "")))
+               (not (string-suffix-p "\n" existing-content)))
+      (setq payload (concat payload "\n")))
+    (unless year-exists
+      (setq payload (concat payload year-heading "\n")))
+    (unless month-exists
+      (setq payload (concat payload month-heading "\n")))
+    (unless day-exists
+      (setq payload (concat payload day-heading "\n")))
+    (dolist (entry entries)
+      (setq payload
+            (concat payload (sem-router--journal-entry-fragment entry next-number)))
+      (setq next-number (1+ next-number)))
+    payload))
+
+(defun sem-router--journal-atomic-append (append-payload)
+  "Append APPEND-PAYLOAD to `sem-router-journal-file' using temp-file + rename.
+Returns t on success, nil on error."
+  (condition-case err
+      (let* ((journal-file sem-router-journal-file)
+             (tmp-file (concat journal-file ".tmp"))
+             (existing-content ""))
+        (when (file-exists-p journal-file)
+          (with-temp-buffer
+            (insert-file-contents journal-file)
+            (setq existing-content (buffer-string))))
+        (make-directory (file-name-directory journal-file) t)
+        (with-temp-file tmp-file
+          (insert existing-content)
+          (insert append-payload))
+        (rename-file tmp-file journal-file t)
+        t)
+    (error
+     (sem-core-log-error "router" "INBOX-ITEM"
+                         (format "Journal append failed: %s" (error-message-string err))
+                         append-payload
+                         nil)
+     nil)))
+
+(defun sem-router--journal-pending-headlines (headlines)
+  "Return unprocessed journal HEADLINES from HEADLINES."
+  (cl-remove-if-not
+   (lambda (headline)
+     (and (sem-router--is-journal-headline headline)
+          (not (sem-router--is-processed (plist-get headline :hash)))))
+   headlines))
+
+(defun sem-router--process-journal-batch (headlines dispatch-batch-id)
+  "Process all pending journal HEADLINES for DISPATCH-BATCH-ID in one batch.
+Returns plist with :processed count and :failed non-nil on batch failure."
+  (cl-block sem-router--process-journal-batch
+    (condition-case err
+        (let ((journal-headlines (sem-router--journal-pending-headlines headlines)))
+          (if (null journal-headlines)
+              (cl-return-from sem-router--process-journal-batch
+                (list :processed 0 :failed nil :attempted 0))
+            (let* ((ingest-time (current-time))
+                   (ingested-at (sem-time-format-iso-local ingest-time))
+                   (existing-content (if (file-exists-p sem-router-journal-file)
+                                         (with-temp-buffer
+                                           (insert-file-contents sem-router-journal-file)
+                                           (buffer-string))
+                                       ""))
+                   (entries '()))
+              (sem-router--runtime-message
+               "journal-batch" "START"
+               (list (cons "batch" dispatch-batch-id)
+                     (cons "count" (length journal-headlines))))
+              (condition-case transform-err
+                  (dolist (headline journal-headlines)
+                    (push (sem-router--build-journal-entry headline ingested-at) entries))
+                (error
+                 (sem-router--runtime-message
+                  "journal-batch" "RETRY"
+                  (list (cons "batch" dispatch-batch-id)
+                        (cons "reason" "transform-failed")))
+                 (sem-core-log "router" "INBOX-ITEM" "RETRY"
+                               (format "Journal batch transform failed: %s"
+                                       (error-message-string transform-err))
+                               nil)
+                 (sem-core-log-error "router" "INBOX-ITEM"
+                                     (error-message-string transform-err)
+                                     "journal-batch-transform"
+                                     nil)
+                 (cl-return-from sem-router--process-journal-batch
+                   (list :processed 0 :failed t :attempted (length journal-headlines)))))
+
+              (let* ((prepared-entries (nreverse entries))
+                     (append-payload (sem-router--journal-build-append-payload
+                                      prepared-entries ingest-time existing-content)))
+                (if (sem-router--journal-atomic-append append-payload)
+                    (progn
+                      (dolist (entry prepared-entries)
+                        (sem-router--mark-processed (plist-get entry :hash)))
+                      (sem-core-log "router" "INBOX-ITEM" "OK"
+                                    (format "Journal batch appended entries=%d"
+                                            (length prepared-entries))
+                                    nil)
+                      (sem-router--runtime-message
+                       "journal-batch" "OK"
+                       (list (cons "batch" dispatch-batch-id)
+                             (cons "count" (length prepared-entries))))
+                      (list :processed (length prepared-entries)
+                            :failed nil
+                            :attempted (length prepared-entries)))
+                  (progn
+                    (sem-router--runtime-message
+                     "journal-batch" "FAIL"
+                     (list (cons "batch" dispatch-batch-id)
+                           (cons "reason" "append-failed")))
+                    (sem-core-log "router" "INBOX-ITEM" "FAIL"
+                                  "Journal batch append failed"
+                                  nil)
+                    (list :processed 0 :failed t :attempted (length journal-headlines))))))))
+      (error
+       (sem-core-log-error "router" "INBOX-ITEM"
+                           (error-message-string err)
+                           "journal-batch"
+                           nil)
+       (sem-router--runtime-message
+        "journal-batch" "FAIL"
+        (list (cons "batch" dispatch-batch-id)
+              (cons "reason" "unexpected-error")))
+       (list :processed 0 :failed t :attempted 0)))))
+
 ;;; Main Processing Entry Point
 
 (defun sem-router-process-inbox (&optional batch-id)
   "Process all unprocessed headlines from inbox-mobile.org.
 Routes each headline to the appropriate handler:
-- @link or URL headlines -> sem-url-capture-process
-- @task headlines -> LLM task generation
-- Unknown tags -> skip with log
+ - :journal: headlines -> deterministic batch journal append path
+ - @link or URL headlines -> sem-url-capture-process
+ - @task headlines -> LLM task generation
+ - Unknown tags -> skip with log
 
 This is called by sem-core-process-inbox."
   (cl-block sem-router-process-inbox
     (condition-case err
-        (let ((headlines (sem-router--parse-headlines))
-              (dispatch-batch-id (or batch-id sem-core--batch-id))
-              (processed-count 0)
-              (skipped-count 0))
+        (let* ((headlines (sem-router--parse-headlines))
+               (dispatch-batch-id (or batch-id sem-core--batch-id))
+               (processed-count 0)
+               (skipped-count 0)
+               (journal-result (sem-router--process-journal-batch headlines dispatch-batch-id))
+               (journal-processed (or (plist-get journal-result :processed) 0))
+               (journal-failed (plist-get journal-result :failed))
+               (non-journal-headlines (cl-remove-if #'sem-router--is-journal-headline headlines)))
 
           (sem-router--runtime-message "process" "START"
                                        (list (cons "batch" dispatch-batch-id)
@@ -781,7 +1052,9 @@ This is called by sem-core-process-inbox."
           (sem-router--runtime-message "process" "RUN"
                                        (list (cons "batch" dispatch-batch-id)))
 
-          (dolist (headline headlines)
+          (setq processed-count (+ processed-count journal-processed))
+
+          (dolist (headline non-journal-headlines)
             (let ((hash (plist-get headline :hash))
                   (title (plist-get headline :title)))
               (sem-router--runtime-message
@@ -900,8 +1173,13 @@ Handles success, retry, and DLQ escalation."
                                    (format "Unknown tag, skipping: %s" title)
                                    nil)
                      (setq skipped-count (1+ skipped-count))
-                     ;; Mark as processed to avoid infinite loop
-                     (sem-router--mark-processed hash)))))))
+                      ;; Mark as processed to avoid infinite loop
+                      (sem-router--mark-processed hash)))))))
+
+          (when journal-failed
+            (sem-core-log "router" "INBOX-ITEM" "RETRY"
+                          "Journal batch failed; journal entries left unprocessed"
+                          nil))
 
           (sem-core-log "router" "INBOX-ITEM" "OK"
                         (format "Processed=%d, Skipped=%d"

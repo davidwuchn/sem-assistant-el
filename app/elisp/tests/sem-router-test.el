@@ -1332,5 +1332,168 @@ Empty body is valid for zero-body headlines."
                      captured))
     (sem-router-test--assert-no-plaintext-leaks captured (list title body url))))
 
+(ert-deftest sem-router-test-journal-tag-detection ()
+  "Test that :journal: tag is detected for deterministic routing." 
+  (let ((headline '(:title "Journal note" :tags ("journal") :body "Entry")))
+    (should (sem-router--is-journal-headline headline))))
+
+(ert-deftest sem-router-test-journal-mention-extraction-dedup-and-normalization ()
+  "Test mention extraction strips @ and preserves first-seen order." 
+  (let ((mentions (sem-router--journal-extract-mentions
+                   "Talked to @boss, then @wife; later pinged @boss and @some!")))
+    (should (equal mentions '("boss" "wife" "some")))))
+
+(ert-deftest sem-router-test-journal-entry-builds-derived-metadata ()
+  "Test journal entry intermediate object includes required metadata fields." 
+  (let* ((entry (sem-router--build-journal-entry
+                 '(:title "Journal"
+                   :hash "hash-1"
+                   :tags ("journal" "work" "family")
+                   :journal-body "Today I met @boss and @wife")
+                 "2026-04-21T13:30:00+02:00")))
+    (should (string= (plist-get entry :ingested-at) "2026-04-21T13:30:00+02:00"))
+    (should (string= (plist-get entry :tags-inbox) ":work:family:"))
+    (should (string= (plist-get entry :mentions-raw) "boss, wife"))
+    (should (string= (plist-get entry :body) "Today I met @boss and @wife"))))
+
+(ert-deftest sem-router-test-journal-route-bypasses-task-and-url-pipelines ()
+  "Test :journal: entries do not invoke task or URL processing pipelines." 
+  (let ((task-called nil)
+        (url-called nil)
+        (sem-core--batch-id 50)
+        (sem-core--pending-callbacks 0))
+    (cl-letf (((symbol-function 'sem-router--parse-headlines)
+               (lambda ()
+                 (list (list :title "https://example.com"
+                             :tags '("journal" "task")
+                             :body "Body"
+                             :hash "journal-hash"))))
+              ((symbol-function 'sem-router--is-processed)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-router--process-journal-batch)
+               (lambda (&rest _)
+                 (list :processed 1 :failed nil :attempted 1)))
+              ((symbol-function 'sem-router--route-to-task-llm)
+               (lambda (&rest _)
+                 (setq task-called t)
+                 t))
+              ((symbol-function 'sem-url-capture-process)
+               (lambda (&rest _)
+                 (setq url-called t)
+                 t))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil)))
+      (sem-router-process-inbox 50)
+      (should-not task-called)
+      (should-not url-called))))
+
+(ert-deftest sem-router-test-journal-payload-inserts-missing-date-headings-once ()
+  "Test payload adds missing year/month/day headings once for a batch." 
+  (let* ((entries (list (list :body "one" :ingested-at "2026-04-21T00:00:00+00:00"
+                              :tags-inbox ":work:" :mentions-raw "boss")
+                        (list :body "two" :ingested-at "2026-04-21T00:00:00+00:00"
+                              :tags-inbox ":family:" :mentions-raw "wife")))
+         (payload (sem-router--journal-build-append-payload
+                   entries
+                   (encode-time 0 0 10 21 4 2026 t)
+                   "")))
+    (should (string-prefix-p "* 2026\n** 2026-04\n*** 2026-04-21\n" payload))
+    (dolist (heading '("* 2026\n" "** 2026-04\n" "*** 2026-04-21\n"))
+      (let ((count 0)
+            (start 0))
+        (while (string-match (regexp-quote heading) payload start)
+          (setq count (1+ count))
+          (setq start (match-end 0)))
+        (should (= count 1))))))
+
+(ert-deftest sem-router-test-journal-payload-continues-day-numbering ()
+  "Test payload numbering continues from existing numeric day items." 
+  (let* ((existing "* 2026\n** 2026-04\n*** 2026-04-21\n**** 1\n**** 2\n")
+         (entries (list (list :body "three" :ingested-at "2026-04-21T00:00:00+00:00"
+                              :tags-inbox "" :mentions-raw "")
+                        (list :body "four" :ingested-at "2026-04-21T00:00:00+00:00"
+                              :tags-inbox "" :mentions-raw "")))
+         (payload (sem-router--journal-build-append-payload
+                   entries
+                   (encode-time 0 0 10 21 4 2026 t)
+                   existing)))
+    (should (string-prefix-p "**** 3\n" payload))
+    (should (string-match-p (regexp-quote "**** 4\n") payload))
+    (should-not (string-match-p "\\* 2026\\n" payload))))
+
+(ert-deftest sem-router-test-journal-process-batch-builds-before-single-append ()
+  "Test journal batch prepares all entries before one append call." 
+  (let ((build-count 0)
+        (append-calls 0)
+        (mark-processed-calls 0)
+        (sem-core--batch-id 51))
+    (cl-letf (((symbol-function 'sem-router--is-processed)
+               (lambda (&rest _) nil))
+              ((symbol-function 'file-exists-p)
+               (lambda (_path) nil))
+              ((symbol-function 'sem-router--build-journal-entry)
+               (lambda (_headline _ingested-at)
+                 (setq build-count (1+ build-count))
+                 (list :hash (format "h-%d" build-count)
+                       :body "text"
+                       :ingested-at "2026-04-21T00:00:00+00:00"
+                       :tags-inbox ""
+                       :mentions-raw "")))
+              ((symbol-function 'sem-router--journal-build-append-payload)
+               (lambda (entries _ingest-time _existing-content)
+                 (should (= (length entries) 2))
+                 (should (= build-count 2))
+                 "payload"))
+              ((symbol-function 'sem-router--journal-atomic-append)
+               (lambda (_payload)
+                 (setq append-calls (1+ append-calls))
+                 t))
+              ((symbol-function 'sem-router--mark-processed)
+               (lambda (&rest _)
+                 (setq mark-processed-calls (1+ mark-processed-calls))))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil)))
+      (let ((result (sem-router--process-journal-batch
+                     (list (list :title "a" :hash "h1" :tags '("journal") :journal-body "b1")
+                           (list :title "b" :hash "h2" :tags '("journal") :journal-body "b2"))
+                     51)))
+        (should (= (plist-get result :processed) 2))
+        (should-not (plist-get result :failed))
+        (should (= append-calls 1))
+        (should (= mark-processed-calls 2))))))
+
+(ert-deftest sem-router-test-journal-transform-failure-skips-append ()
+  "Test transformation failure blocks journal mutation for the whole batch." 
+  (let ((append-called nil)
+        (sem-core--batch-id 52))
+    (cl-letf (((symbol-function 'sem-router--is-processed)
+               (lambda (&rest _) nil))
+              ((symbol-function 'file-exists-p)
+               (lambda (_path) nil))
+              ((symbol-function 'sem-router--build-journal-entry)
+               (lambda (headline _ingested-at)
+                 (if (string= (plist-get headline :hash) "bad")
+                     (error "boom")
+                   (list :hash "ok" :body "text" :ingested-at "ts" :tags-inbox "" :mentions-raw ""))))
+              ((symbol-function 'sem-router--journal-atomic-append)
+               (lambda (&rest _)
+                 (setq append-called t)
+                 t))
+              ((symbol-function 'sem-core-log)
+               (lambda (&rest _) nil))
+              ((symbol-function 'sem-core-log-error)
+               (lambda (&rest _) nil)))
+      (let ((result (sem-router--process-journal-batch
+                     (list (list :title "a" :hash "ok" :tags '("journal") :journal-body "b1")
+                           (list :title "b" :hash "bad" :tags '("journal") :journal-body "b2"))
+                     52)))
+        (should (= (plist-get result :processed) 0))
+        (should (plist-get result :failed))
+        (should-not append-called)))))
+
 (provide 'sem-router-test)
 ;;; sem-router-test.el ends here

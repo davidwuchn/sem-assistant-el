@@ -67,6 +67,9 @@ RUNTIME_TIMEZONE="${CLIENT_TIMEZONE}"
 ASSERTION3_LOWER_BOUND_TOLERANCE_SECONDS=60
 KEYWORDS=("quarterly financial reports" "#452" "team building activity" "INC-7781" "AMBIGUOUS-WEEKDAY-CASE-9012")
 SENSITIVE_KEYWORDS=("supersecret123" "sk-live-abc123xyz789" "IBAN: DE89370400440532013000" "ACCOUNT NUMBER: 123456789")
+JOURNAL_BODY_SNIPPET="Today I felt tense after talking to @boss and later apologized to @wife."
+JOURNAL_TAGS_VALUE=":work:family:"
+JOURNAL_MENTIONS_VALUE="boss, wife"
 ASSERTION_RESULT_KEYS=(
     "ASSERTION_1_RESULT"
     "ASSERTION_2_RESULT"
@@ -79,6 +82,7 @@ ASSERTION_RESULT_KEYS=(
     "ASSERTION_7_RESULT"
     "ASSERTION_8_RESULT"
     "ASSERTION_9_RESULT"
+    "ASSERTION_10_RESULT"
 )
 
 # Test status
@@ -964,6 +968,16 @@ collect_artifacts() {
         echo "errors.org not found (this is OK)"
         touch "$RUN_DIR/errors.org"
     fi
+
+    # GET journal.org (may 404 when journal route fails)
+    echo "Fetching journal.org (may not exist)..."
+    if ! curl --fail --silent --show-error \
+        -u "${WEBDAV_USERNAME}:${WEBDAV_PASSWORD}" \
+        -o "$RUN_DIR/journal.org" \
+        "${WEBDAV_BASE_URL}/data/journal.org" 2>/dev/null; then
+        echo "journal.org not found"
+        touch "$RUN_DIR/journal.org"
+    fi
     
     # Copy diagnostic files (may have been created during test)
     echo "Copying diagnostic files..."
@@ -1765,9 +1779,59 @@ EOF
         echo ""
     } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
 
+    # Assertion 10: Journal route output integrity
+    echo "Assertion 10: Journal output integrity..."
+    {
+        echo "=== Assertion 10: Journal Output Integrity ==="
+
+        local journal_failed=false
+
+        if [[ ! -s "$RUN_DIR/journal.org" ]]; then
+            echo "FAIL: journal.org is missing or empty"
+            journal_failed=true
+        fi
+
+        if grep -Fq "$JOURNAL_BODY_SNIPPET" "$RUN_DIR/journal.org" 2>/dev/null; then
+            echo "PASS: journal body snippet found"
+        else
+            echo "FAIL: journal body snippet missing"
+            journal_failed=true
+        fi
+
+        if grep -Fq ":TAGS_INBOX: $JOURNAL_TAGS_VALUE" "$RUN_DIR/journal.org" 2>/dev/null; then
+            echo "PASS: journal TAGS_INBOX metadata found"
+        else
+            echo "FAIL: journal TAGS_INBOX metadata missing"
+            journal_failed=true
+        fi
+
+        if grep -Fq ":MENTIONS_RAW: $JOURNAL_MENTIONS_VALUE" "$RUN_DIR/journal.org" 2>/dev/null; then
+            echo "PASS: journal MENTIONS_RAW metadata found"
+        else
+            echo "FAIL: journal MENTIONS_RAW metadata missing"
+            journal_failed=true
+        fi
+
+        if grep -Eq '^:INGESTED_AT: ' "$RUN_DIR/journal.org" 2>/dev/null; then
+            echo "PASS: journal INGESTED_AT metadata found"
+        else
+            echo "FAIL: journal INGESTED_AT metadata missing"
+            journal_failed=true
+        fi
+
+        if [[ "$journal_failed" == "true" ]]; then
+            echo "ASSERTION_10_RESULT:FAIL"
+        else
+            echo "PASS: journal output assertions satisfied"
+            echo "ASSERTION_10_RESULT:PASS"
+        fi
+
+        echo ""
+    } | tee -a "$validation_file" | tee -a "$RUN_DIR/assertion-results.txt"
+
     # Final result - read from temp file (avoids subshell variable loss issue)
     echo "=== Final Result ==="
-    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion5 final_assertion5a final_assertion5b final_assertion6 final_assertion7 final_assertion8 final_assertion9
+    local final_assertion1 final_assertion2 final_assertion3 final_assertion4 final_assertion5 final_assertion5a final_assertion5b final_assertion6 final_assertion7 final_assertion8 final_assertion9 final_assertion10
     final_assertion1=$(grep "ASSERTION_1_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion2=$(grep "ASSERTION_2_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion3=$(grep "ASSERTION_3_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
@@ -1779,6 +1843,7 @@ EOF
     final_assertion7=$(grep "ASSERTION_7_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion8=$(grep "ASSERTION_8_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
     final_assertion9=$(grep "ASSERTION_9_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
+    final_assertion10=$(grep "ASSERTION_10_RESULT:" "$RUN_DIR/assertion-results.txt" | cut -d: -f2)
 
     for assertion_key in "${ASSERTION_RESULT_KEYS[@]}"; do
         if ! grep -q "${assertion_key}:" "$RUN_DIR/assertion-results.txt"; then
@@ -1796,6 +1861,7 @@ EOF
           "$final_assertion7" == "PASS" &&
           "$final_assertion8" == "PASS" &&
           "$final_assertion9" == "PASS" &&
+          "$final_assertion10" == "PASS" &&
           "$TEST_STATUS" == "PASS" &&
           ( "$final_assertion6" == "PASS" || "$final_assertion6" == "WARN" || "$final_assertion6" == "SKIP" ) ]]; then
         echo "ALL ASSERTIONS PASSED"
@@ -1814,6 +1880,7 @@ EOF
     echo "  Assertion 7 (URL-capture trusted output): $final_assertion7"
     echo "  Assertion 8 (Malformed sensitive DLQ/security): $final_assertion8"
     echo "  Assertion 9 (Cron/system timezone alignment): $final_assertion9"
+    echo "  Assertion 10 (Journal output integrity): $final_assertion10"
     exit 1
 }
 

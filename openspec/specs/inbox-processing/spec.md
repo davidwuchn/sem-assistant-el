@@ -116,7 +116,7 @@ The system SHALL handle the case where `/data/inbox-mobile.org` does not exist w
 - **THEN** no crash occurs due to missing `cl-block` wrapper
 
 ### Requirement: :task: tagged headlines routed to task LLM pipeline
-The system SHALL detect headlines tagged with `:task:`. These headlines SHALL be routed to `sem-router--route-to-task-llm` for LLM processing instead of being silently discarded. The routing SHALL occur after checking for `:link:` tags and URL-title routing.
+The system SHALL detect headlines tagged with `:task:`. These headlines SHALL be routed to `sem-router--route-to-task-llm` for LLM processing instead of being silently discarded. The routing SHALL occur after checking for `:link:` tags and deterministic `:journal:` routing.
 
 #### Scenario: :task: headline routed to task LLM
 - **WHEN** a headline has the tag `:task:` (e.g. `* Task description :task:`)
@@ -125,6 +125,10 @@ The system SHALL detect headlines tagged with `:task:`. These headlines SHALL be
 #### Scenario: :task: headline not silently discarded
 - **WHEN** a `:task:` headline is processed
 - **THEN** the headline is sent to the LLM, not marked processed without LLM call
+
+#### Scenario: Journal route evaluated before task route
+- **WHEN** inbox processing evaluates deterministic routing tags
+- **THEN** `:journal:` routing is handled before falling through to `:task:` handling
 
 ### Requirement: tasks.org created on first write if absent
 The system SHALL create `/data/tasks.org` if it does not exist when the first processed output needs to be written.

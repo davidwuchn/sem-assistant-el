@@ -7,7 +7,7 @@ Define requirements for integration test assertions that validate outcomes.
 ## ADDED Requirements
 
 ### Requirement: Assertions validate test outcomes
-The system SHALL run assertions after artifact collection to validate integration test results. All configured assertions MUST run even when some fail, and assertion coverage MUST include pre-existing TODO immutability checks, occupied-window overlap policy checks, trusted URL-capture output checks, task prompt normalization behavior checks for shorthand inputs, malformed-sensitive fixture validation as a terminal DLQ/security path with required `errors.org` and `sem-log.org` evidence, and cron/system timezone alignment checks against `CLIENT_TIMEZONE`.
+The system SHALL run assertions after artifact collection to validate integration test results. All configured assertions MUST run even when some fail, and assertion coverage MUST include pre-existing TODO immutability checks, occupied-window overlap policy checks, trusted URL-capture output checks, task prompt normalization behavior checks for shorthand inputs, malformed-sensitive fixture validation as a terminal DLQ/security path with required `errors.org` and `sem-log.org` evidence, cron/system timezone alignment checks against `CLIENT_TIMEZONE`, and deterministic journal-route output checks in `journal.org`.
 
 #### Scenario: All assertions run regardless of prior failures
 - **WHEN** running assertions
@@ -96,6 +96,13 @@ The system SHALL run assertions after artifact collection to validate integratio
 - **AND** the same node MUST include a link to `[[id:96a58b04-1f58-47c9-993f-551994939252][...]]`
 - **AND** the validated trusted-URL node path MUST be under `/data/org-roam/org-files/`
 - **AND** defanged URL forms (`hxxp://`, `hxxps://`) MUST NOT appear in validated trusted-URL candidate nodes
+
+#### Scenario: Journal output assertion
+- **WHEN** integration fixtures include at least one `:journal:` inbox headline
+- **THEN** assertions MUST validate `journal.org` is present and non-empty in collected artifacts
+- **AND** assertions MUST validate journal body text from fixture appears in `journal.org`
+- **AND** assertions MUST validate derived metadata includes `:INGESTED_AT:`, `:TAGS_INBOX:`, and `:MENTIONS_RAW:` values for the journal fixture
+- **AND** assertions MUST emit `ASSERTION_10_RESULT:PASS|FAIL`
 
 #### Scenario: Shorthand normalization fixtures are asserted
 - **WHEN** running normalization behavior assertions for mobile-style shorthand fixtures
