@@ -4,6 +4,13 @@ TBD
 
 ## Requirements
 
+### Requirement: Cron schedule cadence for sem-git-sync-org-roam
+The cron schedule SHALL execute `sem-git-sync-org-roam` every 3 hours at minute 0 in `CLIENT_TIMEZONE`.
+
+#### Scenario: Cron invokes sem-git-sync-org-roam on 3-hour cadence
+- **WHEN** minute 0 of every 3rd hour arrives in `CLIENT_TIMEZONE`
+- **THEN** cron executes `emacsclient -e "(sem-git-sync-org-roam)"`
+
 ### Requirement: cl-block wrapper for early exit
 The entire function body of `sem-git-sync-org-roam` SHALL be wrapped in `(cl-block sem-git-sync-org-roam ...)` immediately inside the `condition-case` wrapper. The `condition-case` MUST remain as the outermost wrapper; `cl-block` MUST be the direct child of `condition-case`'s body. All existing `(cl-return-from sem-git-sync-org-roam ...)` call sites SHALL remain functional without signaling Lisp errors.
 

@@ -23,5 +23,5 @@
 # Daemon readiness watchdog - every 15 minutes
 */15 * * * *	root	/usr/local/bin/sem-daemon-watchdog
 
-# GitHub sync for org-roam - every 6 hours (00:00, 06:00, 12:00, 18:00)
-0 */6 * * *	root	emacsclient -s sem-server -e "(sem-git-sync-org-roam)"
+# GitHub sync for org-roam - every 3 hours (00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00)
+0 */3 * * *	root	emacsclient -s sem-server -e "(sem-git-sync-org-roam)"

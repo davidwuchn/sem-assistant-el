@@ -34,6 +34,7 @@ The system SHALL implement the following complete schedule with no gaps or overl
 0    8 * * *  root  emacsclient -e "(elfeed-update)"
 30   9 * * *  root  emacsclient -e "(sem-rss-generate-morning-digest)"
 */15 * * * *  root  /usr/local/bin/sem-daemon-watchdog
+0 */3 * * *  root  emacsclient -e "(sem-git-sync-org-roam)"
 ```
 
 #### Scenario: Inbox processing every 30 minutes in client timezone
@@ -55,6 +56,10 @@ The system SHALL implement the following complete schedule with no gaps or overl
 #### Scenario: Watchdog executes every 15 minutes in client timezone
 - **WHEN** every 15th minute of every hour arrives in `CLIENT_TIMEZONE`
 - **THEN** `sem-daemon-watchdog` is called
+
+#### Scenario: Git sync executes every 3 hours in client timezone
+- **WHEN** every 3rd hour arrives at minute 0 in `CLIENT_TIMEZONE`
+- **THEN** `sem-git-sync-org-roam` is called
 
 #### Scenario: Cron timezone comes from CLIENT_TIMEZONE
 - **WHEN** the container loads cron configuration for daemon schedules
